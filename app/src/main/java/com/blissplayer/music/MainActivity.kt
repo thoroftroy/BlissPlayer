@@ -17,6 +17,7 @@ import android.provider.DocumentsContract
 import android.view.View
 import android.widget.Button
 import android.widget.EditText
+import android.widget.ImageButton
 import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.ScrollView
@@ -28,14 +29,18 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
-import androidx.recyclerview.widget.ItemTouchHelper
-import androidx.recyclerview.widget.LinearLayoutManager
-import androidx.recyclerview.widget.RecyclerView
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.media3.common.MediaItem
+import androidx.media3.common.MediaMetadata
 import androidx.media3.common.Player
 import androidx.media3.common.Player.REPEAT_MODE_ALL
 import androidx.media3.common.Player.REPEAT_MODE_OFF
 import androidx.media3.common.Player.REPEAT_MODE_ONE
+import androidx.recyclerview.widget.ItemTouchHelper
+import androidx.recyclerview.widget.LinearLayoutManager
+import androidx.recyclerview.widget.RecyclerView
 import com.blissplayer.music.data.BlissDb
 import com.blissplayer.music.data.MusicScanner
 import com.blissplayer.music.data.TagTools
@@ -49,8 +54,8 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
-import java.util.Collections
 import kotlin.math.roundToInt
+import kotlin.random.Random
 
 class MainActivity : AppCompatActivity() {
 
@@ -61,9 +66,12 @@ class MainActivity : AppCompatActivity() {
     private var songs: List<Song> = emptyList()
     private val byId = mutableMapOf<Long, Song>()
 
-    // Queue mirror — always matches the player item-for-item.
+    // Queue mirror. Always matches the player item for item.
     private val queue = mutableListOf<Song>()
     private var shuffled = false
+    private var lastCountedId: Long = -1L
+    private var pendingQueueSync = false
+    private var restoredQueueIds: LongArray? = null
 
     // Library view state
     private var tab = 0 // 0 songs 1 artists 2 albums 3 playlists
@@ -74,13 +82,15 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var adapter: LibraryAdapter
     private lateinit var titleBar: TextView
+    private lateinit var titleBarWrap: LinearLayout
     private lateinit var crumb: TextView
+    private lateinit var statusStrip: TextView
     private lateinit var list: RecyclerView
     private lateinit var morePane: ScrollView
     private lateinit var moreBox: LinearLayout
     private lateinit var miniTitle: TextView
     private lateinit var miniSub: TextView
-    private lateinit var miniPlayPause: Button
+    private lateinit var miniPlayPause: ImageButton
 
     private var svc: PlayerService? = null
     private lateinit var vol: VolumeManager
@@ -109,7 +119,7 @@ class MainActivity : AppCompatActivity() {
         )
         val path = treeUriToPath(uri)
         if (path == null) {
-            toast("Picked, but Android didn't give a file path — keeping scan-all.")
+            toast("Picked, but Android gave no file path. Scan-all stays on.")
             return@registerForActivityResult
         }
         val set = prefs.getStringSet("folders", emptySet())!!.toMutableSet()
@@ -126,6 +136,7 @@ class MainActivity : AppCompatActivity() {
             svc!!.boost = vol.boost
             svc!!.applyGainFor(svc!!.player.currentMediaItem)
             svc!!.player.addListener(playerListener)
+            if (songs.isNotEmpty()) syncQueueFromPlayer() else pendingQueueSync = true
             refreshMini()
         }
 
@@ -138,11 +149,24 @@ class MainActivity : AppCompatActivity() {
         override fun onMediaItemTransition(item: MediaItem?, reason: Int) {
             refreshMini()
             queueDialog?.let { refreshQueueList() }
+            val id = item?.mediaId?.toLongOrNull()
+            if (id != null && id != lastCountedId) {
+                lastCountedId = id
+                CoroutineScope(Dispatchers.IO).launch {
+                    db.bumpPlay(id)
+                    // Once every song in the library has played at least once,
+                    // wipe the slate so Smart Shuffle stays fresh forever.
+                    val counts = db.playCounts()
+                    if (songs.isNotEmpty() && songs.all { (counts[it.mediaId] ?: 0) > 0 }) {
+                        db.resetPlays()
+                    }
+                }
+            }
         }
 
         override fun onIsPlayingChanged(isPlaying: Boolean) {
-            miniPlayPause.text = if (isPlaying) "⏸" else "▶"
-            nowPlayBtn?.text = if (isPlaying) "⏸ Pause" else "▶ Play"
+            miniPlayPause.setImageResource(if (isPlaying) R.drawable.ic_pause else R.drawable.ic_play)
+            setPlayBtnIcon(isPlaying)
         }
     }
 
@@ -156,8 +180,13 @@ class MainActivity : AppCompatActivity() {
         setContentView(R.layout.activity_main)
         db = BlissDb(this)
 
+        restoredQueueIds = savedInstanceState?.getLongArray("queue")
+        lastCountedId = savedInstanceState?.getLong("counted", -1L) ?: -1L
+
+        titleBarWrap = findViewById(R.id.titleBarWrap)
         titleBar = findViewById(R.id.titleBar)
         crumb = findViewById(R.id.crumb)
+        statusStrip = findViewById(R.id.statusStrip)
         list = findViewById(R.id.list)
         morePane = findViewById(R.id.morePane)
         moreBox = findViewById(R.id.moreBox)
@@ -165,8 +194,17 @@ class MainActivity : AppCompatActivity() {
         miniSub = findViewById(R.id.miniSub)
         miniPlayPause = findViewById(R.id.miniPlayPause)
 
+        // Keep the layout clear of the status bar and gesture bar.
+        val root = findViewById<LinearLayout>(R.id.root)
+        ViewCompat.setOnApplyWindowInsetsListener(root) { v, insets ->
+            val b = insets.getInsets(WindowInsetsCompat.Type.systemBars())
+            v.setPadding(dp(8), b.top + dp(4), dp(8), b.bottom + dp(4))
+            insets
+        }
+        applyFullscreen()
+
         skinStatic()
-        adapter = LibraryAdapter(dark = dark, onTap = ::onRowTap, onLong = ::onRowLong)
+        adapter = LibraryAdapter(dark = dark, onTap = ::onRowTap, onMenu = ::onRowMenu)
         list.layoutManager = LinearLayoutManager(this)
         list.adapter = adapter
 
@@ -179,8 +217,8 @@ class MainActivity : AppCompatActivity() {
         findViewById<Button>(R.id.btnShuffleAll).setOnClickListener { playAll(shuffle = true) }
         crumb.setOnClickListener { clearDrill() }
         miniPlayPause.setOnClickListener { togglePlay() }
-        findViewById<Button>(R.id.miniNext).setOnClickListener { svc?.player?.seekToNext() }
-        findViewById<Button>(R.id.miniQueue).setOnClickListener { openNowPlaying() }
+        findViewById<ImageButton>(R.id.miniNext).setOnClickListener { svc?.player?.seekToNext() }
+        findViewById<ImageButton>(R.id.miniQueue).setOnClickListener { openNowPlaying() }
         findViewById<LinearLayout>(R.id.miniPlayer).setOnClickListener { openNowPlaying() }
 
         vol = VolumeManager(this, db, prefs) { b ->
@@ -204,12 +242,28 @@ class MainActivity : AppCompatActivity() {
         buildMorePane()
     }
 
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        outState.putLongArray("queue", queue.map { it.mediaId }.toLongArray())
+        outState.putLong("counted", lastCountedId)
+    }
+
     override fun onDestroy() {
         ticker.removeCallbacksAndMessages(null)
         runCatching { unbindService(conn) }
         vol.stop()
         eqJob?.cancel()
         super.onDestroy()
+    }
+
+    private fun applyFullscreen() {
+        val c = WindowInsetsControllerCompat(window, window.decorView)
+        if (prefs.getBoolean("fullscreen", false)) {
+            c.hide(WindowInsetsCompat.Type.systemBars())
+            c.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        } else {
+            c.show(WindowInsetsCompat.Type.systemBars())
+        }
     }
 
     // ---------- permissions / scan ----------
@@ -239,7 +293,8 @@ class MainActivity : AppCompatActivity() {
     private fun scan() {
         if (!hasAudioPermission()) {
             adapter.submit(emptyList())
-            crumb.text = "BlissPlayer needs Music permission — grant it, then tap Scan."
+            crumb.text = "BlissPlayer needs Music permission. Grant it, then tap Scan in More."
+            updateStatus()
             return
         }
         CoroutineScope(Dispatchers.IO).launch {
@@ -251,13 +306,45 @@ class MainActivity : AppCompatActivity() {
                 songs = filtered
                 byId.clear()
                 filtered.forEach { byId[it.mediaId] = it }
+                restoreQueueIfNeeded()
+                if (pendingQueueSync) {
+                    pendingQueueSync = false
+                    syncQueueFromPlayer()
+                }
                 render()
+                updateStatus()
                 if (filtered.isEmpty()) {
                     crumb.text = if (all.isEmpty())
-                        "No music found. Copy your YouTube downloads into /Music, then tap More → Scan."
-                    else "No songs in chosen folders. Clear folders in More to scan everything."
+                        "No music found. Copy songs into the Music folder, then open More and tap Scan."
+                    else "No songs in the chosen folders. Clear folders in More to scan everything."
                 }
             }
+        }
+    }
+
+    /** Rebuild the queue mirror from the player (fixes empty queue after rotate). */
+    private fun syncQueueFromPlayer() {
+        val p = svc?.player ?: return
+        if (p.mediaItemCount == 0 || byId.isEmpty()) return
+        if (queue.isNotEmpty()) return
+        val ids = (0 until p.mediaItemCount).mapNotNull {
+            p.getMediaItemAt(it).mediaId.toLongOrNull()
+        }
+        val found = ids.mapNotNull { byId[it] }
+        if (found.size == ids.size && found.isNotEmpty()) {
+            queue.clear()
+            queue.addAll(found)
+        }
+    }
+
+    private fun restoreQueueIfNeeded() {
+        val ids = restoredQueueIds ?: return
+        restoredQueueIds = null
+        if (queue.isNotEmpty() || ids.isEmpty()) return
+        val found = ids.toList().mapNotNull { byId[it] }
+        if (found.isNotEmpty()) {
+            queue.clear()
+            queue.addAll(found)
         }
     }
 
@@ -281,27 +368,27 @@ class MainActivity : AppCompatActivity() {
 
     private fun render() {
         if (tab == 4) return
-        titleBar.text = "BlissPlayer — ${listOf("Songs", "Artists", "Albums", "Playlists")[tab]}"
+        titleBar.text = "BlissPlayer: ${listOf("Songs", "Artists", "Albums", "Playlists")[tab]}"
         when {
             drillArtist != null -> {
                 val a = drillArtist!!
                 val inA = songs.filter { it.artist == a }
-                crumb.text = "◀ $a (${inA.size}) — tap here to go back"
+                crumb.text = "$a (${inA.size}) | tap here to go back"
                 adapter.submit(inA.map { Row.SongRow(it) })
             }
             drillAlbum != null -> {
                 val a = drillAlbum!!
                 val inA = songs.filter { it.album == a }
-                crumb.text = "◀ $a (${inA.size}) — tap here to go back"
+                crumb.text = "$a (${inA.size}) | tap here to go back"
                 adapter.submit(inA.map { Row.SongRow(it) })
             }
             drillPlaylist != null -> {
                 val ids = db.songsIn(drillPlaylist!!).mapNotNull { byId[it] }
-                crumb.text = "◀ ${drillPlaylistName ?: "Playlist"} (${ids.size}) — tap here to go back"
+                crumb.text = "${drillPlaylistName ?: "Playlist"} (${ids.size}) | tap here to go back"
                 adapter.submit(ids.map { Row.SongRow(it) })
             }
             tab == 0 -> {
-                crumb.text = if (songs.isEmpty()) "" else "${songs.size} songs — tap to play, hold for options"
+                crumb.text = if (songs.isEmpty()) "" else "${songs.size} songs. Tap to play, dots for options."
                 adapter.submit(songs.map { Row.SongRow(it) })
             }
             tab == 1 -> {
@@ -313,15 +400,15 @@ class MainActivity : AppCompatActivity() {
                 val groups = songs.groupBy { it.album }.toSortedMap(String.CASE_INSENSITIVE_ORDER)
                 crumb.text = "${groups.size} albums"
                 adapter.submit(groups.map { (k, v) ->
-                    Row.Group("al:$k", k, "${v.first().artist} • ${v.size} songs")
+                    Row.Group("al:$k", k, "${v.first().artist} | ${v.size} songs")
                 })
             }
             else -> {
                 val pls = db.playlists()
-                crumb.text = if (pls.isEmpty()) "No playlists yet — tap ＋ below, or hold a song → Add to playlist"
-                else "${pls.size} playlists — tap to open, hold to rename/delete"
+                crumb.text = if (pls.isEmpty()) "No playlists yet. Tap the first row, or use the dots on a song."
+                else "${pls.size} playlists. Tap to open, dots to rename or delete."
                 val rows = mutableListOf<Row>(
-                    Row.Group("__new", "＋ Create playlist", "Keep a mix together")
+                    Row.Group("__new", "Create playlist", "Keep a mix together")
                 )
                 pls.forEach { (id, name) ->
                     rows.add(Row.Group("pl:$id", name, "${db.songsIn(id).size} songs"))
@@ -329,6 +416,12 @@ class MainActivity : AppCompatActivity() {
                 adapter.submit(rows)
             }
         }
+        updateStatus()
+    }
+
+    private fun updateStatus() {
+        val pct = (vol.boost * 100).roundToInt()
+        statusStrip.text = "${songs.size} songs | Boost $pct% | ${vol.currentDevice}"
     }
 
     private fun visibleSongs(): List<Song> =
@@ -360,7 +453,7 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun onRowLong(row: Row) {
+    private fun onRowMenu(row: Row) {
         when (row) {
             is Row.SongRow -> songMenu(row.song)
             is Row.Group -> when {
@@ -379,10 +472,17 @@ class MainActivity : AppCompatActivity() {
         MediaItem.Builder()
             .setUri(Uri.parse(s.contentUri))
             .setMediaId(s.mediaId.toString())
+            .setMediaMetadata(
+                MediaMetadata.Builder()
+                    .setTitle(s.title)
+                    .setArtist(s.artist)
+                    .setAlbumTitle(s.album)
+                    .build()
+            )
             .build()
 
     private fun playQueue(context: List<Song>, start: Int) {
-        val p = svc?.player ?: run { toast("Player starting… try again in a second"); return }
+        val p = svc?.player ?: run { toast("Player is starting. Try again in a second."); return }
         queue.clear()
         queue.addAll(context)
         shuffled = false
@@ -395,41 +495,61 @@ class MainActivity : AppCompatActivity() {
 
     private fun playAll(shuffle: Boolean) {
         if (songs.isEmpty()) {
-            toast("No music yet — copy songs on, then Scan.")
+            toast("No music yet. Copy songs on, then Scan.")
             return
         }
-        val listSongs = songs.toMutableList()
-        if (shuffle) Collections.shuffle(listSongs)
+        val ordered = if (shuffle) smartOrder(songs) else songs
         shuffled = shuffle
-        playQueue(listSongs, 0)
-        if (shuffle) toast("Shuffled ${listSongs.size} songs — queue shows the new order")
+        queue.clear()
+        queue.addAll(ordered)
+        val p = svc?.player ?: run { toast("Player is starting. Try again in a second."); return }
+        p.setMediaItems(ordered.map(::toItem), 0, 0)
+        p.repeatMode = REPEAT_MODE_OFF
+        p.prepare()
+        p.play()
+        toast(if (shuffle) "Shuffled." else "Playing all music.")
+        refreshMini()
     }
 
-    /** Shuffle = the queue itself is reordered and the screen shows it. Tap again = re-shuffle. */
+    /**
+     * Smart Shuffle. Each song carries a lifetime play count. Songs played
+     * less get a bigger slice of the odds, so the mix stays fresh instead
+     * of repeating favorites. When everything has played once, counts reset.
+     */
+    private fun smartOrder(list: List<Song>): List<Song> {
+        val counts = db.playCounts()
+        val rnd = Random(System.currentTimeMillis())
+        return list.map { s ->
+            val weight = 1.0 / (1 + (counts[s.mediaId] ?: 0))
+            s to Math.pow(rnd.nextDouble().coerceAtLeast(1e-9), 1.0 / weight)
+        }.sortedBy { it.second }.map { it.first }
+    }
+
+    /** Shuffle means the queue itself is reordered and the screen shows it. Tap again to re-shuffle. */
     private fun shuffleQueue() {
         val p = svc?.player ?: return
         if (queue.isEmpty()) {
-            toast("Queue is empty — play something first")
+            toast("Queue is empty. Play something first.")
             return
         }
         val curIdx = p.currentMediaItemIndex.coerceAtLeast(0)
         val cur = queue.getOrNull(curIdx)
         val rest = queue.toMutableList()
         if (cur != null) rest.removeAll { it.mediaId == cur.mediaId }
-        Collections.shuffle(rest)
+        val ordered = smartOrder(rest)
         val wasPlaying = p.isPlaying
         queue.clear()
         if (cur != null) queue.add(cur)
-        queue.addAll(rest)
+        queue.addAll(ordered)
         shuffled = true
         p.setMediaItems(queue.map(::toItem), 0, p.currentPosition)
         p.prepare()
         if (wasPlaying) p.play()
         refreshQueueList()
-        toast("Re-shuffled — this is the new play order")
+        toast("Shuffled.")
     }
 
-    /** Adding to the queue always lands right after the current song, even shuffled. */
+    /** Adding to the queue always lands right after the current song, even when shuffled. */
     private fun playNext(song: Song) {
         val p = svc?.player ?: return
         if (queue.isEmpty()) {
@@ -478,9 +598,10 @@ class MainActivity : AppCompatActivity() {
         val item = p?.currentMediaItem
         val song = item?.mediaId?.toLongOrNull()?.let { byId[it] }
         miniTitle.text = song?.title ?: "Nothing playing"
-        miniSub.text = song?.let { "${it.artist} • boost ${(vol.boost * 100).roundToInt()}%" }
+        miniSub.text = song?.let { "${it.artist} | Boost ${(vol.boost * 100).roundToInt()}%" }
             ?: "Tap Play all music to start"
-        miniPlayPause.text = if (p?.isPlaying == true) "⏸" else "▶"
+        miniPlayPause.setImageResource(if (p?.isPlaying == true) R.drawable.ic_pause else R.drawable.ic_play)
+        updateStatus()
     }
 
     private val progressTick = object : Runnable {
@@ -503,12 +624,12 @@ class MainActivity : AppCompatActivity() {
 
     private fun songMenu(song: Song) {
         val items = arrayOf(
-            "▶ Play next (right after this song)",
-            "＋ Add to queue",
-            "＋ Add to playlist…",
-            "✎ Edit details (title, artist…)",
-            "🗑 Delete song + file",
-            "ℹ Details"
+            "Play next",
+            "Add to queue",
+            "Add to playlist",
+            "Edit details",
+            "Delete song and file",
+            "Details"
         )
         AlertDialog.Builder(this)
             .setTitle(song.title)
@@ -550,7 +671,7 @@ class MainActivity : AppCompatActivity() {
         val eArtist = field("Artist", song.artist)
         val eAlbum = field("Album", song.album)
         box.addView(TextView(this).apply {
-            text = "Plain and simple: whatever you type here is what the app (and most other players) will show."
+            text = "Whatever you type here is what BlissPlayer and most other players will show."
             textSize = 12f
         })
         AlertDialog.Builder(this)
@@ -564,17 +685,17 @@ class MainActivity : AppCompatActivity() {
                     null, null, null
                 )
                 CoroutineScope(Dispatchers.Main).launch {
-                    toast("Saving…")
+                    toast("Saving.")
                     when (val r = TagTools.writeTags(this@MainActivity, song, edit)) {
                         is TagTools.WriteResult.Ok -> {
-                            toast("Saved ✓")
+                            toast("Saved.")
                             scan()
                         }
                         is TagTools.WriteResult.NeedsPermission -> {
                             pendingRetry = { tagEditorSaveRetry(song, edit) }
                             senderLauncher.launch(IntentSenderRequest.Builder(r.sender).build())
                         }
-                        is TagTools.WriteResult.Failed -> toast("Couldn't save: ${r.msg}")
+                        is TagTools.WriteResult.Failed -> toast("Could not save: ${r.msg}")
                     }
                 }
             }
@@ -586,12 +707,12 @@ class MainActivity : AppCompatActivity() {
         CoroutineScope(Dispatchers.Main).launch {
             when (val r = TagTools.writeTags(this@MainActivity, song, edit)) {
                 is TagTools.WriteResult.Ok -> {
-                    toast("Saved ✓")
+                    toast("Saved.")
                     scan()
                 }
                 is TagTools.WriteResult.NeedsPermission ->
                     senderLauncher.launch(IntentSenderRequest.Builder(r.sender).build())
-                is TagTools.WriteResult.Failed -> toast("Couldn't save: ${r.msg}")
+                is TagTools.WriteResult.Failed -> toast("Could not save: ${r.msg}")
             }
         }
     }
@@ -599,12 +720,12 @@ class MainActivity : AppCompatActivity() {
     private fun deleteConfirm(song: Song) {
         AlertDialog.Builder(this)
             .setTitle("Delete this song?")
-            .setMessage("“${song.title}” will be removed from the app AND the file deleted from your phone. This can't be undone.")
-            .setPositiveButton("Delete it") { _, _ ->
+            .setMessage("This removes it from the app and deletes the file from your phone. This cannot be undone.")
+            .setPositiveButton("Delete") { _, _ ->
                 CoroutineScope(Dispatchers.Main).launch {
                     when (val r = TagTools.delete(this@MainActivity, song)) {
                         is TagTools.WriteResult.Ok -> {
-                            toast("Deleted")
+                            toast("Deleted.")
                             queue.removeAll { it.mediaId == song.mediaId }
                             syncPlayerToQueue()
                             scan()
@@ -613,7 +734,7 @@ class MainActivity : AppCompatActivity() {
                             pendingRetry = { deleteRetry(song) }
                             senderLauncher.launch(IntentSenderRequest.Builder(r.sender).build())
                         }
-                        is TagTools.WriteResult.Failed -> toast("Couldn't delete: ${r.msg}")
+                        is TagTools.WriteResult.Failed -> toast("Could not delete: ${r.msg}")
                     }
                 }
             }
@@ -625,12 +746,12 @@ class MainActivity : AppCompatActivity() {
         CoroutineScope(Dispatchers.Main).launch {
             when (val r = TagTools.delete(this@MainActivity, song)) {
                 is TagTools.WriteResult.Ok -> {
-                    toast("Deleted")
+                    toast("Deleted.")
                     scan()
                 }
                 is TagTools.WriteResult.NeedsPermission ->
                     senderLauncher.launch(IntentSenderRequest.Builder(r.sender).build())
-                is TagTools.WriteResult.Failed -> toast("Couldn't delete: ${r.msg}")
+                is TagTools.WriteResult.Failed -> toast("Could not delete: ${r.msg}")
             }
         }
     }
@@ -645,7 +766,7 @@ class MainActivity : AppCompatActivity() {
     // ---------- playlists ----------
 
     private fun createPlaylistDialog(firstSong: Long?) {
-        val input = EditText(this).apply { hint = "e.g. Car bangers" }
+        val input = EditText(this).apply { hint = "Example: Car bangers" }
         AlertDialog.Builder(this)
             .setTitle("New playlist")
             .setView(pad(input))
@@ -653,7 +774,7 @@ class MainActivity : AppCompatActivity() {
                 val name = input.text.toString().ifBlank { "Playlist" }
                 val id = db.createPlaylist(name)
                 if (firstSong != null) db.addToPlaylist(id, listOf(firstSong))
-                toast("Playlist “$name” ready")
+                toast("Playlist $name is ready.")
                 if (tab == 3) render()
             }
             .setNegativeButton("Cancel", null)
@@ -662,14 +783,14 @@ class MainActivity : AppCompatActivity() {
 
     private fun addToPlaylistDialog(ids: List<Long>) {
         val pls = db.playlists().toMutableList()
-        val names = (pls.map { it.second } + "＋ New playlist").toTypedArray()
+        val names = (pls.map { it.second } + "New playlist").toTypedArray()
         AlertDialog.Builder(this)
             .setTitle("Add to playlist")
             .setItems(names) { _, which ->
                 if (which == pls.size) createPlaylistDialog(ids.firstOrNull())
                 else {
                     db.addToPlaylist(pls[which].first, ids)
-                    toast("Added to “${pls[which].second}” ✓")
+                    toast("Added to ${pls[which].second}.")
                     if (tab == 3) render()
                 }
             }
@@ -679,11 +800,11 @@ class MainActivity : AppCompatActivity() {
     private fun playlistMenu(id: Long, name: String) {
         AlertDialog.Builder(this)
             .setTitle(name)
-            .setItems(arrayOf("▶ Play this playlist", "✎ Rename", "🗑 Delete playlist")) { _, which ->
+            .setItems(arrayOf("Play this playlist", "Rename", "Delete playlist")) { _, which ->
                 when (which) {
                     0 -> {
                         val listSongs = db.songsIn(id).mapNotNull { byId[it] }
-                        if (listSongs.isEmpty()) toast("Playlist is empty (songs may have moved)")
+                        if (listSongs.isEmpty()) toast("Playlist is empty. Its songs may have moved.")
                         else playQueue(listSongs, 0)
                     }
                     1 -> {
@@ -697,8 +818,8 @@ class MainActivity : AppCompatActivity() {
                             .setNegativeButton("Cancel", null).show()
                     }
                     2 -> AlertDialog.Builder(this)
-                        .setTitle("Delete “$name”?")
-                        .setMessage("The playlist goes away, your songs stay.")
+                        .setTitle("Delete $name?")
+                        .setMessage("The playlist goes away. Your songs stay.")
                         .setPositiveButton("Delete") { _, _ ->
                             db.deletePlaylist(id)
                             render()
@@ -713,7 +834,7 @@ class MainActivity : AppCompatActivity() {
         val inA = songs.filter { it.artist == artist }
         AlertDialog.Builder(this)
             .setTitle(artist)
-            .setItems(arrayOf("▶ Play all", "＋ Add all to queue", "＋ Add all to playlist…")) { _, which ->
+            .setItems(arrayOf("Play all", "Add all to queue", "Add all to playlist")) { _, which ->
                 when (which) {
                     0 -> playQueue(inA, 0)
                     1 -> inA.forEach { addToQueueEnd(it) }
@@ -727,7 +848,7 @@ class MainActivity : AppCompatActivity() {
         val inA = songs.filter { it.album == album }
         AlertDialog.Builder(this)
             .setTitle(album)
-            .setItems(arrayOf("▶ Play album", "＋ Add all to queue", "＋ Add all to playlist…")) { _, which ->
+            .setItems(arrayOf("Play album", "Add all to queue", "Add all to playlist")) { _, which ->
                 when (which) {
                     0 -> playQueue(inA, 0)
                     1 -> inA.forEach { addToQueueEnd(it) }
@@ -748,9 +869,10 @@ class MainActivity : AppCompatActivity() {
     private var shuffleBtn: Button? = null
 
     private fun openNowPlaying() {
+        syncQueueFromPlayer()
         val p = svc?.player
         if (p == null || queue.isEmpty()) {
-            toast("Nothing in the queue — tap a song or Play all music")
+            toast("Nothing in the queue. Tap a song or Play all music.")
             return
         }
         val box = LinearLayout(this).apply {
@@ -764,12 +886,14 @@ class MainActivity : AppCompatActivity() {
             typeface = android.graphics.Typeface.DEFAULT_BOLD
         })
         box.addView(TextView(this).apply {
-            text = song?.let { "${it.artist} • ${it.album}" } ?: ""
+            text = song?.let { "${it.artist} | ${it.album}" } ?: ""
             textSize = 13f
         })
         nowSeek = SeekBar(this).apply {
             max = (p.duration.coerceAtLeast(0)).toInt()
             progress = p.currentPosition.toInt().coerceIn(0, max)
+            progressDrawable = xpProgress()
+            thumb = xpThumb()
             setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
                 override fun onProgressChanged(s: SeekBar?, v: Int, fromUser: Boolean) {
                     if (fromUser) p.seekTo(v.toLong())
@@ -784,21 +908,46 @@ class MainActivity : AppCompatActivity() {
         box.addView(nowTime)
 
         val row1 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        val bPrev = Button(this).apply { text = "⏮"; setOnClickListener { p.seekToPrevious() } }
+        val bPrev = ImageButton(this).apply {
+            setImageResource(R.drawable.ic_prev)
+            background = xpBtnBg()
+            setColorFilter(iconColor())
+            contentDescription = "Previous song"
+            setPadding(dp(12), dp(12), dp(12), dp(12))
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            setOnClickListener { p.seekToPrevious() }
+        }
         nowPlayBtn = Button(this).apply {
-            text = if (p.isPlaying) "⏸ Pause" else "▶ Play"
+            text = if (p.isPlaying) "Pause" else "Play"
+            background = xpBtnBg()
+            setTextColor(iconColor())
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 2f)
             setOnClickListener { togglePlay() }
         }
-        val bNext = Button(this).apply { text = "⏭"; setOnClickListener { p.seekToNext() } }
-        listOf(bPrev, nowPlayBtn!!, bNext).forEach {
-            it.layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-            row1.addView(it)
+        setPlayBtnIcon(p.isPlaying)
+        val bNext = ImageButton(this).apply {
+            setImageResource(R.drawable.ic_next)
+            background = xpBtnBg()
+            setColorFilter(iconColor())
+            contentDescription = "Next song"
+            setPadding(dp(12), dp(12), dp(12), dp(12))
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            setOnClickListener { p.seekToNext() }
         }
+        row1.addView(bPrev)
+        row1.addView(nowPlayBtn)
+        row1.addView(bNext)
         box.addView(row1)
 
         val row2 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        loopBtn = Button(this).apply { setOnClickListener { cycleRepeat() } }
+        loopBtn = Button(this).apply {
+            background = xpBtnBg()
+            setTextColor(iconColor())
+            setOnClickListener { cycleRepeat() }
+        }
         shuffleBtn = Button(this).apply {
+            background = xpBtnBg()
+            setTextColor(iconColor())
             setOnClickListener {
                 shuffleQueue()
                 text = shuffleLabel()
@@ -813,7 +962,7 @@ class MainActivity : AppCompatActivity() {
         box.addView(row2)
 
         box.addView(TextView(this).apply {
-            text = "What plays next — this list IS the play order."
+            text = "Up next, in order. Tap to jump, swipe to remove, drag to reorder."
             textSize = 12f
         })
         val qv = RecyclerView(this).apply {
@@ -829,11 +978,12 @@ class MainActivity : AppCompatActivity() {
                 val idx = queue.indexOfFirst { it.mediaId == (r as Row.SongRow).song.mediaId }
                 if (idx >= 0) p.seekTo(idx, 0)
             },
-            onLong = { r ->
+            onMenu = { r ->
                 val s = (r as Row.SongRow).song
                 queue.removeAll { it.mediaId == s.mediaId }
                 syncPlayerToQueue()
                 refreshQueueList()
+                toast("Removed ${s.title}.")
             }
         )
         qv.adapter = queueAdapter
@@ -843,8 +993,9 @@ class MainActivity : AppCompatActivity() {
             override fun onMove(rv: RecyclerView, h: RecyclerView.ViewHolder, t: RecyclerView.ViewHolder): Boolean {
                 val a = h.bindingAdapterPosition
                 val b = t.bindingAdapterPosition
-                Collections.swap(queue, a, b)
+                java.util.Collections.swap(queue, a, b)
                 queueAdapter!!.notifyItemMoved(a, b)
+                syncPlayerToQueueSilent()
                 return true
             }
 
@@ -858,6 +1009,7 @@ class MainActivity : AppCompatActivity() {
         box.addView(qv)
 
         queueDialog = AlertDialog.Builder(this)
+            .setTitle(R.string.queue_title)
             .setView(box)
             .setPositiveButton("Close", null)
             .setOnDismissListener {
@@ -867,6 +1019,16 @@ class MainActivity : AppCompatActivity() {
                 nowPlayBtn = null
             }
             .show()
+    }
+
+    /** Reorder during drag without restarting the song. */
+    private fun syncPlayerToQueueSilent() {
+        val p = svc?.player ?: return
+        val idx = p.currentMediaItemIndex.coerceAtLeast(0)
+        val pos = p.currentPosition
+        p.setMediaItems(queue.map(::toItem), idx, pos)
+        p.prepare()
+        p.play()
     }
 
     private fun refreshQueueList() {
@@ -886,32 +1048,42 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun setPlayBtnIcon(isPlaying: Boolean) {
+        val b = nowPlayBtn ?: return
+        b.text = if (isPlaying) "Pause" else "Play"
+        val d = ContextCompat.getDrawable(this, if (isPlaying) R.drawable.ic_pause else R.drawable.ic_play)!!.mutate()
+        d.setTint(iconColor())
+        b.setCompoundDrawablesWithIntrinsicBounds(d, null, null, null)
+        b.compoundDrawablePadding = dp(8)
+    }
+
     // ---------- More pane (settings, boost, equalize, help) ----------
 
     private var boostSeek: SeekBar? = null
     private var boostLabel: TextView? = null
     private var deviceLabel: TextView? = null
+    private var fullscreenBtn: Button? = null
 
     private fun buildMorePane() {
         moreBox.removeAllViews()
         moreBox.addView(section("Your music"))
         moreBox.addView(xpBtn("Scan for music").apply {
             setOnClickListener {
-                toast("Scanning…")
+                toast("Scanning.")
                 scan()
             }
         })
         moreBox.addView(xpBtn("Choose a folder (optional)").apply {
             setOnClickListener {
                 runCatching { folderLauncher.launch(null) }
-                    .onFailure { toast("No file picker on this device — scan-all stays on.") }
+                    .onFailure { toast("No file picker on this device. Scan-all stays on.") }
             }
         })
         val folders = prefs.getStringSet("folders", emptySet())!!
         moreBox.addView(TextView(this).apply {
             text = if (folders.isEmpty())
-                "Looking everywhere on this phone automatically (mp3, m4a, opus, ogg, flac, wav…)."
-            else "Only these folders:\n" + folders.joinToString("\n") + "\n(tap Clear to go back to everywhere)"
+                "Looks everywhere on this phone automatically (mp3, m4a, opus, ogg, flac, wav)."
+            else "Only these folders:\n" + folders.joinToString("\n")
             textSize = 12f
         })
         if (folders.isNotEmpty()) moreBox.addView(xpBtn("Clear folders (scan everything)").apply {
@@ -922,14 +1094,16 @@ class MainActivity : AppCompatActivity() {
             }
         })
 
-        moreBox.addView(section("Boost — hear it in the car"))
+        moreBox.addView(section("Boost for the car"))
         deviceLabel = TextView(this).apply { textSize = 13f }
         moreBox.addView(deviceLabel)
         boostLabel = TextView(this).apply { textSize = 14f }
         moreBox.addView(boostLabel)
         boostSeek = SeekBar(this).apply {
-            max = 375 // 25%..400%
+            max = 375 // 25% to 400%
             progress = ((vol.boost * 100).roundToInt() - 25).coerceIn(0, 375)
+            progressDrawable = xpProgress()
+            thumb = xpThumb()
             setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
                 override fun onProgressChanged(s: SeekBar?, v: Int, fromUser: Boolean) {
                     if (fromUser) vol.setBoost((v + 25) / 100f)
@@ -949,14 +1123,14 @@ class MainActivity : AppCompatActivity() {
         }
         moreBox.addView(presets)
         moreBox.addView(TextView(this).apply {
-            text = "Your car remembers its own boost, headphones remember theirs. Past 150% the app caps harsh peaks so nothing crackles."
+            text = "Your car keeps its own boost and your headphones keep theirs. Past 150% the harsh peaks are capped so nothing crackles."
             textSize = 12f
         })
         updateBoostViews()
 
-        moreBox.addView(section("One-tap loudness fix"))
+        moreBox.addView(section("Loudness"))
         moreBox.addView(TextView(this).apply {
-            text = "YouTube songs are all over the place volume-wise. Press the button once: BlissPlayer listens to every song, finds the average, turns the quiet ones up and the loud ones down. Nothing is rewritten and you can undo it."
+            text = "Songs from YouTube are all over the place volume wise. Press the button once and BlissPlayer samples every song, finds the average, and turns the quiet ones up and the loud ones down. Nothing is rewritten, and Undo is one tap. Songs already done are skipped unless they changed."
             textSize = 12f
         })
         moreBox.addView(xpBtn(getString(R.string.equalize_all)).apply {
@@ -966,50 +1140,59 @@ class MainActivity : AppCompatActivity() {
             setOnClickListener {
                 db.clearGains()
                 svc?.refreshGains()
-                toast("Equalize undone — back to original volumes")
+                toast("Equalize undone. Back to original volumes.")
             }
         })
 
-        moreBox.addView(section("Look & feel"))
-        val themeBtn = xpBtn(if (dark) "Switch to light XP" else "Switch to dark XP")
+        moreBox.addView(section("Look and feel"))
+        val themeBtn = xpBtn(if (dark) "Light XP mode" else "Dark XP mode")
         themeBtn.setOnClickListener {
             prefs.edit().putBoolean("dark", !dark).apply()
             recreate()
         }
         moreBox.addView(themeBtn)
+        val fs = prefs.getBoolean("fullscreen", false)
+        fullscreenBtn = xpBtn(if (fs) getString(R.string.fullscreen_on) else getString(R.string.fullscreen_off))
+        fullscreenBtn!!.setOnClickListener {
+            val now = !prefs.getBoolean("fullscreen", false)
+            prefs.edit().putBoolean("fullscreen", now).apply()
+            applyFullscreen()
+            fullscreenBtn!!.text = if (now) getString(R.string.fullscreen_on) else getString(R.string.fullscreen_off)
+        }
+        moreBox.addView(fullscreenBtn)
 
-        moreBox.addView(section(getString(R.string.help_title)))
+        moreBox.addView(section("Help"))
         moreBox.addView(TextView(this).apply {
-            text = "1. Copy songs anywhere on the phone (Music folder is fine).\n" +
-                "2. Tap Scan for music.\n" +
-                "3. Tap ▶ Play all music — or Shuffle everything.\n" +
-                "4. In the car? Set Boost to ~200% once; BlissPlayer remembers it.\n" +
+            text = "1. Copy songs anywhere on the phone. The Music folder is fine.\n" +
+                "2. Open More and tap Scan for music.\n" +
+                "3. Tap Play all music, or Shuffle everything.\n" +
+                "4. In the car, set Boost near 200 percent once. BlissPlayer remembers it.\n" +
                 "5. Volumes jumping between songs? Run Equalize once.\n" +
-                "6. Hold any song for play-next, playlists, edit, delete."
+                "6. Tap the three dots on any song for play next, playlists, edit, delete."
             textSize = 13f
         })
         moreBox.addView(TextView(this).apply {
-            text = "BlissPlayer v0.1 — tiny, offline, no ads, no accounts. Placeholder icon until yours lands."
+            text = "BlissPlayer 0.2. Small, offline, no accounts, no ads."
             textSize = 11f
         })
     }
 
     private fun updateBoostViews() {
         val pct = (vol.boost * 100).roundToInt()
-        boostLabel?.text = "Boost: $pct%" + if (pct > 150) " — careful, loud!" else ""
+        boostLabel?.text = "Boost: $pct percent" + if (pct > 150) " (loud, peaks capped)" else ""
         boostSeek?.let { if ((it.progress + 25) != pct) it.progress = (pct - 25).coerceIn(0, 375) }
-        deviceLabel?.text = "Output: ${vol.currentDevice} (auto-remembers per device)"
+        deviceLabel?.text = "Output: ${vol.currentDevice} (remembered per device)"
         refreshMini()
     }
 
     private fun equalizeConfirm() {
         if (songs.isEmpty()) {
-            toast("Scan your music first")
+            toast("Scan your music first.")
             return
         }
         AlertDialog.Builder(this)
             .setTitle("Equalize ${songs.size} songs?")
-            .setMessage("Takes a few minutes in the background. You can keep using the app. Nothing about your files changes — Undo is one tap.")
+            .setMessage("This runs in the background and you can keep using the app. Nothing about your files changes, and Undo is one tap.")
             .setPositiveButton("Equalize") { _, _ -> runEqualize() }
             .setNegativeButton("Not now", null)
             .show()
@@ -1018,9 +1201,9 @@ class MainActivity : AppCompatActivity() {
     private fun runEqualize() {
         val bar = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
             max = 100
-            progressDrawable = ContextCompat.getDrawable(this@MainActivity, R.drawable.xp_progress)
+            progressDrawable = xpProgress()
         }
-        val label = TextView(this).apply { text = "Starting…" }
+        val label = TextView(this).apply { text = "Starting." }
         val box = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(16), dp(16), dp(16), dp(16))
@@ -1028,53 +1211,65 @@ class MainActivity : AppCompatActivity() {
             addView(bar)
         }
         val dlg = AlertDialog.Builder(this)
-            .setTitle("Equalizing…")
+            .setTitle("Equalizing")
             .setView(box)
             .setNegativeButton("Cancel") { _, _ -> eqJob?.cancel() }
             .setCancelable(false)
             .show()
         eqJob = CoroutineScope(Dispatchers.Main).launch {
+            val cached = db.getMeasures().mapValues { LoudnessScanner.Cached(it.value.first, it.value.second) }
             val res = LoudnessScanner.equalizeAll(
                 this@MainActivity, songs,
+                cached = cached,
                 putGain = { id, mult -> db.putGain(id, mult) },
+                putCache = { id, rms, mod -> db.putMeasure(id, rms, mod) },
                 onProgress = { done, total, title ->
                     bar.max = total
                     bar.progress = done
-                    label.text = "Listening: $title"
+                    label.text = "Listening ($done of $total): $title"
                 }
             )
             runCatching { dlg.dismiss() }
             svc?.refreshGains()
+            val skippedTxt = if (res.skipped > 0) ", skipped ${res.skipped}" else ""
+            val reusedTxt = if (res.reused > 0) " ${res.reused} reused from last time." else ""
             AlertDialog.Builder(this@MainActivity)
-                .setTitle("Done ✓")
+                .setTitle("Done")
                 .setMessage(
-                    "Checked ${res.measured} songs.\nTurned up ${res.raised}, turned down ${res.lowered}" +
-                        (if (res.skipped > 0) ", skipped ${res.skipped} (couldn't read)." else ".") +
-                        "\nFrom now on everything plays at the same average volume — on top of your Boost."
+                    "Checked ${res.measured} songs.$reusedTxt Turned up ${res.raised}, turned down ${res.lowered}$skippedTxt. " +
+                        "From now on everything plays at the same average volume, on top of your Boost."
                 )
-                .setPositiveButton("Nice", null)
+                .setPositiveButton("OK", null)
                 .show()
         }
     }
 
     // ---------- small helpers ----------
 
+    private fun iconColor() = if (dark) 0xFFE8E8E8.toInt() else 0xFF000000.toInt()
+
+    private fun xpBtnBg() = ContextCompat.getDrawable(
+        this, if (dark) R.drawable.xp_button_dark else R.drawable.xp_button
+    )!!
+
+    private fun xpProgress() = ContextCompat.getDrawable(this, R.drawable.xp_progress_seg)!!
+
+    private fun xpThumb() = ContextCompat.getDrawable(this, R.drawable.xp_thumb)!!
+
     private fun section(t: String): TextView =
         TextView(this).apply {
             text = t
             textSize = 15f
             typeface = android.graphics.Typeface.DEFAULT_BOLD
+            setTextColor(iconColor())
             setPadding(0, dp(12), 0, dp(4))
         }
 
     private fun xpBtn(t: String): Button =
         Button(this, null, android.R.attr.buttonStyle).apply {
             text = t
-            background = ContextCompat.getDrawable(
-                this@MainActivity,
-                if (dark) R.drawable.xp_button_dark else R.drawable.xp_button
-            )
-            setTextColor(if (dark) 0xFFE8E8E8.toInt() else 0xFF000000.toInt())
+            background = xpBtnBg()
+            setTextColor(iconColor())
         }
 
     private fun pad(v: View): View =
@@ -1088,21 +1283,36 @@ class MainActivity : AppCompatActivity() {
     private fun toast(m: String) = Toast.makeText(this, m, Toast.LENGTH_SHORT).show()
 
     private fun skinStatic() {
-        titleBar.setBackgroundResource(if (dark) R.drawable.xp_title_bar_dark else R.drawable.xp_title_bar)
+        titleBarWrap.setBackgroundResource(if (dark) R.drawable.xp_title_bar_dark else R.drawable.xp_title_bar)
         findViewById<LinearLayout>(R.id.miniPlayer).setBackgroundResource(
             if (dark) R.drawable.xp_panel_dark else R.drawable.xp_panel
         )
+        statusStrip.setBackgroundResource(if (dark) R.drawable.xp_status_dark else R.drawable.xp_status)
+        statusStrip.setTextColor(iconColor())
         listOf(
             R.id.tabSongs, R.id.tabArtists, R.id.tabAlbums, R.id.tabPlaylists, R.id.tabMore,
-            R.id.btnShuffleAll, R.id.miniPlayPause, R.id.miniNext, R.id.miniQueue
+            R.id.btnShuffleAll
         ).forEach { id ->
             findViewById<Button>(id).setBackgroundResource(
                 if (dark) R.drawable.xp_button_dark else R.drawable.xp_button
             )
+            findViewById<Button>(id).setTextColor(iconColor())
+        }
+        findViewById<Button>(R.id.btnPlayAll).setTextColor(0xFFFFFFFF.toInt())
+        mapOf(
+            R.id.miniPlayPause to R.drawable.ic_play,
+            R.id.miniNext to R.drawable.ic_next,
+            R.id.miniQueue to R.drawable.ic_queue
+        ).forEach { (id, icon) ->
+            findViewById<ImageButton>(id).apply {
+                setBackgroundResource(if (dark) R.drawable.xp_button_dark else R.drawable.xp_button)
+                setImageResource(icon)
+                setColorFilter(iconColor())
+            }
         }
     }
 
-    /** content://…/tree/primary:Music → /storage/emulated/0/Music (primary volume only). */
+    /** content://.../tree/primary:Music to /storage/emulated/0/Music (primary volume only). */
     private fun treeUriToPath(uri: Uri): String? {
         return try {
             val docId = DocumentsContract.getTreeDocumentId(uri) ?: return null

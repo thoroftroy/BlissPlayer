@@ -10,7 +10,9 @@ data class Song(
     val album: String,
     val durationMs: Long,
     val sizeBytes: Long,
-    val mimeType: String?
+    val mimeType: String?,
+    /** MediaStore DATE_MODIFIED (seconds). Used to skip re-measuring in Equalize. */
+    val modified: Long = 0L
 ) {
     val sortTitle: String get() = title.lowercase()
 }

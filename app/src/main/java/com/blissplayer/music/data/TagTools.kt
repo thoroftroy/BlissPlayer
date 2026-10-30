@@ -32,7 +32,7 @@ object TagTools {
 
     sealed interface WriteResult {
         data object Ok : WriteResult
-        /** System needs one tap to grant write access — Activity must fire [sender] then retry. */
+        /** System needs one tap to grant write access, Activity must fire [sender] then retry. */
         data class NeedsPermission(val sender: IntentSender) : WriteResult
         data class Failed(val msg: String) : WriteResult
     }

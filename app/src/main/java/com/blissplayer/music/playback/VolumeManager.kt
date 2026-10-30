@@ -7,12 +7,13 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.content.SharedPreferences
 import android.media.AudioManager
+import android.os.Build
 import androidx.core.content.ContextCompat
 import com.blissplayer.music.data.BlissDb
 
 /**
  * Master amp ("Boost") with per-device memory.
- * Your car needs ~200% but headphones don't — BlissPlayer remembers each
+ * Your car needs ~200% but headphones don't, BlissPlayer remembers each
  * Bluetooth device's boost and restores it automatically on connect.
  * "Speaker" (phone speaker / wired) is stored under its own key.
  */
@@ -37,8 +38,12 @@ class VolumeManager(
     private val btReceiver = object : BroadcastReceiver() {
         override fun onReceive(c: Context, intent: Intent) {
             if (intent.action == BluetoothDevice.ACTION_ACL_CONNECTED) {
-                val dev: BluetoothDevice? =
+                val dev: BluetoothDevice? = if (Build.VERSION.SDK_INT >= 33) {
+                    intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE, BluetoothDevice::class.java)
+                } else {
+                    @Suppress("DEPRECATION")
                     intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE)
+                }
                 val name = runCatching { dev?.name }.getOrNull()?.takeIf { !it.isNullOrBlank() }
                     ?: dev?.address ?: return
                 setDevice("BT: $name", saveManual = true)

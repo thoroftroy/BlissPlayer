@@ -4,25 +4,43 @@
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:orientation="vertical"
-    android:padding="8dp">
+    android:paddingLeft="8dp"
+    android:paddingRight="8dp">
 
-    <!-- XP window title bar -->
-    <TextView
-        android:id="@+id/titleBar"
+    <!-- XP window title bar with icon -->
+    <LinearLayout
+        android:id="@+id/titleBarWrap"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:background="@drawable/xp_title_bar"
-        android:padding="10dp"
-        android:text="BlissPlayer"
-        android:textAppearance="@style/XpTitleText" />
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:padding="6dp">
+
+        <ImageView
+            android:layout_width="22dp"
+            android:layout_height="22dp"
+            android:contentDescription="BlissPlayer icon"
+            android:src="@mipmap/ic_launcher" />
+
+        <TextView
+            android:id="@+id/titleBar"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="8dp"
+            android:layout_weight="1"
+            android:singleLine="true"
+            android:text="BlissPlayer"
+            android:textAppearance="@style/XpTitleText" />
+    </LinearLayout>
 
     <!-- Tab row -->
     <LinearLayout
         android:id="@+id/tabRow"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:orientation="horizontal"
-        android:layout_marginTop="6dp">
+        android:layout_marginTop="6dp"
+        android:orientation="horizontal">
 
         <Button android:id="@+id/tabSongs" android:layout_width="0dp" android:layout_height="wrap_content"
             android:layout_weight="1" android:text="@string/tab_songs" android:background="@drawable/xp_button"
@@ -45,8 +63,8 @@
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:orientation="horizontal"
-        android:layout_marginTop="6dp">
+        android:layout_marginTop="6dp"
+        android:orientation="horizontal">
 
         <Button android:id="@+id/btnPlayAll" android:layout_width="0dp" android:layout_height="wrap_content"
             android:layout_weight="1" android:text="@string/play_all" android:background="@drawable/xp_start"
@@ -84,6 +102,18 @@
             android:orientation="vertical" />
     </ScrollView>
 
+    <!-- XP status strip -->
+    <TextView
+        android:id="@+id/statusStrip"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:background="@drawable/xp_status"
+        android:padding="6dp"
+        android:layout_marginTop="6dp"
+        android:textSize="12sp"
+        android:singleLine="true"
+        android:text="Welcome to BlissPlayer" />
+
     <!-- Mini player -->
     <LinearLayout
         android:id="@+id/miniPlayer"
@@ -108,14 +138,17 @@
                 android:text="Tap Play all music to start" android:singleLine="true" />
         </LinearLayout>
 
-        <Button android:id="@+id/miniPlayPause" android:layout_width="wrap_content"
-            android:layout_height="wrap_content" android:text="⏸" android:background="@drawable/xp_button"
-            android:minWidth="48dp" />
-        <Button android:id="@+id/miniNext" android:layout_width="wrap_content"
-            android:layout_height="wrap_content" android:text="⏭" android:background="@drawable/xp_button"
-            android:minWidth="48dp" />
-        <Button android:id="@+id/miniQueue" android:layout_width="wrap_content"
-            android:layout_height="wrap_content" android:text="☰" android:background="@drawable/xp_button"
-            android:minWidth="48dp" />
+        <ImageButton android:id="@+id/miniPlayPause" android:layout_width="52dp"
+            android:layout_height="44dp" android:background="@drawable/xp_button"
+            android:contentDescription="Play or pause" android:scaleType="center"
+            android:src="@drawable/ic_play" />
+        <ImageButton android:id="@+id/miniNext" android:layout_width="52dp"
+            android:layout_height="44dp" android:background="@drawable/xp_button"
+            android:contentDescription="Next song" android:scaleType="center"
+            android:src="@drawable/ic_next" />
+        <ImageButton android:id="@+id/miniQueue" android:layout_width="52dp"
+            android:layout_height="44dp" android:background="@drawable/xp_button"
+            android:contentDescription="Now playing and queue" android:scaleType="center"
+            android:src="@drawable/ic_queue" />
     </LinearLayout>
 </LinearLayout>

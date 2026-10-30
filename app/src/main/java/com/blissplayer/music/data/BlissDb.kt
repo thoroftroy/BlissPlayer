@@ -6,13 +6,13 @@ import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
 
 /**
- * Tiny hand-rolled SQLite store (no Room — keeps APK small and battery use flat).
+ * Tiny hand-rolled SQLite store (no Room, keeps APK small and battery use flat).
  * Tables:
- *  gains(media_id PRIMARY KEY, gain_mult)      — baked loudness-normalize factors
+ *  gains(media_id PRIMARY KEY, gain_mult)     , baked loudness-normalize factors
  *  playlists(id, name) + playlist_songs(playlist_id, media_id, position)
- *  boost(device_name PRIMARY KEY, gain_mult)   — per-device amp memory (car vs headphones)
+ *  boost(device_name PRIMARY KEY, gain_mult)  , per-device amp memory (car vs headphones)
  */
-class BlissDb(context: Context) : SQLiteOpenHelper(context, "bliss.db", null, 2) {
+class BlissDb(context: Context) : SQLiteOpenHelper(context, "bliss.db", null, 3) {
 
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL("CREATE TABLE gains(media_id INTEGER PRIMARY KEY, gain_mult REAL NOT NULL)")
@@ -20,10 +20,16 @@ class BlissDb(context: Context) : SQLiteOpenHelper(context, "bliss.db", null, 2)
         db.execSQL("CREATE TABLE playlist_songs(playlist_id INTEGER NOT NULL, media_id INTEGER NOT NULL, position INTEGER NOT NULL)")
         db.execSQL("CREATE INDEX idx_ps ON playlist_songs(playlist_id, position)")
         db.execSQL("CREATE TABLE boost(device_name TEXT PRIMARY KEY, gain_mult REAL NOT NULL)")
+        db.execSQL("CREATE TABLE plays(media_id INTEGER PRIMARY KEY, count INTEGER NOT NULL)")
+        db.execSQL("CREATE TABLE measure(media_id INTEGER PRIMARY KEY, rms REAL NOT NULL, modified INTEGER NOT NULL)")
     }
 
     override fun onUpgrade(db: SQLiteDatabase, old: Int, new: Int) {
         if (old < 2) db.execSQL("CREATE TABLE IF NOT EXISTS boost(device_name TEXT PRIMARY KEY, gain_mult REAL NOT NULL)")
+        if (old < 3) {
+            db.execSQL("CREATE TABLE IF NOT EXISTS plays(media_id INTEGER PRIMARY KEY, count INTEGER NOT NULL)")
+            db.execSQL("CREATE TABLE IF NOT EXISTS measure(media_id INTEGER PRIMARY KEY, rms REAL NOT NULL, modified INTEGER NOT NULL)")
+        }
     }
 
     // ---- gains ----
@@ -117,5 +123,44 @@ class BlissDb(context: Context) : SQLiteOpenHelper(context, "bliss.db", null, 2)
             if (c.moveToFirst()) return c.getDouble(0)
         }
         return default
+    }
+
+    // ---- lifetime play counts (Smart Shuffle) ----
+    fun bumpPlay(mediaId: Long) {
+        writableDatabase.execSQL(
+            "INSERT INTO plays(media_id, count) VALUES(?,1) ON CONFLICT(media_id) DO UPDATE SET count=count+1",
+            arrayOf(mediaId)
+        )
+    }
+
+    fun playCounts(): Map<Long, Int> {
+        val m = mutableMapOf<Long, Int>()
+        readableDatabase.rawQuery("SELECT media_id, count FROM plays", null)?.use { c ->
+            while (c.moveToNext()) m[c.getLong(0)] = c.getInt(1)
+        }
+        return m
+    }
+
+    fun resetPlays() = writableDatabase.delete("plays", null, null)
+
+    // ---- loudness measure cache (Equalize) ----
+    fun putMeasure(mediaId: Long, rms: Double, modified: Long) {
+        writableDatabase.insertWithOnConflict(
+            "measure", null,
+            ContentValues().apply {
+                put("media_id", mediaId)
+                put("rms", rms)
+                put("modified", modified)
+            },
+            SQLiteDatabase.CONFLICT_REPLACE
+        )
+    }
+
+    fun getMeasures(): Map<Long, Pair<Double, Long>> {
+        val m = mutableMapOf<Long, Pair<Double, Long>>()
+        readableDatabase.rawQuery("SELECT media_id, rms, modified FROM measure", null)?.use { c ->
+            while (c.moveToNext()) m[c.getLong(0)] = c.getDouble(1) to c.getLong(2)
+        }
+        return m
     }
 }

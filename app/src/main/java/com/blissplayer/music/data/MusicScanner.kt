@@ -30,6 +30,7 @@ object MusicScanner {
             MediaStore.Audio.Media.SIZE,
             MediaStore.Audio.Media.MIME_TYPE,
             MediaStore.Audio.Media.DATA,
+            MediaStore.Audio.Media.DATE_MODIFIED,
             MediaStore.Audio.Media.IS_MUSIC
         )
         // IS_MUSIC=1 keeps ringtones/notifications out; fallback below includes them if empty.
@@ -46,6 +47,7 @@ object MusicScanner {
             val s = c.getColumnIndexOrThrow(MediaStore.Audio.Media.SIZE)
             val m = c.getColumnIndexOrThrow(MediaStore.Audio.Media.MIME_TYPE)
             val p = c.getColumnIndexOrThrow(MediaStore.Audio.Media.DATA)
+            val mod = c.getColumnIndexOrThrow(MediaStore.Audio.Media.DATE_MODIFIED)
             while (c.moveToNext()) {
                 val path: String? = runCatching { c.getString(p) }.getOrNull()
                 val ext = path?.substringAfterLast('.', "")?.lowercase()
@@ -62,7 +64,8 @@ object MusicScanner {
                         album = (c.getString(al) ?: "Unknown album").ifBlank { "Unknown album" },
                         durationMs = runCatching { c.getLong(d) }.getOrDefault(0L),
                         sizeBytes = runCatching { c.getLong(s) }.getOrDefault(0L),
-                        mimeType = runCatching { c.getString(m) }.getOrNull()
+                        mimeType = runCatching { c.getString(m) }.getOrNull(),
+                        modified = runCatching { c.getLong(mod) }.getOrDefault(0L)
                     )
                 )
             }
