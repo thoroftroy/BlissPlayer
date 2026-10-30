@@ -18,6 +18,8 @@ import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.provider.DocumentsContract
+import android.provider.Settings
+import android.text.InputType
 import android.view.View
 import android.widget.Button
 import android.widget.EditText
@@ -35,7 +37,6 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
-import androidx.core.view.WindowInsetsControllerCompat
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.Player
@@ -88,6 +89,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var titleBar: TextView
     private lateinit var titleBarWrap: LinearLayout
     private lateinit var crumb: TextView
+    private lateinit var headerBar: TextView
     private lateinit var statusStrip: TextView
     private lateinit var list: RecyclerView
     private lateinit var morePane: ScrollView
@@ -95,6 +97,8 @@ class MainActivity : AppCompatActivity() {
     private lateinit var miniTitle: TextView
     private lateinit var miniSub: TextView
     private lateinit var miniPlayPause: ImageButton
+    private lateinit var miniProgress: ProgressBar
+    private lateinit var miniTime: TextView
 
     private var svc: PlayerService? = null
     private lateinit var vol: VolumeManager
@@ -151,26 +155,41 @@ class MainActivity : AppCompatActivity() {
 
     private val playerListener = object : Player.Listener {
         override fun onMediaItemTransition(item: MediaItem?, reason: Int) {
+            onTrackChanged(item)
+        }
+
+        override fun onPositionDiscontinuity(
+            oldPosition: Player.PositionInfo,
+            newPosition: Player.PositionInfo,
+            reason: Int
+        ) {
+            // Catches every seek and auto advance, so the title on screen
+            // can never disagree with what is actually playing.
             refreshMini()
-            queueDialog?.let { refreshQueueList() }
-            val id = item?.mediaId?.toLongOrNull()
-            if (id != null && id != lastCountedId) {
-                lastCountedId = id
-                CoroutineScope(Dispatchers.IO).launch {
-                    db.bumpPlay(id)
-                    // Once every song in the library has played at least once,
-                    // wipe the slate so Smart Shuffle stays fresh forever.
-                    val counts = db.playCounts()
-                    if (songs.isNotEmpty() && songs.all { (counts[it.mediaId] ?: 0) > 0 }) {
-                        db.resetPlays()
-                    }
-                }
-            }
         }
 
         override fun onIsPlayingChanged(isPlaying: Boolean) {
             miniPlayPause.setImageResource(if (isPlaying) R.drawable.ic_pause else R.drawable.ic_play)
             setPlayBtnIcon(isPlaying)
+            refreshMini()
+        }
+    }
+
+    private fun onTrackChanged(item: MediaItem?) {
+        refreshMini()
+        queueDialog?.let { refreshQueueList() }
+        val id = item?.mediaId?.toLongOrNull()
+        if (id != null && id != lastCountedId) {
+            lastCountedId = id
+            CoroutineScope(Dispatchers.IO).launch {
+                db.bumpPlay(id)
+                // Once every song in the library has played at least once,
+                // wipe the slate so Smart Shuffle stays fresh forever.
+                val counts = db.playCounts()
+                if (songs.isNotEmpty() && songs.all { (counts[it.mediaId] ?: 0) > 0 }) {
+                    db.resetPlays()
+                }
+            }
         }
     }
 
@@ -192,6 +211,7 @@ class MainActivity : AppCompatActivity() {
         titleBarWrap = findViewById(R.id.titleBarWrap)
         titleBar = findViewById(R.id.titleBar)
         crumb = findViewById(R.id.crumb)
+        headerBar = findViewById(R.id.headerBar)
         statusStrip = findViewById(R.id.statusStrip)
         list = findViewById(R.id.list)
         morePane = findViewById(R.id.morePane)
@@ -199,6 +219,8 @@ class MainActivity : AppCompatActivity() {
         miniTitle = findViewById(R.id.miniTitle)
         miniSub = findViewById(R.id.miniSub)
         miniPlayPause = findViewById(R.id.miniPlayPause)
+        miniProgress = findViewById(R.id.miniProgress)
+        miniTime = findViewById(R.id.miniTime)
 
         // Keep the layout clear of the status bar and gesture bar.
         val root = findViewById<LinearLayout>(R.id.root)
@@ -207,9 +229,9 @@ class MainActivity : AppCompatActivity() {
             v.setPadding(dp(8), b.top + dp(4), dp(8), b.bottom + dp(4))
             insets
         }
-        applyFullscreen()
 
         skinStatic()
+        miniProgress.progressDrawable = xpProgress()
         adapter = LibraryAdapter(dark = dark, onTap = ::onRowTap, onMenu = ::onRowMenu)
         list.layoutManager = LinearLayoutManager(this)
         list.adapter = adapter
@@ -223,7 +245,7 @@ class MainActivity : AppCompatActivity() {
         findViewById<Button>(R.id.btnShuffleAll).setOnClickListener { playAll(shuffle = true) }
         crumb.setOnClickListener { clearDrill() }
         miniPlayPause.setOnClickListener { togglePlay() }
-        findViewById<ImageButton>(R.id.miniNext).setOnClickListener { svc?.player?.seekToNext() }
+        findViewById<ImageButton>(R.id.miniNext).setOnClickListener { skipNext() }
         findViewById<ImageButton>(R.id.miniQueue).setOnClickListener { openNowPlaying() }
         findViewById<LinearLayout>(R.id.miniPlayer).setOnClickListener { openNowPlaying() }
 
@@ -247,6 +269,20 @@ class MainActivity : AppCompatActivity() {
         ticker.post(progressTick)
         buildMorePane()
         lastCrash?.let { showCrashDialog(it) }
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        outState.putLongArray("queue", queue.map { it.mediaId }.toLongArray())
+        outState.putLong("counted", lastCountedId)
+    }
+
+    override fun onDestroy() {
+        ticker.removeCallbacksAndMessages(null)
+        runCatching { unbindService(conn) }
+        vol.stop()
+        eqJob?.cancel()
+        super.onDestroy()
     }
 
     private fun showCrashDialog(log: String) {
@@ -276,30 +312,6 @@ class MainActivity : AppCompatActivity() {
             .show()
     }
 
-    override fun onSaveInstanceState(outState: Bundle) {
-        super.onSaveInstanceState(outState)
-        outState.putLongArray("queue", queue.map { it.mediaId }.toLongArray())
-        outState.putLong("counted", lastCountedId)
-    }
-
-    override fun onDestroy() {
-        ticker.removeCallbacksAndMessages(null)
-        runCatching { unbindService(conn) }
-        vol.stop()
-        eqJob?.cancel()
-        super.onDestroy()
-    }
-
-    private fun applyFullscreen() {
-        val c = WindowInsetsControllerCompat(window, window.decorView)
-        if (prefs.getBoolean("fullscreen", false)) {
-            c.hide(WindowInsetsCompat.Type.systemBars())
-            c.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-        } else {
-            c.show(WindowInsetsCompat.Type.systemBars())
-        }
-    }
-
     // ---------- permissions / scan ----------
 
     private fun ensurePermissions() {
@@ -323,6 +335,11 @@ class MainActivity : AppCompatActivity() {
         if (Build.VERSION.SDK_INT >= 33)
             checkSelfPermission(Manifest.permission.READ_MEDIA_AUDIO) == PackageManager.PERMISSION_GRANTED
         else checkSelfPermission(Manifest.permission.READ_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED
+
+    private fun hasNotifPermission(): Boolean =
+        if (Build.VERSION.SDK_INT >= 33)
+            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
+        else true
 
     private fun scan() {
         if (!hasAudioPermission()) {
@@ -356,11 +373,10 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    /** Rebuild the queue mirror from the player (fixes empty queue after rotate). */
+    /** Rebuild the queue mirror from the player (fixes empty or stale queue). */
     private fun syncQueueFromPlayer() {
         val p = svc?.player ?: return
         if (p.mediaItemCount == 0 || byId.isEmpty()) return
-        if (queue.isNotEmpty()) return
         val ids = (0 until p.mediaItemCount).mapNotNull {
             p.getMediaItemAt(it).mediaId.toLongOrNull()
         }
@@ -369,6 +385,12 @@ class MainActivity : AppCompatActivity() {
             queue.clear()
             queue.addAll(found)
         }
+    }
+
+    /** If mirror and player disagree in size, the player wins. */
+    private fun ensureQueueSync() {
+        val p = svc?.player ?: return
+        if (p.mediaItemCount != queue.size) syncQueueFromPlayer()
     }
 
     private fun restoreQueueIfNeeded() {
@@ -389,7 +411,19 @@ class MainActivity : AppCompatActivity() {
         clearDrill(silent = true)
         morePane.visibility = if (t == 4) View.VISIBLE else View.GONE
         list.visibility = if (t == 4) View.GONE else View.VISIBLE
+        updateTabs()
         if (t == 4) buildMorePane() else render()
+    }
+
+    private val tabIds = listOf(R.id.tabSongs, R.id.tabArtists, R.id.tabAlbums, R.id.tabPlaylists, R.id.tabMore)
+
+    private fun updateTabs() {
+        tabIds.forEachIndexed { i, id ->
+            findViewById<Button>(id).setBackgroundResource(
+                if (i == tab) (if (dark) R.drawable.xp_button_pressed_dark else R.drawable.xp_button_pressed)
+                else (if (dark) R.drawable.xp_button_dark else R.drawable.xp_button)
+            )
+        }
     }
 
     private fun clearDrill(silent: Boolean = false) {
@@ -400,9 +434,13 @@ class MainActivity : AppCompatActivity() {
         if (!silent) render()
     }
 
+    private fun showingSongs(): Boolean =
+        tab == 0 || drillArtist != null || drillAlbum != null || drillPlaylist != null
+
     private fun render() {
         if (tab == 4) return
         titleBar.text = "BlissPlayer: ${listOf("Songs", "Artists", "Albums", "Playlists")[tab]}"
+        headerBar.visibility = if (showingSongs()) View.VISIBLE else View.GONE
         when {
             drillArtist != null -> {
                 val a = drillArtist!!
@@ -455,7 +493,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun updateStatus() {
         val pct = (vol.boost * 100).roundToInt()
-        statusStrip.text = "${songs.size} songs | Boost $pct% | ${vol.currentDevice}"
+        statusStrip.text = "${songs.size} songs | Boost $pct percent | ${vol.currentDevice}"
     }
 
     private fun visibleSongs(): List<Song> =
@@ -562,6 +600,7 @@ class MainActivity : AppCompatActivity() {
     /** Shuffle means the queue itself is reordered and the screen shows it. Tap again to re-shuffle. */
     private fun shuffleQueue() {
         val p = svc?.player ?: return
+        ensureQueueSync()
         if (queue.isEmpty()) {
             toast("Queue is empty. Play something first.")
             return
@@ -586,6 +625,7 @@ class MainActivity : AppCompatActivity() {
     /** Adding to the queue always lands right after the current song, even when shuffled. */
     private fun playNext(song: Song) {
         val p = svc?.player ?: return
+        ensureQueueSync()
         if (queue.isEmpty()) {
             playQueue(listOf(song), 0)
             return
@@ -599,6 +639,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun addToQueueEnd(song: Song) {
         val p = svc?.player ?: return
+        ensureQueueSync()
         if (queue.isEmpty()) {
             playQueue(listOf(song), 0)
             return
@@ -625,6 +666,18 @@ class MainActivity : AppCompatActivity() {
         if (p.isPlaying) p.pause() else p.play()
     }
 
+    private fun skipNext() {
+        val p = svc?.player ?: return
+        ensureQueueSync()
+        p.seekToNextMediaItem()
+    }
+
+    private fun skipPrev() {
+        val p = svc?.player ?: return
+        ensureQueueSync()
+        p.seekToPreviousMediaItem()
+    }
+
     // ---------- mini player / ticker ----------
 
     private fun refreshMini() {
@@ -632,19 +685,36 @@ class MainActivity : AppCompatActivity() {
         val item = p?.currentMediaItem
         val song = item?.mediaId?.toLongOrNull()?.let { byId[it] }
         miniTitle.text = song?.title ?: "Nothing playing"
-        miniSub.text = song?.let { "${it.artist} | Boost ${(vol.boost * 100).roundToInt()}%" }
+        miniSub.text = song?.let { "${it.artist} | Boost ${(vol.boost * 100).roundToInt()} percent" }
             ?: "Tap Play all music to start"
         miniPlayPause.setImageResource(if (p?.isPlaying == true) R.drawable.ic_pause else R.drawable.ic_play)
+        adapter.highlightId = song?.mediaId
+        if (tab != 4) adapter.notifyDataSetChanged()
+        updateProgressViews()
         updateStatus()
+    }
+
+    private fun updateProgressViews() {
+        val p = svc?.player
+        if (p != null && p.duration > 0) {
+            val pos = p.currentPosition.coerceIn(0, p.duration)
+            miniProgress.max = 1000
+            miniProgress.progress = ((pos * 1000) / p.duration).toInt().coerceIn(0, 1000)
+            miniTime.text = fmt(pos)
+            nowSeek?.let {
+                it.max = p.duration.toInt()
+                it.progress = pos.toInt().coerceIn(0, it.max)
+            }
+            nowTime?.text = "${fmt(pos)} / ${fmt(p.duration)}"
+        } else {
+            miniProgress.progress = 0
+            miniTime.text = "0:00"
+        }
     }
 
     private val progressTick = object : Runnable {
         override fun run() {
-            val p = svc?.player
-            if (p != null && nowSeek != null && p.duration > 0) {
-                nowSeek!!.progress = p.currentPosition.toInt().coerceIn(0, p.duration.toInt())
-                nowTime?.text = "${fmt(p.currentPosition)} / ${fmt(p.duration)}"
-            }
+            updateProgressViews()
             ticker.postDelayed(this, 500)
         }
     }
@@ -792,9 +862,12 @@ class MainActivity : AppCompatActivity() {
 
     private fun syncPlayerToQueue() {
         val p = svc?.player ?: return
+        val idx = p.currentMediaItemIndex.coerceAtLeast(0).coerceAtMost(queue.size.coerceAtLeast(1) - 1)
         val pos = p.currentPosition
-        p.setMediaItems(queue.map(::toItem), 0, pos)
+        val wasPlaying = p.isPlaying
+        p.setMediaItems(queue.map(::toItem), idx, pos)
         p.prepare()
+        if (wasPlaying) p.play()
     }
 
     // ---------- playlists ----------
@@ -896,6 +969,7 @@ class MainActivity : AppCompatActivity() {
 
     private var queueDialog: AlertDialog? = null
     private var queueAdapter: LibraryAdapter? = null
+    private var queueListView: RecyclerView? = null
     private var nowSeek: SeekBar? = null
     private var nowTime: TextView? = null
     private var nowPlayBtn: Button? = null
@@ -903,7 +977,7 @@ class MainActivity : AppCompatActivity() {
     private var shuffleBtn: Button? = null
 
     private fun openNowPlaying() {
-        syncQueueFromPlayer()
+        ensureQueueSync()
         val p = svc?.player
         if (p == null || queue.isEmpty()) {
             toast("Nothing in the queue. Tap a song or Play all music.")
@@ -949,7 +1023,7 @@ class MainActivity : AppCompatActivity() {
             contentDescription = "Previous song"
             setPadding(dp(12), dp(12), dp(12), dp(12))
             layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-            setOnClickListener { p.seekToPrevious() }
+            setOnClickListener { skipPrev() }
         }
         nowPlayBtn = Button(this).apply {
             text = if (p.isPlaying) "Pause" else "Play"
@@ -966,7 +1040,7 @@ class MainActivity : AppCompatActivity() {
             contentDescription = "Next song"
             setPadding(dp(12), dp(12), dp(12), dp(12))
             layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-            setOnClickListener { p.seekToNext() }
+            setOnClickListener { skipNext() }
         }
         row1.addView(bPrev)
         row1.addView(nowPlayBtn)
@@ -982,13 +1056,10 @@ class MainActivity : AppCompatActivity() {
         shuffleBtn = Button(this).apply {
             background = xpBtnBg()
             setTextColor(iconColor())
-            setOnClickListener {
-                shuffleQueue()
-                text = shuffleLabel()
-            }
+            text = getString(R.string.shuffle_off)
+            setOnClickListener { shuffleQueue() }
         }
         updateLoopBtn()
-        shuffleBtn!!.text = shuffleLabel()
         listOf(loopBtn!!, shuffleBtn!!).forEach {
             it.layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
             row2.addView(it)
@@ -1005,10 +1076,13 @@ class MainActivity : AppCompatActivity() {
                 LinearLayout.LayoutParams.MATCH_PARENT, dp(220)
             )
         }
+        queueListView = qv
         queueAdapter = LibraryAdapter(
             dark = dark,
             rows = queue.map { Row.SongRow(it) },
+            highlightId = p.currentMediaItem?.mediaId?.toLongOrNull(),
             onTap = { r ->
+                ensureQueueSync()
                 val idx = queue.indexOfFirst { it.mediaId == (r as Row.SongRow).song.mediaId }
                 if (idx >= 0) p.seekTo(idx, 0)
             },
@@ -1029,7 +1103,7 @@ class MainActivity : AppCompatActivity() {
                 val b = t.bindingAdapterPosition
                 java.util.Collections.swap(queue, a, b)
                 queueAdapter!!.notifyItemMoved(a, b)
-                syncPlayerToQueueSilent()
+                syncPlayerToQueue()
                 return true
             }
 
@@ -1048,30 +1122,28 @@ class MainActivity : AppCompatActivity() {
             .setPositiveButton("Close", null)
             .setOnDismissListener {
                 queueDialog = null
+                queueListView = null
                 nowSeek = null
                 nowTime = null
                 nowPlayBtn = null
             }
             .show()
+        scrollQueueToCurrent()
     }
 
-    /** Reorder during drag without restarting the song. */
-    private fun syncPlayerToQueueSilent() {
+    private fun scrollQueueToCurrent() {
         val p = svc?.player ?: return
-        val idx = p.currentMediaItemIndex.coerceAtLeast(0)
-        val pos = p.currentPosition
-        p.setMediaItems(queue.map(::toItem), idx, pos)
-        p.prepare()
-        p.play()
+        val qv = queueListView ?: return
+        val idx = p.currentMediaItemIndex
+        if (idx >= 0) qv.scrollToPosition(idx)
     }
 
     private fun refreshQueueList() {
+        val p = svc?.player
+        queueAdapter?.highlightId = p?.currentMediaItem?.mediaId?.toLongOrNull()
         queueAdapter?.submit(queue.map { Row.SongRow(it) })
-        queueAdapter?.dark = dark
+        scrollQueueToCurrent()
     }
-
-    private fun shuffleLabel() =
-        if (shuffled) getString(R.string.shuffle_on) else getString(R.string.shuffle_off)
 
     private fun updateLoopBtn() {
         val p = svc?.player ?: return
@@ -1096,7 +1168,7 @@ class MainActivity : AppCompatActivity() {
     private var boostSeek: SeekBar? = null
     private var boostLabel: TextView? = null
     private var deviceLabel: TextView? = null
-    private var fullscreenBtn: Button? = null
+    private var deviceToggle: Button? = null
 
     private fun buildMorePane() {
         moreBox.removeAllViews()
@@ -1128,19 +1200,35 @@ class MainActivity : AppCompatActivity() {
             }
         })
 
-        moreBox.addView(section("Boost for the car"))
+        moreBox.addView(section("Playback controls"))
+        moreBox.addView(TextView(this).apply {
+            text = if (hasNotifPermission())
+                "On. While music plays, the song, position bar, and skip buttons sit in the notification shade and on the lockscreen."
+            else
+                "Off. The phone is blocking notifications, so no shade or lockscreen controls. Tap below to allow them, then come back."
+            textSize = 12f
+        })
+        if (!hasNotifPermission()) moreBox.addView(xpBtn("Allow notifications").apply {
+            setOnClickListener {
+                val i = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
+                    .setData(Uri.parse("package:$packageName"))
+                runCatching { startActivity(i) }
+            }
+        })
+
+        moreBox.addView(section("Boost"))
         deviceLabel = TextView(this).apply { textSize = 13f }
         moreBox.addView(deviceLabel)
         boostLabel = TextView(this).apply { textSize = 14f }
         moreBox.addView(boostLabel)
         boostSeek = SeekBar(this).apply {
-            max = 375 // 25% to 400%
-            progress = ((vol.boost * 100).roundToInt() - 25).coerceIn(0, 375)
+            max = 499 // 1 percent to 500 percent
+            progress = ((vol.boost * 100).roundToInt() - 1).coerceIn(0, 499)
             progressDrawable = xpProgress()
             thumb = xpThumb()
             setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
                 override fun onProgressChanged(s: SeekBar?, v: Int, fromUser: Boolean) {
-                    if (fromUser) vol.setBoost((v + 25) / 100f)
+                    if (fromUser) vol.setBoost((v + 1) / 100f)
                 }
 
                 override fun onStartTrackingTouch(s: SeekBar?) {}
@@ -1148,23 +1236,32 @@ class MainActivity : AppCompatActivity() {
             })
         }
         moreBox.addView(boostSeek)
-        val presets = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        mapOf("Quiet 60%" to 0.6f, "Headphones 100%" to 1.0f, "Car 200%" to 2.0f).forEach { (k, v) ->
-            presets.addView(xpBtn(k).apply {
-                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-                setOnClickListener { vol.setBoost(v) }
-            })
-        }
-        moreBox.addView(presets)
         moreBox.addView(TextView(this).apply {
-            text = "Your car keeps its own boost and your headphones keep theirs. Past 150% the harsh peaks are capped so nothing crackles."
+            text = "Your volume presets live below. Add as many as you want, name them, tap to use, hold to delete."
             textSize = 12f
         })
+        renderPresets()
+        moreBox.addView(xpBtn("Add preset").apply {
+            setOnClickListener { presetAddDialog() }
+        })
+        deviceToggle = xpBtn("").apply {
+            setOnClickListener {
+                val now = !prefs.getBoolean(VolumeManager.KEY_AUTO_DEVICE, true)
+                prefs.edit().putBoolean(VolumeManager.KEY_AUTO_DEVICE, now).apply()
+                updateDeviceToggle()
+            }
+        }
+        moreBox.addView(deviceToggle)
+        moreBox.addView(TextView(this).apply {
+            text = "With auto device on, each Bluetooth gadget keeps its own boost and it comes back when you reconnect."
+            textSize = 12f
+        })
+        updateDeviceToggle()
         updateBoostViews()
 
         moreBox.addView(section("Loudness"))
         moreBox.addView(TextView(this).apply {
-            text = "Songs from YouTube are all over the place volume wise. Press the button once and BlissPlayer samples every song, finds the average, and turns the quiet ones up and the loud ones down. Nothing is rewritten, and Undo is one tap. Songs already done are skipped unless they changed."
+            text = "Songs from downloads are all over the place volume wise. Press the button once and BlissPlayer samples every song, finds the average, and turns the quiet ones up and the loud ones down. Nothing is rewritten, and Undo is one tap. Songs already done are skipped unless they changed."
             textSize = 12f
         })
         moreBox.addView(xpBtn(getString(R.string.equalize_all)).apply {
@@ -1181,41 +1278,114 @@ class MainActivity : AppCompatActivity() {
         moreBox.addView(section("Look and feel"))
         val themeBtn = xpBtn(if (dark) "Light XP mode" else "Dark XP mode")
         themeBtn.setOnClickListener {
-            prefs.edit().putBoolean("dark", !dark).apply()
-            recreate()
+            dark = !dark
+            prefs.edit().putBoolean("dark", dark).apply()
+            applyThemeLive()
+            toast(if (dark) "Dark XP mode." else "Light XP mode.")
         }
         moreBox.addView(themeBtn)
-        val fs = prefs.getBoolean("fullscreen", false)
-        fullscreenBtn = xpBtn(if (fs) getString(R.string.fullscreen_on) else getString(R.string.fullscreen_off))
-        fullscreenBtn!!.setOnClickListener {
-            val now = !prefs.getBoolean("fullscreen", false)
-            prefs.edit().putBoolean("fullscreen", now).apply()
-            applyFullscreen()
-            fullscreenBtn!!.text = if (now) getString(R.string.fullscreen_on) else getString(R.string.fullscreen_off)
-        }
-        moreBox.addView(fullscreenBtn)
 
         moreBox.addView(section("Help"))
         moreBox.addView(TextView(this).apply {
             text = "1. Copy songs anywhere on the phone. The Music folder is fine.\n" +
                 "2. Open More and tap Scan for music.\n" +
-                "3. Tap Play all music, or Shuffle everything.\n" +
-                "4. In the car, set Boost near 200 percent once. BlissPlayer remembers it.\n" +
+                "3. Tap Play all music, or Shuffle.\n" +
+                "4. In the car, set Boost near 200 percent once. Each device remembers its own.\n" +
                 "5. Volumes jumping between songs? Run Equalize once.\n" +
                 "6. Tap the three dots on any song for play next, playlists, edit, delete."
             textSize = 13f
         })
         moreBox.addView(TextView(this).apply {
-            text = "BlissPlayer 0.2. Small, offline, no accounts, no ads."
+            text = "BlissPlayer 0.3. Small, offline, no accounts, no ads."
             textSize = 11f
         })
+    }
+
+    private fun renderPresets() {
+        // Preset rows live between the hint text and the Add button; rebuild them.
+        val presets = db.presets()
+        // Remove old preset rows (tagged views).
+        for (i in moreBox.childCount - 1 downTo 0) {
+            val v = moreBox.getChildAt(i)
+            if (v.getTag(R.id.tabMore) == "preset") moreBox.removeViewAt(i)
+        }
+        presets.forEach { (name, mult) ->
+            val pct = (mult * 100).roundToInt()
+            val b = xpBtn("$name ($pct percent)").apply {
+                setTag(R.id.tabMore, "preset")
+                setOnClickListener {
+                    vol.setBoost(mult.toFloat())
+                    toast("Boost: $name.")
+                }
+                setOnLongClickListener {
+                    AlertDialog.Builder(this@MainActivity)
+                        .setTitle("Delete preset $name?")
+                        .setPositiveButton("Delete") { _, _ ->
+                            db.deletePreset(name)
+                            buildMorePane()
+                        }
+                        .setNegativeButton("Keep", null)
+                        .show()
+                    true
+                }
+            }
+            moreBox.addView(b)
+        }
+        if (presets.isEmpty()) {
+            moreBox.addView(TextView(this).apply {
+                setTag(R.id.tabMore, "preset")
+                text = "No presets yet."
+                textSize = 12f
+            })
+        }
+    }
+
+    private fun presetAddDialog() {
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(16), dp(8), dp(16), dp(8))
+        }
+        val eName = EditText(this).apply { hint = "Name, like Car" }
+        val ePct = EditText(this).apply {
+            hint = "Percent, 1 to 500"
+            inputType = InputType.TYPE_CLASS_NUMBER
+        }
+        box.addView(eName)
+        box.addView(ePct)
+        AlertDialog.Builder(this)
+            .setTitle("New preset")
+            .setView(box)
+            .setPositiveButton("Save") { _, _ ->
+                val name = eName.text.toString().ifBlank { "Preset" }
+                val pct = ePct.text.toString().toIntOrNull()?.coerceIn(1, 500) ?: 100
+                db.putPreset(name, pct / 100.0)
+                buildMorePane()
+                toast("Preset $name saved.")
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun updateDeviceToggle() {
+        val on = prefs.getBoolean(VolumeManager.KEY_AUTO_DEVICE, true)
+        deviceToggle?.text = "Auto device boost: ${if (on) "On" else "Off"}"
     }
 
     private fun updateBoostViews() {
         val pct = (vol.boost * 100).roundToInt()
         boostLabel?.text = "Boost: $pct percent" + if (pct > 150) " (loud, peaks capped)" else ""
-        boostSeek?.let { if ((it.progress + 25) != pct) it.progress = (pct - 25).coerceIn(0, 375) }
-        deviceLabel?.text = "Output: ${vol.currentDevice} (remembered per device)"
+        boostSeek?.let { if ((it.progress + 1) != pct) it.progress = (pct - 1).coerceIn(0, 499) }
+        val auto = prefs.getBoolean(VolumeManager.KEY_AUTO_DEVICE, true)
+        deviceLabel?.text = "Output: ${vol.currentDevice}" + if (auto) " (remembered per device)" else " (auto remember off)"
+        refreshMini()
+    }
+
+    private fun applyThemeLive() {
+        skinStatic()
+        updateTabs()
+        adapter.dark = dark
+        adapter.notifyDataSetChanged()
+        buildMorePane()
         refreshMini()
     }
 
@@ -1230,6 +1400,12 @@ class MainActivity : AppCompatActivity() {
             .setPositiveButton("Equalize") { _, _ -> runEqualize() }
             .setNegativeButton("Not now", null)
             .show()
+    }
+
+    private fun fmtEta(sec: Long): String = when {
+        sec < 5 -> "finishing up"
+        sec < 90 -> "about $sec sec left"
+        else -> "about ${sec / 60} min left"
     }
 
     private fun runEqualize() {
@@ -1257,10 +1433,11 @@ class MainActivity : AppCompatActivity() {
                 cached = cached,
                 putGain = { id, mult -> db.putGain(id, mult) },
                 putCache = { id, rms, mod -> db.putMeasure(id, rms, mod) },
-                onProgress = { done, total, title ->
+                onProgress = { done, total, title, eta ->
                     bar.max = total
                     bar.progress = done
-                    label.text = "Listening ($done of $total): $title"
+                    val etaTxt = if (eta != null) ", ${fmtEta(eta)}" else ""
+                    label.text = "Listening ($done of $total$etaTxt): $title"
                 }
             )
             runCatching { dlg.dismiss() }
@@ -1286,14 +1463,13 @@ class MainActivity : AppCompatActivity() {
         this, if (dark) R.drawable.xp_button_dark else R.drawable.xp_button
     )!!
 
-    private fun xpProgress(): LayerDrawable {
-        val bg = ContextCompat.getDrawable(this, R.drawable.xp_progress_bg)!!
+    private fun xpProgress() = ContextCompat.getDrawable(this, R.drawable.xp_progress_bg)!!.let { bg ->
         val bmp = android.graphics.BitmapFactory.decodeResource(resources, R.drawable.xp_seg_tile)
         val tile = android.graphics.drawable.BitmapDrawable(resources, bmp).apply {
             tileModeX = android.graphics.Shader.TileMode.REPEAT
         }
         val clip = ClipDrawable(tile, android.view.Gravity.LEFT, ClipDrawable.HORIZONTAL)
-        return LayerDrawable(arrayOf(bg, clip)).apply {
+        LayerDrawable(arrayOf(bg, clip)).apply {
             setId(0, android.R.id.background)
             setId(1, android.R.id.progress)
         }
@@ -1304,10 +1480,18 @@ class MainActivity : AppCompatActivity() {
     private fun section(t: String): TextView =
         TextView(this).apply {
             text = t
-            textSize = 15f
+            textSize = 14f
             typeface = android.graphics.Typeface.DEFAULT_BOLD
-            setTextColor(iconColor())
-            setPadding(0, dp(12), 0, dp(4))
+            setTextColor(0xFFFFFFFF.toInt())
+            background = ContextCompat.getDrawable(
+                this@MainActivity,
+                if (dark) R.drawable.xp_title_bar_dark else R.drawable.xp_title_bar
+            )
+            setPadding(dp(8), dp(6), dp(8), dp(6))
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { topMargin = dp(12); bottomMargin = dp(4) }
         }
 
     private fun xpBtn(t: String): Button =
@@ -1334,16 +1518,17 @@ class MainActivity : AppCompatActivity() {
         )
         statusStrip.setBackgroundResource(if (dark) R.drawable.xp_status_dark else R.drawable.xp_status)
         statusStrip.setTextColor(iconColor())
+        headerBar.setBackgroundResource(if (dark) R.drawable.xp_title_bar_dark else R.drawable.xp_title_bar)
         listOf(
             R.id.tabSongs, R.id.tabArtists, R.id.tabAlbums, R.id.tabPlaylists, R.id.tabMore,
-            R.id.btnShuffleAll
+            R.id.btnShuffleAll, R.id.btnPlayAll
         ).forEach { id ->
-            findViewById<Button>(id).setBackgroundResource(
-                if (dark) R.drawable.xp_button_dark else R.drawable.xp_button
-            )
-            findViewById<Button>(id).setTextColor(iconColor())
+            findViewById<Button>(id).setTextColor(if (id == R.id.btnPlayAll) 0xFFFFFFFF.toInt() else iconColor())
         }
-        findViewById<Button>(R.id.btnPlayAll).setTextColor(0xFFFFFFFF.toInt())
+        updateTabs()
+        findViewById<Button>(R.id.btnShuffleAll).setBackgroundResource(
+            if (dark) R.drawable.xp_button_dark else R.drawable.xp_button
+        )
         mapOf(
             R.id.miniPlayPause to R.drawable.ic_play,
             R.id.miniNext to R.drawable.ic_next,

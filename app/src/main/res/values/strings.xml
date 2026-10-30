@@ -8,7 +8,7 @@
     <string name="tab_playlists">Playlists</string>
     <string name="tab_more">More</string>
     <string name="play_all">Play all music</string>
-    <string name="shuffle_now">Shuffle everything</string>
+    <string name="shuffle_now">Shuffle</string>
     <string name="scan">Scan for music</string>
     <string name="equalize_all">Equalize all songs</string>
     <string name="equalize_undo">Undo equalize</string>
@@ -17,8 +17,6 @@
     <string name="loop_off">Loop: Off</string>
     <string name="loop_all">Loop: All</string>
     <string name="loop_one">Loop: One</string>
-    <string name="shuffle_on">Shuffled (tap to shuffle again)</string>
+    <string name="shuffle_on">Shuffle</string>
     <string name="shuffle_off">Shuffle</string>
-    <string name="fullscreen_on">Exit fullscreen</string>
-    <string name="fullscreen_off">Fullscreen</string>
 </resources>

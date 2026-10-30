@@ -40,7 +40,7 @@ object LoudnessScanner {
         val skipped: Int
     )
 
-    private const val PARALLEL = 4
+    private val PARALLEL = Runtime.getRuntime().availableProcessors().coerceIn(4, 8)
     private const val WINDOW_MS = 8000L
 
     suspend fun equalizeAll(
@@ -49,13 +49,13 @@ object LoudnessScanner {
         cached: Map<Long, Cached>,
         putGain: (mediaId: Long, mult: Double) -> Unit,
         putCache: (mediaId: Long, rms: Double, modified: Long) -> Unit,
-        onProgress: (done: Int, total: Int, title: String) -> Unit
+        onProgress: (done: Int, total: Int, title: String, etaSec: Long?) -> Unit
     ): Result = coroutineScope {
         val rms = LinkedHashMap<Long, Double>()
         var skipped = 0
         var reused = 0
-        var done: Int
         val sem = Semaphore(PARALLEL)
+        val t0 = System.currentTimeMillis()
 
         val jobs = songs.map { s ->
             async(Dispatchers.Default) {
@@ -77,12 +77,16 @@ object LoudnessScanner {
             }
         }
         // Drive progress as jobs finish, in order.
-        val out = mutableListOf<String>()
         jobs.forEachIndexed { i, j ->
-            out.add(j.await())
-            done = i + 1
-            if (out.last() == "cached") reused++
-            onProgress(done, songs.size, songs[i].title)
+            val kind = j.await()
+            if (kind == "cached") reused++
+            val done = i + 1
+            val eta: Long? = if (done >= 5) {
+                val elapsed = (System.currentTimeMillis() - t0) / 1000.0
+                val rate = done / elapsed.coerceAtLeast(0.1)
+                ((songs.size - done) / rate).toLong().coerceAtLeast(0)
+            } else null
+            onProgress(done, songs.size, songs[i].title, eta)
         }
 
         if (rms.isEmpty()) return@coroutineScope Result(0, reused, 0, 0, skipped)

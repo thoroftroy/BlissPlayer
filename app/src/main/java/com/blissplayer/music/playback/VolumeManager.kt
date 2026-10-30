@@ -25,9 +25,10 @@ class VolumeManager(
 ) {
     companion object {
         const val KEY_MANUAL = "boost_manual"
+        const val KEY_AUTO_DEVICE = "auto_device"
         const val DEVICE_SPEAKER = "Phone speaker / wired"
-        const val MIN = 0.25f
-        const val MAX = 4.0f // 400% hard cap; UI warns past 150%
+        const val MIN = 0.01f
+        const val MAX = 5.0f // 500 percent cap
     }
 
     var currentDevice: String = DEVICE_SPEAKER
@@ -38,6 +39,7 @@ class VolumeManager(
     private val btReceiver = object : BroadcastReceiver() {
         @android.annotation.SuppressLint("MissingPermission")
         override fun onReceive(c: Context, intent: Intent) {
+            if (!prefs.getBoolean(KEY_AUTO_DEVICE, true)) return
             if (intent.action == BluetoothDevice.ACTION_ACL_CONNECTED) {
                 val name = runCatching {
                     val dev: BluetoothDevice? = if (Build.VERSION.SDK_INT >= 33) {

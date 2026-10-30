@@ -12,7 +12,7 @@ import android.database.sqlite.SQLiteOpenHelper
  *  playlists(id, name) + playlist_songs(playlist_id, media_id, position)
  *  boost(device_name PRIMARY KEY, gain_mult)  , per-device amp memory (car vs headphones)
  */
-class BlissDb(context: Context) : SQLiteOpenHelper(context, "bliss.db", null, 3) {
+class BlissDb(context: Context) : SQLiteOpenHelper(context, "bliss.db", null, 4) {
 
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL("CREATE TABLE gains(media_id INTEGER PRIMARY KEY, gain_mult REAL NOT NULL)")
@@ -22,6 +22,7 @@ class BlissDb(context: Context) : SQLiteOpenHelper(context, "bliss.db", null, 3)
         db.execSQL("CREATE TABLE boost(device_name TEXT PRIMARY KEY, gain_mult REAL NOT NULL)")
         db.execSQL("CREATE TABLE plays(media_id INTEGER PRIMARY KEY, count INTEGER NOT NULL)")
         db.execSQL("CREATE TABLE measure(media_id INTEGER PRIMARY KEY, rms REAL NOT NULL, modified INTEGER NOT NULL)")
+        db.execSQL("CREATE TABLE preset(name TEXT PRIMARY KEY, gain_mult REAL NOT NULL)")
     }
 
     override fun onUpgrade(db: SQLiteDatabase, old: Int, new: Int) {
@@ -30,6 +31,7 @@ class BlissDb(context: Context) : SQLiteOpenHelper(context, "bliss.db", null, 3)
             db.execSQL("CREATE TABLE IF NOT EXISTS plays(media_id INTEGER PRIMARY KEY, count INTEGER NOT NULL)")
             db.execSQL("CREATE TABLE IF NOT EXISTS measure(media_id INTEGER PRIMARY KEY, rms REAL NOT NULL, modified INTEGER NOT NULL)")
         }
+        if (old < 4) db.execSQL("CREATE TABLE IF NOT EXISTS preset(name TEXT PRIMARY KEY, gain_mult REAL NOT NULL)")
     }
 
     // ---- gains ----
@@ -156,6 +158,31 @@ class BlissDb(context: Context) : SQLiteOpenHelper(context, "bliss.db", null, 3)
         )
     }
 
+    // ---- user boost presets (name + percent, 1 to 500) ----
+    fun presets(): List<Pair<String, Double>> {
+        val out = mutableListOf<Pair<String, Double>>()
+        readableDatabase.rawQuery("SELECT name, gain_mult FROM preset ORDER BY name", null)?.use { c ->
+            while (c.moveToNext()) out.add(c.getString(0) to c.getDouble(1))
+        }
+        return out
+    }
+
+    fun putPreset(name: String, mult: Double) {
+        writableDatabase.insertWithOnConflict(
+            "preset", null,
+            ContentValues().apply {
+                put("name", name)
+                put("gain_mult", mult)
+            },
+            SQLiteDatabase.CONFLICT_REPLACE
+        )
+    }
+
+    fun deletePreset(name: String) {
+        writableDatabase.delete("preset", "name=?", arrayOf(name))
+    }
+
+    // ---- loudness measure cache (Equalize) ----
     fun getMeasures(): Map<Long, Pair<Double, Long>> {
         val m = mutableMapOf<Long, Pair<Double, Long>>()
         readableDatabase.rawQuery("SELECT media_id, rms, modified FROM measure", null)?.use { c ->

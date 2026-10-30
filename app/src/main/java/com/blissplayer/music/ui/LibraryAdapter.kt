@@ -1,6 +1,7 @@
 package com.blissplayer.music.ui
 
 import android.graphics.Typeface
+import android.view.Gravity
 import android.view.ViewGroup
 import android.widget.ImageButton
 import android.widget.LinearLayout
@@ -19,6 +20,8 @@ sealed interface Row {
 class LibraryAdapter(
     var rows: List<Row> = emptyList(),
     var dark: Boolean = false,
+    /** mediaId of the currently playing song, tinted like an XP selection. */
+    var highlightId: Long? = null,
     val onTap: (Row) -> Unit = {},
     val onMenu: (Row) -> Unit = {}
 ) : RecyclerView.Adapter<LibraryAdapter.Holder>() {
@@ -27,6 +30,7 @@ class LibraryAdapter(
         val box: LinearLayout,
         val title: TextView,
         val sub: TextView,
+        val dur: TextView,
         val more: ImageButton
     ) : RecyclerView.ViewHolder(box)
 
@@ -35,7 +39,7 @@ class LibraryAdapter(
         val box = LinearLayout(ctx).apply {
             orientation = LinearLayout.HORIZONTAL
             setPadding(20, 14, 8, 14)
-            gravity = android.view.Gravity.CENTER_VERTICAL
+            gravity = Gravity.CENTER_VERTICAL
             layoutParams = RecyclerView.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT
@@ -56,6 +60,10 @@ class LibraryAdapter(
         }
         texts.addView(title)
         texts.addView(sub)
+        val dur = TextView(ctx).apply {
+            textSize = 12f
+            setPadding(8, 0, 8, 0)
+        }
         val more = ImageButton(ctx).apply {
             setImageDrawable(ContextCompat.getDrawable(ctx, R.drawable.ic_more))
             setBackgroundColor(0x00000000)
@@ -67,32 +75,42 @@ class LibraryAdapter(
             setPadding(20, 20, 20, 20)
         }
         box.addView(texts)
+        box.addView(dur)
         box.addView(more)
-        return Holder(box, title, sub, more)
+        return Holder(box, title, sub, dur, more)
     }
 
     override fun getItemCount() = rows.size
 
     override fun onBindViewHolder(h: Holder, pos: Int) {
         val row = rows[pos]
+        val selected = (row as? Row.SongRow)?.song?.mediaId == highlightId
         when (row) {
             is Row.SongRow -> {
                 h.title.text = row.song.title
                 h.sub.text = "${row.song.artist} | ${row.song.album}"
+                h.dur.text = fmt(row.song.durationMs)
+                h.dur.visibility = android.view.View.VISIBLE
             }
             is Row.Group -> {
                 h.title.text = row.title
                 h.sub.text = row.sub
+                h.dur.text = ""
+                h.dur.visibility = android.view.View.GONE
             }
         }
         val tc = if (dark) 0xFFE8E8E8.toInt() else 0xFF000000.toInt()
         val sc = if (dark) 0xFFA8ADB5.toInt() else 0xFF5A5A5A.toInt()
-        h.title.setTextColor(tc)
-        h.sub.setTextColor(sc)
-        h.more.setColorFilter(if (dark) 0xFFE8E8E8.toInt() else 0xFF000000.toInt())
+        h.title.setTextColor(if (selected) 0xFFFFFFFF.toInt() else tc)
+        h.sub.setTextColor(if (selected) 0xFFFFFFFF.toInt() else sc)
+        h.dur.setTextColor(if (selected) 0xFFFFFFFF.toInt() else sc)
+        h.more.setColorFilter(if (selected) 0xFFFFFFFF.toInt() else tc)
         h.box.setBackgroundColor(
-            if (dark) (if (pos % 2 == 0) 0xFF23262B.toInt() else 0xFF2E333A.toInt())
-            else (if (pos % 2 == 0) 0xFFECE9D8.toInt() else 0xFFFFFFFF.toInt())
+            when {
+                selected -> if (dark) 0xFF1E4FA3.toInt() else 0xFF316AC5.toInt()
+                dark -> if (pos % 2 == 0) 0xFF23262B.toInt() else 0xFF2E333A.toInt()
+                else -> if (pos % 2 == 0) 0xFFECE9D8.toInt() else 0xFFFFFFFF.toInt()
+            }
         )
         h.box.setOnClickListener { onTap(row) }
         h.box.setOnLongClickListener { onMenu(row); true }
@@ -102,5 +120,10 @@ class LibraryAdapter(
     fun submit(newRows: List<Row>) {
         rows = newRows
         notifyDataSetChanged()
+    }
+
+    private fun fmt(ms: Long): String {
+        val s = (ms / 1000).toInt().coerceAtLeast(0)
+        return "%d:%02d".format(s / 60, s % 60)
     }
 }

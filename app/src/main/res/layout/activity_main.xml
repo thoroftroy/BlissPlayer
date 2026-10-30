@@ -81,6 +81,20 @@
         android:layout_marginTop="6dp"
         android:textSize="13sp" />
 
+    <!-- Explorer style column header for song lists -->
+    <TextView
+        android:id="@+id/headerBar"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:background="@drawable/xp_title_bar"
+        android:padding="4dp"
+        android:text="Title | Artist | Album | Time"
+        android:textColor="#FFFFFF"
+        android:textSize="11sp"
+        android:textStyle="bold"
+        android:visibility="gone"
+        android:layout_marginTop="4dp" />
+
     <androidx.recyclerview.widget.RecyclerView
         android:id="@+id/list"
         android:layout_width="match_parent"
@@ -119,36 +133,67 @@
         android:id="@+id/miniPlayer"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:orientation="horizontal"
+        android:orientation="vertical"
         android:background="@drawable/xp_panel"
         android:padding="8dp"
-        android:layout_marginTop="6dp"
-        android:gravity="center_vertical">
+        android:layout_marginTop="6dp">
 
         <LinearLayout
-            android:layout_width="0dp"
+            android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:orientation="vertical">
-            <TextView android:id="@+id/miniTitle" android:layout_width="match_parent"
-                android:layout_height="wrap_content" android:textStyle="bold" android:text="Nothing playing"
-                android:singleLine="true" />
-            <TextView android:id="@+id/miniSub" android:layout_width="match_parent"
-                android:layout_height="wrap_content" android:textSize="12sp"
-                android:text="Tap Play all music to start" android:singleLine="true" />
+            android:orientation="horizontal"
+            android:gravity="center_vertical">
+
+            <LinearLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:orientation="vertical">
+                <TextView android:id="@+id/miniTitle" android:layout_width="match_parent"
+                    android:layout_height="wrap_content" android:textStyle="bold" android:text="Nothing playing"
+                    android:singleLine="true" />
+                <TextView android:id="@+id/miniSub" android:layout_width="match_parent"
+                    android:layout_height="wrap_content" android:textSize="12sp"
+                    android:text="Tap Play all music to start" android:singleLine="true" />
+            </LinearLayout>
+
+            <ImageButton android:id="@+id/miniPlayPause" android:layout_width="52dp"
+                android:layout_height="44dp" android:background="@drawable/xp_button"
+                android:contentDescription="Play or pause" android:scaleType="center"
+                android:src="@drawable/ic_play" />
+            <ImageButton android:id="@+id/miniNext" android:layout_width="52dp"
+                android:layout_height="44dp" android:background="@drawable/xp_button"
+                android:contentDescription="Next song" android:scaleType="center"
+                android:src="@drawable/ic_next" />
+            <ImageButton android:id="@+id/miniQueue" android:layout_width="52dp"
+                android:layout_height="44dp" android:background="@drawable/xp_button"
+                android:contentDescription="Now playing and queue" android:scaleType="center"
+                android:src="@drawable/ic_queue" />
         </LinearLayout>
 
-        <ImageButton android:id="@+id/miniPlayPause" android:layout_width="52dp"
-            android:layout_height="44dp" android:background="@drawable/xp_button"
-            android:contentDescription="Play or pause" android:scaleType="center"
-            android:src="@drawable/ic_play" />
-        <ImageButton android:id="@+id/miniNext" android:layout_width="52dp"
-            android:layout_height="44dp" android:background="@drawable/xp_button"
-            android:contentDescription="Next song" android:scaleType="center"
-            android:src="@drawable/ic_next" />
-        <ImageButton android:id="@+id/miniQueue" android:layout_width="52dp"
-            android:layout_height="44dp" android:background="@drawable/xp_button"
-            android:contentDescription="Now playing and queue" android:scaleType="center"
-            android:src="@drawable/ic_queue" />
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:layout_marginTop="4dp">
+
+            <ProgressBar
+                android:id="@+id/miniProgress"
+                style="?android:attr/progressBarStyleHorizontal"
+                android:layout_width="0dp"
+                android:layout_height="8dp"
+                android:layout_weight="1"
+                android:max="1000"
+                android:progress="0" />
+
+            <TextView
+                android:id="@+id/miniTime"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="8dp"
+                android:textSize="11sp"
+                android:text="0:00" />
+        </LinearLayout>
     </LinearLayout>
 </LinearLayout>

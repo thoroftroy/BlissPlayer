@@ -154,3 +154,13 @@ Log:
 - [x] Min SDK 26 to 29 (Android 10+, needed for the delete/edit permission flows anyway).
 - [x] Crash reporter: if it ever crashes again, reopening the app shows the log with a Copy button. Paste it back here.
 - [ ] User installs v0.2.1 and confirms launch works.
+
+## [x] 14. Round 3 polish, v0.3.0 (2026-10-29, user feedback)
+- [x] Shuffle everything is now Shuffle, Now Playing shuffle button always says Shuffle
+- [x] Persistent notification built directly: song, progress bar, prev/play/next, lockscreen, headset, car BT. Plus a status row in More that opens notification settings when blocked.
+- [x] Retro XP push: explorer header row, durations, mini progress bar with time, section title bars, active tab looks pressed
+- [x] Skip forward and back use media item jumps, queue consistency guard, refresh on every seek, current song highlighted and auto scrolled
+- [x] Boost presets removed. User presets with names, 1 to 500 percent, tap to use, hold to delete. Auto device memory with on/off toggle. Cap raised to 500.
+- [x] Theme switch applies live, no restart, no lost place
+- [x] Fullscreen button and code removed
+- [x] Equalize uses all CPU cores and shows a live time estimate

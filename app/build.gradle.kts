@@ -11,8 +11,8 @@ android {
         applicationId = "com.blissplayer.music"
         minSdk = 29
         targetSdk = 35
-        versionCode = 3
-        versionName = "0.2.1"
+        versionCode = 4
+        versionName = "0.3.0"
     }
 
     buildTypes {
@@ -56,6 +56,7 @@ dependencies {
     implementation("androidx.appcompat:appcompat:1.7.0")
     implementation("androidx.recyclerview:recyclerview:1.3.2")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
+    implementation("androidx.media:media:1.7.0")
 
     // Tag read/write for edit-metadata (pure Java, no native deps).
     implementation("net.jthink:jaudiotagger:3.0.1")
