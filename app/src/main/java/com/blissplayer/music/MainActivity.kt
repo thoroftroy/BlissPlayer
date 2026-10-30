@@ -56,11 +56,14 @@ import com.blissplayer.music.playback.PlayerService
 import com.blissplayer.music.playback.SafeVolumeGuard
 import com.blissplayer.music.playback.VolumeManager
 import com.blissplayer.music.ui.LibraryAdapter
+import com.blissplayer.music.ui.PickAdapter
+import com.blissplayer.music.ui.PickRow
 import com.blissplayer.music.ui.Row
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
+import java.util.Locale
 import kotlin.math.roundToInt
 import kotlin.random.Random
 
@@ -79,6 +82,8 @@ class MainActivity : AppCompatActivity() {
     private var lastCountedId: Long = -1L
     private var pendingQueueSync = false
     private var restoredQueueIds: LongArray? = null
+    private var listenAccumMs: Long = 0L
+    private var lastListenSave: Long = 0L
 
     // Library view state
     private var tab = 0 // 0 songs 1 artists 2 albums 3 playlists
@@ -91,6 +96,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var titleBar: TextView
     private lateinit var titleBarWrap: LinearLayout
     private lateinit var crumb: TextView
+    private lateinit var playlistAdd: Button
     private lateinit var headerBar: TextView
     private lateinit var statusStrip: TextView
     private lateinit var list: RecyclerView
@@ -157,7 +163,7 @@ class MainActivity : AppCompatActivity() {
 
     private val playerListener = object : Player.Listener {
         override fun onMediaItemTransition(item: MediaItem?, reason: Int) {
-            onTrackChanged(item)
+            onTrackChanged(item, reason)
         }
 
         override fun onPositionDiscontinuity(
@@ -177,12 +183,18 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun onTrackChanged(item: MediaItem?) {
+    private fun onTrackChanged(item: MediaItem?, reason: Int) {
         refreshMini()
-        queueDialog?.let { refreshQueueList() }
+        if (queueDialog != null) {
+            updateNowPlayingHeader()
+            refreshQueueList()
+        }
         val id = item?.mediaId?.toLongOrNull()
         if (id != null && id != lastCountedId) {
             lastCountedId = id
+            if (reason == Player.MEDIA_ITEM_TRANSITION_REASON_SEEK) {
+                prefs.edit().putLong("stats_skips", prefs.getLong("stats_skips", 0) + 1).apply()
+            }
             CoroutineScope(Dispatchers.IO).launch {
                 db.bumpPlay(id)
                 // Once every song in the library has played at least once,
@@ -191,8 +203,22 @@ class MainActivity : AppCompatActivity() {
                 if (songs.isNotEmpty() && songs.all { (counts[it.mediaId] ?: 0) > 0 }) {
                     db.resetPlays()
                 }
+                if (prefs.getBoolean("show_counts", false)) {
+                    val lines = statLines()
+                    launch(Dispatchers.Main) {
+                        adapter.statLines = lines
+                        adapter.notifyDataSetChanged()
+                    }
+                }
             }
         }
+    }
+
+    private fun updateNowPlayingHeader() {
+        val p = svc?.player ?: return
+        val song = p.currentMediaItem?.mediaId?.toLongOrNull()?.let { byId[it] }
+        nowTitleView?.text = song?.title ?: "Now playing"
+        nowArtistView?.text = song?.let { "${it.artist} | ${it.album}" } ?: ""
     }
 
     // ---------- lifecycle ----------
@@ -213,6 +239,11 @@ class MainActivity : AppCompatActivity() {
         titleBarWrap = findViewById(R.id.titleBarWrap)
         titleBar = findViewById(R.id.titleBar)
         crumb = findViewById(R.id.crumb)
+        playlistAdd = findViewById(R.id.playlistAdd)
+        playlistAdd.setOnClickListener {
+            val id = drillPlaylist ?: return@setOnClickListener
+            addSongsDialog(id, drillPlaylistName ?: "Playlist")
+        }
         headerBar = findViewById(R.id.headerBar)
         statusStrip = findViewById(R.id.statusStrip)
         list = findViewById(R.id.list)
@@ -288,6 +319,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         ticker.removeCallbacksAndMessages(null)
+        persistListenTime()
         runCatching { unbindService(conn) }
         vol.stop()
         guard.stop()
@@ -451,6 +483,10 @@ class MainActivity : AppCompatActivity() {
         if (tab == 4) return
         titleBar.text = "BlissPlayer: ${listOf("Songs", "Artists", "Albums", "Playlists")[tab]}"
         headerBar.visibility = if (showingSongs()) View.VISIBLE else View.GONE
+        playlistAdd.visibility = if (drillPlaylist != null) View.VISIBLE else View.GONE
+        val wantStats = prefs.getBoolean("show_counts", false)
+        adapter.showStats = wantStats
+        adapter.statLines = if (wantStats) statLines() else emptyMap()
         when {
             drillArtist != null -> {
                 val a = drillArtist!!
@@ -504,6 +540,25 @@ class MainActivity : AppCompatActivity() {
     private fun updateStatus() {
         val pct = (vol.boost * 100).roundToInt()
         statusStrip.text = "${songs.size} songs | Boost $pct percent | ${vol.currentDevice}"
+    }
+
+    /**
+     * Per song stats line for the list: total plays ever, plays this cycle,
+     * and the chance of coming up next under Smart Shuffle.
+     */
+    private fun statLines(): Map<Long, String> {
+        val counts = db.playCounts()
+        val totals = db.totalPlays()
+        val weights = songs.associate { it.mediaId to 1.0 / (1 + (counts[it.mediaId] ?: 0)) }
+        val sum = weights.values.sum().coerceAtLeast(1e-9)
+        return songs.associate { s ->
+            val ever = totals[s.mediaId] ?: 0
+            val cycle = counts[s.mediaId] ?: 0
+            val pct = (weights[s.mediaId] ?: 0.0) / sum * 100
+            val pctTxt = if (pct < 0.1) "<0.1"
+            else String.format(Locale.US, "%.1f", pct).trimEnd('0').trimEnd('.')
+            s.mediaId to "$ever total | $cycle cycle | $pctTxt% next"
+        }
     }
 
     private fun visibleSongs(): List<Song> =
@@ -751,9 +806,24 @@ class MainActivity : AppCompatActivity() {
 
     private val progressTick = object : Runnable {
         override fun run() {
+            val playing = svc?.player?.isPlaying == true
+            if (playing) {
+                listenAccumMs += 500
+                val now = System.currentTimeMillis()
+                if (now - lastListenSave > 30_000) {
+                    lastListenSave = now
+                    persistListenTime()
+                }
+            }
             updateProgressViews()
             ticker.postDelayed(this, 500)
         }
+    }
+
+    private fun persistListenTime() {
+        if (listenAccumMs <= 0) return
+        prefs.edit().putLong("stats_listen_ms", prefs.getLong("stats_listen_ms", 0) + listenAccumMs).apply()
+        listenAccumMs = 0
     }
 
     private fun fmt(ms: Long): String {
@@ -909,7 +979,12 @@ class MainActivity : AppCompatActivity() {
                 val name = input.text.toString().ifBlank { "Playlist" }
                 val id = db.createPlaylist(name)
                 if (firstSong != null) db.addToPlaylist(id, listOf(firstSong))
-                if (tab == 3) render()
+                // Land straight inside the new playlist.
+                tab = 3
+                showTab(3)
+                drillPlaylist = id
+                drillPlaylistName = name
+                render()
             }
             .setNegativeButton("Cancel", null)
             .show()
@@ -927,6 +1002,85 @@ class MainActivity : AppCompatActivity() {
                     if (tab == 3) render()
                 }
             }
+            .show()
+    }
+
+    /** Add whole artists, whole albums, or individual songs to a playlist. */
+    private fun addSongsDialog(playlistId: Long, name: String) {
+        val filter = EditText(this).apply { hint = "Type to filter" }
+        val checked = mutableSetOf<String>()
+        val listView = RecyclerView(this).apply {
+            layoutManager = LinearLayoutManager(this@MainActivity)
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(380)
+            )
+        }
+        val pickAdapter = PickAdapter(dark = dark, checked = checked)
+        listView.adapter = pickAdapter
+
+        fun buildRows(q: String): List<PickRow> {
+            val out = mutableListOf<PickRow>()
+            val artists = songs.map { it.artist }.distinct()
+                .sortedWith(String.CASE_INSENSITIVE_ORDER)
+                .filter { q.isBlank() || it.contains(q, ignoreCase = true) }
+            if (artists.isNotEmpty()) {
+                out.add(PickRow.Header("Artists"))
+                artists.forEach { a ->
+                    val n = songs.count { it.artist == a }
+                    out.add(PickRow.Item("a:$a", a, "$n songs"))
+                }
+            }
+            val albums = songs.map { it.album }.distinct()
+                .sortedWith(String.CASE_INSENSITIVE_ORDER)
+                .filter { q.isBlank() || it.contains(q, ignoreCase = true) }
+            if (albums.isNotEmpty()) {
+                out.add(PickRow.Header("Albums"))
+                albums.forEach { a ->
+                    val n = songs.count { it.album == a }
+                    out.add(PickRow.Item("b:$a", a, "$n songs"))
+                }
+            }
+            val solo = songs.filter { q.isBlank() || it.title.contains(q, ignoreCase = true) }
+            if (solo.isNotEmpty()) {
+                out.add(PickRow.Header("Songs"))
+                solo.forEach { s -> out.add(PickRow.Item("s:${s.mediaId}", s.title, "${s.artist} | ${s.album}")) }
+            }
+            return out
+        }
+
+        filter.addTextChangedListener(object : android.text.TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+            override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+            override fun afterTextChanged(s: android.text.Editable?) {
+                pickAdapter.submit(buildRows(s?.toString() ?: ""))
+            }
+        })
+        pickAdapter.submit(buildRows(""))
+
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(8), dp(8), dp(8), dp(8))
+            addView(filter, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
+            addView(listView)
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Add to $name")
+            .setView(box)
+            .setPositiveButton("Add selected") { _, _ ->
+                val ids = mutableListOf<Long>()
+                checked.forEach { key ->
+                    when {
+                        key.startsWith("a:") -> ids.addAll(songs.filter { it.artist == key.removePrefix("a:") }.map { it.mediaId })
+                        key.startsWith("b:") -> ids.addAll(songs.filter { it.album == key.removePrefix("b:") }.map { it.mediaId })
+                        key.startsWith("s:") -> key.removePrefix("s:").toLongOrNull()?.let { ids.add(it) }
+                    }
+                }
+                if (ids.isNotEmpty()) {
+                    db.addToPlaylist(playlistId, ids.distinct())
+                    if (drillPlaylist == playlistId) render()
+                }
+            }
+            .setNegativeButton("Done", null)
             .show()
     }
 
@@ -996,6 +1150,8 @@ class MainActivity : AppCompatActivity() {
     private var queueDialog: AlertDialog? = null
     private var queueAdapter: LibraryAdapter? = null
     private var queueListView: RecyclerView? = null
+    private var nowTitleView: TextView? = null
+    private var nowArtistView: TextView? = null
     private var nowSeek: SeekBar? = null
     private var nowTime: TextView? = null
     private var nowPlayBtn: Button? = null
@@ -1014,15 +1170,17 @@ class MainActivity : AppCompatActivity() {
             setPadding(dp(16), dp(16), dp(16), dp(16))
         }
         val song = p.currentMediaItem?.mediaId?.toLongOrNull()?.let { byId[it] }
-        box.addView(TextView(this).apply {
+        nowTitleView = TextView(this).apply {
             text = song?.title ?: "Now playing"
             textSize = 18f
             typeface = android.graphics.Typeface.DEFAULT_BOLD
-        })
-        box.addView(TextView(this).apply {
+        }
+        box.addView(nowTitleView)
+        nowArtistView = TextView(this).apply {
             text = song?.let { "${it.artist} | ${it.album}" } ?: ""
             textSize = 13f
-        })
+        }
+        box.addView(nowArtistView)
         nowSeek = SeekBar(this).apply {
             max = (p.duration.coerceAtLeast(0)).toInt()
             progress = p.currentPosition.toInt().coerceIn(0, max)
@@ -1154,6 +1312,8 @@ class MainActivity : AppCompatActivity() {
                 nowSeek = null
                 nowTime = null
                 nowPlayBtn = null
+                nowTitleView = null
+                nowArtistView = null
             }
             .show()
         scrollQueueToCurrent()
@@ -1163,7 +1323,7 @@ class MainActivity : AppCompatActivity() {
         val p = svc?.player ?: return
         val qv = queueListView ?: return
         val idx = p.currentMediaItemIndex
-        if (idx >= 0) qv.scrollToPosition(idx)
+        if (idx >= 0) qv.post { qv.scrollToPosition(idx) }
     }
 
     private fun refreshQueueList() {
@@ -1313,6 +1473,22 @@ class MainActivity : AppCompatActivity() {
             text = "Songs from different sources are all over the place volume wise. Press the button once and BlissPlayer samples every song, finds the average, and turns the quiet ones up and the loud ones down. Nothing is rewritten, and Undo is one tap. Songs already done are skipped unless they changed."
             textSize = 12f
         })
+        moreBox.addView(TextView(this).apply {
+            val gains = db.allGains()
+            val last = prefs.getLong("eq_last", 0)
+            text = if (last == 0L) {
+                "Nothing equalized yet."
+            } else {
+                val d = java.text.SimpleDateFormat("MMM d, h:mm a", Locale.getDefault())
+                    .format(java.util.Date(last))
+                val covered = songs.count { it.mediaId in gains }
+                "Equalized. Last run $d: ${prefs.getInt("eq_measured", 0)} songs set " +
+                    "(up ${prefs.getInt("eq_up", 0)}, down ${prefs.getInt("eq_down", 0)}). " +
+                    "$covered of ${songs.size} songs carry loudness data now."
+            }
+            textSize = 12f
+            typeface = android.graphics.Typeface.DEFAULT_BOLD
+        })
         moreBox.addView(xpBtn(getString(R.string.equalize_all)).apply {
             setOnClickListener { equalizeConfirm() }
         })
@@ -1332,20 +1508,54 @@ class MainActivity : AppCompatActivity() {
             applyThemeLive()
         }
         moreBox.addView(themeBtn)
-
-        moreBox.addView(section("Help"))
-        moreBox.addView(TextView(this).apply {
-            text = "1. Copy songs anywhere on the phone. The Music folder is fine.\n" +
-                "2. Open More and tap Scan for music.\n" +
-                "3. Tap Play all music, or Shuffle.\n" +
-                "4. If one output is much quieter than the rest, raise Boost for it. Each output remembers its own.\n" +
-                "5. Volumes jumping between songs? Run Equalize once.\n" +
-                "6. Tap the three dots on any song for play next, playlists, edit, delete."
-            textSize = 13f
+        val showCounts = prefs.getBoolean("show_counts", false)
+        moreBox.addView(xpBtn("Show play counts: ${if (showCounts) "On" else "Off"}").apply {
+            setOnClickListener {
+                val now = !prefs.getBoolean("show_counts", false)
+                prefs.edit().putBoolean("show_counts", now).apply()
+                buildMorePane()
+                render()
+            }
         })
         moreBox.addView(TextView(this).apply {
-            text = "BlissPlayer 0.5. Small, offline, no accounts, no ads."
-            textSize = 11f
+            text = "With play counts on, each song shows its total plays, plays this cycle, and its chance of coming up next."
+            textSize = 12f
+        })
+
+        moreBox.addView(section("Stats"))
+        moreBox.addView(TextView(this).apply {
+            val totals = db.totalPlays()
+            val totalPlays = totals.values.sum()
+            val skips = prefs.getLong("stats_skips", 0)
+            val listenMs = prefs.getLong("stats_listen_ms", 0) + listenAccumMs
+            val h = listenMs / 3600000
+            val m = (listenMs % 3600000) / 60000
+            val topSong = totals.maxByOrNull { it.value }
+            val topSongTxt = topSong?.let { (id, c) ->
+                "${byId[id]?.title ?: "A deleted song"} ($c plays)"
+            } ?: "None yet"
+            val byArtist = mutableMapOf<String, Int>()
+            totals.forEach { (id, c) ->
+                val a = byId[id]?.artist ?: return@forEach
+                byArtist[a] = (byArtist[a] ?: 0) + c
+            }
+            val topArtist = byArtist.maxByOrNull { it.value }
+            val topArtistTxt = topArtist?.let { "${it.key} (${it.value} plays)" } ?: "None yet"
+            text = "Songs in library: ${songs.size}\n" +
+                "Songs played: ${totals.size}\n" +
+                "Total plays: $totalPlays\n" +
+                "Skips: $skips\n" +
+                "Time listening: ${h}h ${m}m\n" +
+                "Most played song: $topSongTxt\n" +
+                "Most played artist: $topArtistTxt"
+            textSize = 13f
+        })
+
+        moreBox.addView(section("About"))
+        moreBox.addView(TextView(this).apply {
+            val v = runCatching { packageManager.getPackageInfo(packageName, 0).versionName }.getOrNull() ?: ""
+            text = "BlissPlayer $v"
+            textSize = 13f
         })
         paintMore()
     }
@@ -1484,9 +1694,21 @@ class MainActivity : AppCompatActivity() {
             toast("Scan your music first.")
             return
         }
+        val gains = db.allGains()
+        val cached = db.getMeasures()
+        val need = songs.count { s -> s.mediaId !in gains || cached[s.mediaId]?.second != s.modified }
+        if (need == 0) {
+            AlertDialog.Builder(this)
+                .setTitle("Already equalized")
+                .setMessage("Every song is already equalized and nothing changed, so there is nothing to do.")
+                .setPositiveButton("OK", null)
+                .setNegativeButton("Measure again anyway") { _, _ -> runEqualize() }
+                .show()
+            return
+        }
         AlertDialog.Builder(this)
             .setTitle("Equalize ${songs.size} songs?")
-            .setMessage("This runs in the background and you can keep using the app. Nothing about your files changes, and Undo is one tap.")
+            .setMessage("$need new or changed, the rest are reused from last time. This runs in the background and you can keep using the app. Nothing about your files changes, and Undo is one tap.")
             .setPositiveButton("Equalize") { _, _ -> runEqualize() }
             .setNegativeButton("Not now", null)
             .show()
@@ -1532,6 +1754,13 @@ class MainActivity : AppCompatActivity() {
             )
             runCatching { dlg.dismiss() }
             svc?.refreshGains()
+            prefs.edit()
+                .putLong("eq_last", System.currentTimeMillis())
+                .putInt("eq_measured", res.measured)
+                .putInt("eq_up", res.raised)
+                .putInt("eq_down", res.lowered)
+                .apply()
+            if (tab == 4) buildMorePane()
             val skippedTxt = if (res.skipped > 0) ", skipped ${res.skipped}" else ""
             val reusedTxt = if (res.reused > 0) " ${res.reused} reused from last time." else ""
             AlertDialog.Builder(this@MainActivity)
@@ -1626,6 +1855,8 @@ class MainActivity : AppCompatActivity() {
         findViewById<Button>(R.id.btnShuffleAll).setBackgroundResource(
             if (dark) R.drawable.xp_button_dark else R.drawable.xp_button
         )
+        playlistAdd.setBackgroundResource(if (dark) R.drawable.xp_button_dark else R.drawable.xp_button)
+        playlistAdd.setTextColor(iconColor())
         mapOf(
             R.id.miniPlayPause to R.drawable.ic_play,
             R.id.miniNext to R.drawable.ic_next,

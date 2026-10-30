@@ -22,6 +22,9 @@ class LibraryAdapter(
     var dark: Boolean = false,
     /** mediaId of the currently playing song, tinted like an XP selection. */
     var highlightId: Long? = null,
+    /** Extra small stats line under the duration, keyed by mediaId. */
+    var showStats: Boolean = false,
+    var statLines: Map<Long, String> = emptyMap(),
     val onTap: (Row) -> Unit = {},
     val onMenu: (Row) -> Unit = {}
 ) : RecyclerView.Adapter<LibraryAdapter.Holder>() {
@@ -89,8 +92,18 @@ class LibraryAdapter(
             is Row.SongRow -> {
                 h.title.text = row.song.title
                 h.sub.text = "${row.song.artist} | ${row.song.album}"
-                h.dur.text = fmt(row.song.durationMs)
-                h.dur.visibility = android.view.View.VISIBLE
+                val base = fmt(row.song.durationMs)
+                if (showStats) {
+                    h.dur.setSingleLine(false)
+                    h.dur.maxLines = 2
+                    h.dur.text = base + "\n" + (statLines[row.song.mediaId] ?: "")
+                    h.dur.visibility = android.view.View.VISIBLE
+                } else {
+                    h.dur.setSingleLine(true)
+                    h.dur.maxLines = 1
+                    h.dur.text = base
+                    h.dur.visibility = android.view.View.VISIBLE
+                }
             }
             is Row.Group -> {
                 h.title.text = row.title

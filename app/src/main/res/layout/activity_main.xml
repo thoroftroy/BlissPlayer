@@ -81,6 +81,16 @@
         android:layout_marginTop="6dp"
         android:textSize="13sp" />
 
+    <Button
+        android:id="@+id/playlistAdd"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="6dp"
+        android:background="@drawable/xp_button"
+        android:minHeight="40dp"
+        android:text="Add songs"
+        android:visibility="gone" />
+
     <!-- Explorer style column header for song lists -->
     <TextView
         android:id="@+id/headerBar"

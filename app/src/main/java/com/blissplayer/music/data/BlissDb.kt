@@ -12,7 +12,7 @@ import android.database.sqlite.SQLiteOpenHelper
  *  playlists(id, name) + playlist_songs(playlist_id, media_id, position)
  *  boost(device_name PRIMARY KEY, gain_mult)  , per-device amp memory (car vs headphones)
  */
-class BlissDb(context: Context) : SQLiteOpenHelper(context, "bliss.db", null, 4) {
+class BlissDb(context: Context) : SQLiteOpenHelper(context, "bliss.db", null, 5) {
 
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL("CREATE TABLE gains(media_id INTEGER PRIMARY KEY, gain_mult REAL NOT NULL)")
@@ -23,6 +23,7 @@ class BlissDb(context: Context) : SQLiteOpenHelper(context, "bliss.db", null, 4)
         db.execSQL("CREATE TABLE plays(media_id INTEGER PRIMARY KEY, count INTEGER NOT NULL)")
         db.execSQL("CREATE TABLE measure(media_id INTEGER PRIMARY KEY, rms REAL NOT NULL, modified INTEGER NOT NULL)")
         db.execSQL("CREATE TABLE preset(name TEXT PRIMARY KEY, gain_mult REAL NOT NULL)")
+        db.execSQL("CREATE TABLE plays_total(media_id INTEGER PRIMARY KEY, count INTEGER NOT NULL)")
     }
 
     override fun onUpgrade(db: SQLiteDatabase, old: Int, new: Int) {
@@ -32,6 +33,7 @@ class BlissDb(context: Context) : SQLiteOpenHelper(context, "bliss.db", null, 4)
             db.execSQL("CREATE TABLE IF NOT EXISTS measure(media_id INTEGER PRIMARY KEY, rms REAL NOT NULL, modified INTEGER NOT NULL)")
         }
         if (old < 4) db.execSQL("CREATE TABLE IF NOT EXISTS preset(name TEXT PRIMARY KEY, gain_mult REAL NOT NULL)")
+        if (old < 5) db.execSQL("CREATE TABLE IF NOT EXISTS plays_total(media_id INTEGER PRIMARY KEY, count INTEGER NOT NULL)")
     }
 
     // ---- gains ----
@@ -127,10 +129,14 @@ class BlissDb(context: Context) : SQLiteOpenHelper(context, "bliss.db", null, 4)
         return default
     }
 
-    // ---- lifetime play counts (Smart Shuffle) ----
+    // ---- lifetime play counts (Smart Shuffle + stats) ----
     fun bumpPlay(mediaId: Long) {
         writableDatabase.execSQL(
             "INSERT INTO plays(media_id, count) VALUES(?,1) ON CONFLICT(media_id) DO UPDATE SET count=count+1",
+            arrayOf(mediaId)
+        )
+        writableDatabase.execSQL(
+            "INSERT INTO plays_total(media_id, count) VALUES(?,1) ON CONFLICT(media_id) DO UPDATE SET count=count+1",
             arrayOf(mediaId)
         )
     }
@@ -144,6 +150,15 @@ class BlissDb(context: Context) : SQLiteOpenHelper(context, "bliss.db", null, 4)
     }
 
     fun resetPlays() = writableDatabase.delete("plays", null, null)
+
+    /** Never reset. Total plays per song since install. */
+    fun totalPlays(): Map<Long, Int> {
+        val m = mutableMapOf<Long, Int>()
+        readableDatabase.rawQuery("SELECT media_id, count FROM plays_total", null)?.use { c ->
+            while (c.moveToNext()) m[c.getLong(0)] = c.getInt(1)
+        }
+        return m
+    }
 
     // ---- loudness measure cache (Equalize) ----
     fun putMeasure(mediaId: Long, rms: Double, modified: Long) {

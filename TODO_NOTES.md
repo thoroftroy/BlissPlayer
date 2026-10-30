@@ -177,3 +177,11 @@ Log:
 - [x] Dark XP mode paints the real background and every label, no restart, no lost place.
 - [x] Toast audit: popups now only for errors, deletes, long op results, and the volume guard fighting the phone.
 - [x] Themed notification: XP blue bar layout with buttons and progress bar in the shade. Lockscreen and car controls unchanged.
+
+## [x] 17. Round 6, v0.6.0 (2026-10-29, user feedback)
+- [x] Help section removed. About shows app name and version only.
+- [x] Loudness section carries a status line (last run, set counts, coverage). Re run is blocked when nothing changed, with a measure anyway option.
+- [x] Now Playing dialog follows track changes: header text updates, highlight and autoscroll fixed.
+- [x] Playlists: creating one lands straight inside it. Add songs picker with artists, albums, individual songs, and a filter.
+- [x] Play counts toggle in Look and feel. Lists and queue show total plays, cycle plays, and next up chance by the duration.
+- [x] Stats section in More: library size, songs played, total plays, skips, time listening, most played song and artist. Skips counted from manual jumps, listen time accumulated while playing.
