@@ -11,3 +11,5 @@ local.properties
 # Ignore stray APKs, but keep the distributable copy at repo root.
 *.apk
 !/BlissPlayer-*.apk
+# Round work trackers are scratch paper, never shipped.
+TODO_ROUND*.md
