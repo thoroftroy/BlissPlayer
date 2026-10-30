@@ -26,8 +26,8 @@ Primary use: play music downloaded from YouTube, in car + headphones.
 - [x] User picks app name: BlissPlayer
 - [x] User icon: BlissIcon.png (360px) turned into all mipmap sizes, wired as launcher icon
 - [x] `git init` in MusicPlayer/, committed, branch `main`
-- [ ] WAITING ON YOU: GitHub Desktop, File, Add Local Repository, pick ~/Downloads/MusicPlayer, Publish (private or public). Steps at bottom of file.
-- [ ] WAITING ON YOU: say private or public so the note can record it
+- [X] WAITING ON YOU: GitHub Desktop, File, Add Local Repository, pick ~/Downloads/MusicPlayer, Publish (private or public). Steps at bottom of file.
+- [X] WAITING ON YOU: say private or public so the note can record it (Private for now)
 
 Name candidates (picked #4):
 1. XPlayer, short, XP nod
@@ -119,7 +119,7 @@ Name candidates (picked #4):
 ## [ ] 11. Build, test, ship (code side done, two steps waiting on you)
 - [x] `./build-apk.sh` one-command build, lint clean every time
 - [x] Device tested by user across versions: install, scan, play all, shuffle, play-next, loop, playlists, edit, delete, boost, equalize, dark/light, notification, segments
-- [ ] WAITING ON YOU: push to GitHub via Desktop, tag a release, attach the APK so the phone can pull it
+- [X] WAITING ON YOU: push to GitHub via Desktop, tag a release, attach the APK so the phone can pull it
 - [ ] Release (signed, shrunk) build: NOT DONE (debug APK only so far, say the word)
 
 ## Open questions for user, all answered, kept for the record
@@ -207,3 +207,9 @@ Log:
 - [x] Version stays 0.4.0 until the user says bump. Invisible code bumps only.
 - [x] Toasts only for errors, guidance, destructive confirms, long-op results, and the volume guard fighting the phone.
 - [x] Never drop a requested feature silently. If it cannot be done (OS blocks it), say so plainly with the real alternative.
+
+## [x] 19. Round 8, still v0.4 (2026-10-29): smart search
+- [x] Search bar on the library, debounced, results replace the list while active, tap crumb or X to clear.
+- [x] Fuzzy match: lowercased, accents stripped, typo tolerant (1 typo short words, 2 long), ranked title first, then artist, album, genre.
+- [x] Filters: artist text, album text, genre picker, playlist picker, removable chips. Song titles still match loosely with filters on.
+- [x] Playing from results keeps the results as the queue context.

@@ -232,6 +232,14 @@ class BlissDb(context: Context) : SQLiteOpenHelper(context, "bliss.db", null, 6)
         )
     }
 
+    fun allGenres(): Map<Long, String> {
+        val m = mutableMapOf<Long, String>()
+        readableDatabase.rawQuery("SELECT media_id, genre FROM song_genre", null)?.use { c ->
+            while (c.moveToNext()) m[c.getLong(0)] = c.getString(1)
+        }
+        return m
+    }
+
     // ---- loudness measure cache (Equalize) ----
     fun putMeasure(mediaId: Long, rms: Double, modified: Long) {
         writableDatabase.insertWithOnConflict(

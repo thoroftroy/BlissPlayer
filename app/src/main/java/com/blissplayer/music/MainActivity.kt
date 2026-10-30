@@ -87,6 +87,26 @@ class MainActivity : AppCompatActivity() {
     private var listenAccumMs: Long = 0L
     private var lastListenSave: Long = 0L
 
+    // Search state. Active when the query or any filter is set.
+    private var searchQuery = ""
+    private var filterArtist = ""
+    private var filterAlbum = ""
+    private var filterGenre = ""
+    private var filterPlaylist: Long? = null
+    private var filterPlaylistName = ""
+    private data class SearchIdx(
+        val song: Song,
+        val title: String,
+        val artist: String,
+        val album: String,
+        val genre: String,
+        val all: String,
+        val words: List<String>
+    )
+    private var searchIndex: List<SearchIdx> = emptyList()
+    private var genreMap: Map<Long, String> = emptyMap()
+    private var searchJob: Job? = null
+
     // Library view state
     private var tab = 0 // 0 songs 1 artists 2 albums 3 playlists
     private var drillArtist: String? = null
@@ -100,6 +120,10 @@ class MainActivity : AppCompatActivity() {
     private lateinit var crumb: TextView
     private lateinit var playlistAdd: Button
     private lateinit var headerBar: TextView
+    private lateinit var searchBox: EditText
+    private lateinit var filterBtn: Button
+    private lateinit var searchClear: Button
+    private lateinit var chipsRow: LinearLayout
     private lateinit var statusStrip: TextView
     private lateinit var list: RecyclerView
     private lateinit var morePane: ScrollView
@@ -252,6 +276,20 @@ class MainActivity : AppCompatActivity() {
             addSongsDialog(id, drillPlaylistName ?: "Playlist")
         }
         headerBar = findViewById(R.id.headerBar)
+        searchBox = findViewById(R.id.searchBox)
+        filterBtn = findViewById(R.id.filterBtn)
+        searchClear = findViewById(R.id.searchClear)
+        chipsRow = findViewById(R.id.chipsRow)
+        searchBox.addTextChangedListener(object : android.text.TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+            override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+            override fun afterTextChanged(s: android.text.Editable?) {
+                searchQuery = s?.toString() ?: ""
+                refreshResults()
+            }
+        })
+        filterBtn.setOnClickListener { filterDialog() }
+        searchClear.setOnClickListener { clearSearch() }
         statusStrip = findViewById(R.id.statusStrip)
         list = findViewById(R.id.list)
         morePane = findViewById(R.id.morePane)
@@ -283,7 +321,9 @@ class MainActivity : AppCompatActivity() {
         findViewById<Button>(R.id.tabMore).setOnClickListener { showTab(4) }
         findViewById<Button>(R.id.btnPlayAll).setOnClickListener { playAll(shuffle = false) }
         findViewById<Button>(R.id.btnShuffleAll).setOnClickListener { playAll(shuffle = true) }
-        crumb.setOnClickListener { clearDrill() }
+        crumb.setOnClickListener {
+            if (isSearchActive()) clearSearch() else clearDrill()
+        }
         miniPlayPause.setOnClickListener { togglePlay() }
         findViewById<ImageButton>(R.id.miniNext).setOnClickListener { skipNext() }
         findViewById<ImageButton>(R.id.miniQueue).setOnClickListener { openNowPlaying() }
@@ -406,6 +446,16 @@ class MainActivity : AppCompatActivity() {
                 songs = filtered
                 byId.clear()
                 filtered.forEach { byId[it.mediaId] = it }
+                genreMap = db.allGenres()
+                searchIndex = filtered.map { s ->
+                    val g = genreMap[s.mediaId] ?: "Uncategorized"
+                    val t = norm(s.title)
+                    val a = norm(s.artist)
+                    val al = norm(s.album)
+                    val gn = norm(g)
+                    val all = "$t $a $al $gn"
+                    SearchIdx(s, t, a, al, gn, all, all.split(' ').filter { it.isNotEmpty() })
+                }
                 restoreQueueIfNeeded()
                 if (pendingQueueSync) {
                     pendingQueueSync = false
@@ -486,10 +536,221 @@ class MainActivity : AppCompatActivity() {
     private fun showingSongs(): Boolean =
         tab == 0 || drillArtist != null || drillAlbum != null || drillPlaylist != null
 
+    // ---------- search (fuzzy + filters) ----------
+
+    private fun isSearchActive(): Boolean =
+        searchQuery.isNotBlank() || filterArtist.isNotBlank() || filterAlbum.isNotBlank() ||
+            filterGenre.isNotBlank() || filterPlaylist != null
+
+    /** Lowercase, no accents, only letters and digits. Typos still match after this. */
+    private fun norm(s: String): String {
+        val n = java.text.Normalizer.normalize(s.lowercase(Locale.US), java.text.Normalizer.Form.NFD)
+        return n.replace(Regex("[^a-z0-9 ]"), " ").replace(Regex("\\s+"), " ").trim()
+    }
+
+    /** Levenshtein with an early exit past cap. Small words must match closer. */
+    private fun lev(a: String, b: String, cap: Int): Int {
+        if (kotlin.math.abs(a.length - b.length) > cap) return cap + 1
+        var prev = IntArray(b.length + 1) { it }
+        var cur = IntArray(b.length + 1)
+        for (i in 1..a.length) {
+            cur[0] = i
+            var rowMin = i
+            for (j in 1..b.length) {
+                val cost = if (a[i - 1] == b[j - 1]) 0 else 1
+                cur[j] = minOf(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost)
+                rowMin = minOf(rowMin, cur[j])
+            }
+            if (rowMin > cap) return cap + 1
+            val t = prev
+            prev = cur
+            cur = t
+        }
+        return prev[b.length]
+    }
+
+    private fun computeResults(): List<Song> {
+        val q = norm(searchQuery)
+        val tokens = q.split(' ').filter { it.isNotEmpty() }
+        val inPlaylist: Set<Long>? = filterPlaylist?.let { db.songsIn(it).toSet() }
+        val fA = norm(filterArtist)
+        val fB = norm(filterAlbum)
+        val fG = norm(filterGenre)
+        val out = mutableListOf<Pair<Song, Int>>()
+        for (e in searchIndex) {
+            val s = e.song
+            if (inPlaylist != null && s.mediaId !in inPlaylist) continue
+            if (fA.isNotEmpty() && !e.artist.contains(fA)) continue
+            if (fB.isNotEmpty() && !e.album.contains(fB)) continue
+            if (fG.isNotEmpty() && !e.genre.contains(fG)) continue
+            if (tokens.isEmpty()) {
+                out.add(s to 0)
+                continue
+            }
+            var score = 0
+            var ok = true
+            if (e.title.contains(q)) score -= 100
+            if (e.artist.contains(q)) score -= 50
+            if (e.album.contains(q)) score -= 20
+            if (e.genre.contains(q)) score -= 10
+            for (t in tokens) {
+                if (e.all.contains(t)) {
+                    score -= 5
+                    continue
+                }
+                if (t.length <= 2) {
+                    ok = false
+                    break
+                }
+                val cap = if (t.length <= 4) 1 else 2
+                val hit = e.words.any { w -> w.length >= 2 && lev(t, w, cap) <= cap }
+                if (!hit) {
+                    ok = false
+                    break
+                } else {
+                    score += t.length
+                }
+            }
+            if (ok) out.add(s to score)
+        }
+        return out.sortedWith(compareBy({ it.second }, { it.first.sortTitle })).map { it.first }
+    }
+
+    private fun refreshResults() {
+        searchJob?.cancel()
+        searchJob = CoroutineScope(Dispatchers.Main).launch {
+            kotlinx.coroutines.delay(150)
+            val res = kotlinx.coroutines.withContext(Dispatchers.Default) { computeResults() }
+            if (tab != 4 && isSearchActive()) {
+                adapter.submit(res.map { Row.SongRow(it) })
+                crumb.text = "${res.size} results | tap to clear"
+                headerBar.visibility = View.VISIBLE
+                playlistAdd.visibility = View.GONE
+                searchClear.visibility = View.VISIBLE
+                rebuildChips()
+            } else {
+                searchClear.visibility = if (isSearchActive()) View.VISIBLE else View.GONE
+                if (!isSearchActive()) render()
+            }
+        }
+    }
+
+    private fun clearSearch() {
+        searchQuery = ""
+        filterArtist = ""
+        filterAlbum = ""
+        filterGenre = ""
+        filterPlaylist = null
+        filterPlaylistName = ""
+        searchBox.setText("")
+        rebuildChips()
+        render()
+    }
+
+    private fun rebuildChips() {
+        chipsRow.removeAllViews()
+        fun chip(label: String, clear: () -> Unit) {
+            val b = xpBtn("$label ×")
+            b.layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { marginEnd = dp(6) }
+            b.setOnClickListener { clear() }
+            chipsRow.addView(b)
+        }
+        if (filterArtist.isNotBlank()) chip("Artist: $filterArtist") { filterArtist = ""; refreshResults() }
+        if (filterAlbum.isNotBlank()) chip("Album: $filterAlbum") { filterAlbum = ""; refreshResults() }
+        if (filterGenre.isNotBlank()) chip("Genre: $filterGenre") { filterGenre = ""; refreshResults() }
+        if (filterPlaylist != null) chip("Playlist: $filterPlaylistName") {
+            filterPlaylist = null
+            filterPlaylistName = ""
+            refreshResults()
+        }
+        chipsRow.visibility = if (chipsRow.childCount == 0) View.GONE else View.VISIBLE
+    }
+
+    private fun filterDialog() {
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(16), dp(8), dp(16), dp(8))
+        }
+        fun field(label: String, value: String): EditText {
+            box.addView(TextView(this).apply { text = label })
+            return EditText(this).apply {
+                setText(value)
+                box.addView(this)
+            }
+        }
+        val eArtist = field("Artist contains", filterArtist)
+        val eAlbum = field("Album contains", filterAlbum)
+        var gSel = filterGenre
+        var pSel = filterPlaylist
+        var pName = filterPlaylistName
+        val gBtn = xpBtn(if (gSel.isBlank()) "Genre: any" else "Genre: $gSel").apply {
+            setOnClickListener {
+                val all = (genreMap.values.distinct().sorted() + "Uncategorized").distinct().sorted()
+                val names = (listOf("Any genre") + all).toTypedArray()
+                AlertDialog.Builder(this@MainActivity)
+                    .setTitle("Genre")
+                    .setItems(names) { _, which ->
+                        gSel = if (which == 0) "" else all[which - 1]
+                        text = if (gSel.isBlank()) "Genre: any" else "Genre: $gSel"
+                    }
+                    .show()
+            }
+        }
+        box.addView(gBtn)
+        val pBtn = xpBtn(if (pSel == null) "Playlist: any" else "Playlist: $pName").apply {
+            setOnClickListener {
+                val pls = db.playlists()
+                val names = (listOf("Any playlist") + pls.map { it.second }).toTypedArray()
+                AlertDialog.Builder(this@MainActivity)
+                    .setTitle("In playlist")
+                    .setItems(names) { _, which ->
+                        if (which == 0) {
+                            pSel = null
+                            pName = ""
+                        } else {
+                            pSel = pls[which - 1].first
+                            pName = pls[which - 1].second
+                        }
+                        text = if (pSel == null) "Playlist: any" else "Playlist: $pName"
+                    }
+                    .show()
+            }
+        }
+        box.addView(pBtn)
+        box.addView(TextView(this).apply {
+            text = "Filters narrow the search to matching songs. Song titles still match loosely, so typos are fine."
+            textSize = 12f
+        })
+        AlertDialog.Builder(this)
+            .setTitle("Search filters")
+            .setView(box)
+            .setPositiveButton("Apply") { _, _ ->
+                filterArtist = eArtist.text.toString()
+                filterAlbum = eAlbum.text.toString()
+                filterGenre = gSel
+                filterPlaylist = pSel
+                filterPlaylistName = pName
+                rebuildChips()
+                refreshResults()
+            }
+            .setNegativeButton("Cancel", null)
+            .setNeutralButton("Clear all") { _, _ -> clearSearch() }
+            .show()
+    }
+
     private fun render() {
         if (tab == 4) return
         titleBar.text = "BlissPlayer: ${listOf("Songs", "Artists", "Albums", "Playlists")[tab]}"
         headerBar.visibility = if (showingSongs()) View.VISIBLE else View.GONE
+        if (isSearchActive()) {
+            titleBar.text = "BlissPlayer: Search"
+            searchClear.visibility = View.VISIBLE
+            refreshResults()
+            return
+        }
+        searchClear.visibility = View.GONE
         playlistAdd.visibility = if (drillPlaylist != null) View.VISIBLE else View.GONE
         val wantStats = prefs.getBoolean("show_counts", false)
         adapter.showStats = wantStats
@@ -541,6 +802,7 @@ class MainActivity : AppCompatActivity() {
                 adapter.submit(rows)
             }
         }
+        rebuildChips()
         updateStatus()
     }
 
@@ -2035,6 +2297,10 @@ class MainActivity : AppCompatActivity() {
         )
         playlistAdd.setBackgroundResource(if (dark) R.drawable.xp_button_dark else R.drawable.xp_button)
         playlistAdd.setTextColor(iconColor())
+        filterBtn.setBackgroundResource(if (dark) R.drawable.xp_button_dark else R.drawable.xp_button)
+        filterBtn.setTextColor(iconColor())
+        searchClear.setBackgroundResource(if (dark) R.drawable.xp_button_dark else R.drawable.xp_button)
+        searchClear.setTextColor(iconColor())
         mapOf(
             R.id.miniPlayPause to R.drawable.ic_play,
             R.id.miniNext to R.drawable.ic_next,
