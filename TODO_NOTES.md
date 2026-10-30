@@ -102,3 +102,24 @@ Clicking playlists takes me to generas for soem reason?
 ## Message 29 (messages first)
 make sure all the messages are in the todo notes, that should be the first thing you do not the last
 
+
+## [x] 23. Round 11 (still v0.5): dots fix, dialogs, genres, notification, queue buttons
+- [x] Overflow dots were invisible (layer-list icon had no size). Replaced with a real vector, verified visible on every row.
+- [x] Crumb text fixed, no dots mention.
+- [x] Every dialog has an XP blue title bar. Every list menu is XP buttons.
+- [x] Genres tab added; tap wiring missed on first pass, fixed same session. Playlists miswired to Genres by the renumber, fixed same session.
+- [x] Notification: white icons, XP artwork baked into image, verified branded in shade.
+- [x] Swipe-away on notification stops everything (pause + stopSelf). App swipe keeps playing (verified live).
+- [x] Now Playing bottom row is three small buttons: Save queue | Segment Editor | Close.
+- [x] createPlaylistDialog takes a list so a whole queue can be saved.
+
+## [x] 24. Round 12 (still v0.5): queue truth, rotation, landscape, play, playlists, shuffle options
+- [x] Genre rows drill down with dots menu and genre menu (Play/Shuffle/Add/Playlist).
+- [x] Queue desync hardening: current song by media id, mirror self-heals on mismatch.
+- [x] Rotation refreshes library + mini player after scan.
+- [x] Landscape two-panel layout + rotation lock (Auto/Portrait/Landscape).
+- [x] Play button contextual everywhere, top Shuffle removed, Shuffle in menus.
+- [x] Playlist drill: drag reorder persisted, swipe removes, track numbers.
+- [x] Search hides behind magnifier toggle in title bar.
+- [x] Shuffle options section: smart on/off, anti-repeat strength slider, reset moved here.
+- [x] Emulator verified: tabs, dots, themed menus, genre drill, playlist drill + numbers, landscape render, minimize/swipe-app/screen-off playback.
