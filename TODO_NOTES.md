@@ -170,3 +170,10 @@ Log:
 - [x] SafeVolumeGuard: while music plays, a dropped system volume is put straight back. Throttled (3 restores a minute, then 5 min cooldown with a pointer to settings). Opt in, off by default.
 - [x] More pane: Phone volume guard section with plain explainer, on/off toggle, Open sound settings button.
 - [x] Note: BlissPlayer Boost works on the signal, not the system slider, so keeping system volume moderate and boosting in app already avoids most warnings.
+
+## [x] 16. Round 5, v0.5.0 (2026-10-29, user feedback)
+- [x] Gapless shuffle: the playing song is never touched, only the songs behind it are swapped. No pause, no restart. Same for the main Shuffle button and drag reorder.
+- [x] Boost: tap the percent to type any exact number from 1 to 2000. No quality cap, warnings instead (past 150 quality drops, past 500 expect distortion).
+- [x] Dark XP mode paints the real background and every label, no restart, no lost place.
+- [x] Toast audit: popups now only for errors, deletes, long op results, and the volume guard fighting the phone.
+- [x] Themed notification: XP blue bar layout with buttons and progress bar in the shade. Lockscreen and car controls unchanged.

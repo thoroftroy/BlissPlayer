@@ -6,6 +6,7 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Intent
+import android.widget.RemoteViews
 import android.media.audiofx.LoudnessEnhancer
 import android.os.Build
 import android.os.Handler
@@ -165,15 +166,38 @@ class PlayerService : MediaSessionService() {
         val playing = player.isPlaying
         val dur = player.duration.coerceAtLeast(0)
         val pos = player.currentPosition.coerceIn(0, dur)
+        val title = md?.title?.toString() ?: "BlissPlayer"
+        val artist = listOfNotNull(
+            md?.artist?.toString(),
+            md?.albumTitle?.toString()
+        ).joinToString(" | ").ifBlank { "Ready" }
+        val playIcon = if (playing) R.drawable.ic_pause else R.drawable.ic_play
+
+        val small = RemoteViews(packageName, R.layout.xp_notif_small).apply {
+            setTextViewText(R.id.n_title, title)
+            setTextViewText(R.id.n_artist, artist)
+            setImageViewResource(R.id.n_play, playIcon)
+            setImageViewResource(R.id.n_next, R.drawable.ic_next)
+            setOnClickPendingIntent(R.id.n_play, actionIntent(ACTION_TOGGLE, 2))
+            setOnClickPendingIntent(R.id.n_next, actionIntent(ACTION_NEXT, 3))
+        }
+        val big = RemoteViews(packageName, R.layout.xp_notif_big).apply {
+            setTextViewText(R.id.n_title, title)
+            setTextViewText(R.id.n_artist, artist)
+            setImageViewResource(R.id.n_play, playIcon)
+            setImageViewResource(R.id.n_next, R.drawable.ic_next)
+            setImageViewResource(R.id.n_prev, R.drawable.ic_prev)
+            setOnClickPendingIntent(R.id.n_play, actionIntent(ACTION_TOGGLE, 2))
+            setOnClickPendingIntent(R.id.n_next, actionIntent(ACTION_NEXT, 3))
+            setOnClickPendingIntent(R.id.n_prev, actionIntent(ACTION_PREV, 1))
+            setTextViewText(R.id.n_time, "${fmt(pos)} / ${fmt(dur)}")
+            if (dur > 0) setProgressBar(R.id.n_progress, 1000, ((pos * 1000) / dur).toInt().coerceIn(0, 1000), false)
+        }
+
         val b = NotificationCompat.Builder(this, CHANNEL)
             .setSmallIcon(R.mipmap.ic_launcher)
-            .setContentTitle(md?.title?.toString() ?: "BlissPlayer")
-            .setContentText(
-                listOfNotNull(
-                    md?.artist?.toString(),
-                    md?.albumTitle?.toString()
-                ).joinToString(" | ").ifBlank { "Ready" }
-            )
+            .setContentTitle(title)
+            .setContentText(artist)
             .setContentIntent(
                 PendingIntent.getActivity(
                     this, 0, Intent(this, MainActivity::class.java),
@@ -184,6 +208,9 @@ class PlayerService : MediaSessionService() {
             .setOnlyAlertOnce(true)
             .setOngoing(playing)
             .setShowWhen(false)
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+            .setCustomContentView(small)
+            .setCustomBigContentView(big)
             .addAction(android.R.drawable.ic_media_previous, "Previous", actionIntent(ACTION_PREV, 1))
             .addAction(
                 if (playing) android.R.drawable.ic_media_pause else android.R.drawable.ic_media_play,
@@ -199,6 +226,11 @@ class PlayerService : MediaSessionService() {
             .setColor(0xFF0058E6.toInt())
         if (dur > 0) b.setProgress(dur.toInt().coerceAtLeast(1), pos.toInt(), false)
         return b.build()
+    }
+
+    private fun fmt(ms: Long): String {
+        val s = (ms / 1000).toInt().coerceAtLeast(0)
+        return "%d:%02d".format(s / 60, s % 60)
     }
 
     private fun postNotif() {
@@ -217,17 +249,17 @@ class PlayerService : MediaSessionService() {
         super.onDestroy()
     }
 
-    /** Recompute output gain for the now-playing item. Clamped to 1%..500%. */
+    /** Recompute output gain for the now-playing item. Up to 2000 percent, no quality cap. */
     fun applyGainFor(item: MediaItem?) {
         val id = item?.mediaId?.toLongOrNull()
         val norm = if (id != null) (normGains[id] ?: 1.0).toFloat() else 1.0f
-        val total = (norm * boost).coerceIn(0.01f, 5.0f)
+        val total = (norm * boost).coerceIn(0.01f, 20.0f)
         // Stage 1: ExoPlayer volume does everything up to unity.
         player.volume = total.coerceIn(0.0f, 1.0f)
-        // Stage 2: enhancer adds the rest as dB above unity (e.g. 2.0x = +6 dB).
+        // Stage 2: enhancer adds the rest as dB above unity. The phone clamps to its own max.
         val enh = enhancer
         if (enh != null && total > 1.0f) {
-            val mb = (20f * log10(total) * 100).toInt().coerceIn(0, 1400)
+            val mb = (20f * log10(total) * 100).toInt().coerceIn(0, 3000)
             runCatching { enh.setTargetGain(mb) }
         } else if (enh != null) {
             runCatching { enh.setTargetGain(0) }

@@ -21,6 +21,7 @@ import android.provider.DocumentsContract
 import android.provider.Settings
 import android.text.InputType
 import android.view.View
+import android.view.ViewGroup
 import android.widget.Button
 import android.widget.EditText
 import android.widget.ImageButton
@@ -135,7 +136,6 @@ class MainActivity : AppCompatActivity() {
         val set = prefs.getStringSet("folders", emptySet())!!.toMutableSet()
         set.add(path)
         prefs.edit().putStringSet("folders", set).apply()
-        toast("Added folder: $path")
         buildMorePane()
         scan()
     }
@@ -580,16 +580,35 @@ class MainActivity : AppCompatActivity() {
             toast("No music yet. Copy songs on, then Scan.")
             return
         }
-        val ordered = if (shuffle) smartOrder(songs) else songs
-        shuffled = shuffle
-        queue.clear()
-        queue.addAll(ordered)
         val p = svc?.player ?: run { toast("Player is starting. Try again in a second."); return }
-        p.setMediaItems(ordered.map(::toItem), 0, 0)
-        p.repeatMode = REPEAT_MODE_OFF
-        p.prepare()
-        p.play()
-        toast(if (shuffle) "Shuffled." else "Playing all music.")
+        if (shuffle) {
+            val ordered = smartOrder(songs)
+            val cur = queue.getOrNull(p.currentMediaItemIndex.coerceAtLeast(0))
+            if (p.mediaItemCount > 0 && cur != null && ordered.any { it.mediaId == cur.mediaId }) {
+                // Gapless path: keep the playing song, swap everything behind it.
+                queue.clear()
+                queue.addAll(ordered)
+                shuffled = true
+                replaceTail(ordered.filter { it.mediaId != cur.mediaId })
+                refreshQueueList()
+                return
+            }
+            queue.clear()
+            queue.addAll(ordered)
+            shuffled = true
+            p.setMediaItems(ordered.map(::toItem), 0, 0)
+            p.repeatMode = REPEAT_MODE_OFF
+            p.prepare()
+            p.play()
+        } else {
+            queue.clear()
+            queue.addAll(songs)
+            shuffled = false
+            p.setMediaItems(songs.map(::toItem), 0, 0)
+            p.repeatMode = REPEAT_MODE_OFF
+            p.prepare()
+            p.play()
+        }
         refreshMini()
     }
 
@@ -607,6 +626,24 @@ class MainActivity : AppCompatActivity() {
         }.sortedBy { it.second }.map { it.first }
     }
 
+    /**
+     * Gapless reorder. The playing song is never touched, only the songs
+     * behind it are swapped, so there is no pause or restart.
+     */
+    private fun replaceTail(newUpcoming: List<Song>) {
+        val p = svc?.player ?: return
+        ensureQueueSync()
+        val ci = p.currentMediaItemIndex.coerceAtLeast(0)
+        val cur = queue.getOrNull(ci) ?: return
+        val total = queue.size
+        if (ci > 0) p.removeMediaItems(0, ci)
+        if (total - ci - 1 > 0) p.removeMediaItems(1, total - ci)
+        if (newUpcoming.isNotEmpty()) p.addMediaItems(1, newUpcoming.map(::toItem))
+        queue.clear()
+        queue.add(cur)
+        queue.addAll(newUpcoming)
+    }
+
     /** Shuffle means the queue itself is reordered and the screen shows it. Tap again to re-shuffle. */
     private fun shuffleQueue() {
         val p = svc?.player ?: return
@@ -616,20 +653,12 @@ class MainActivity : AppCompatActivity() {
             return
         }
         val curIdx = p.currentMediaItemIndex.coerceAtLeast(0)
-        val cur = queue.getOrNull(curIdx)
+        val cur = queue.getOrNull(curIdx) ?: return
         val rest = queue.toMutableList()
-        if (cur != null) rest.removeAll { it.mediaId == cur.mediaId }
-        val ordered = smartOrder(rest)
-        val wasPlaying = p.isPlaying
-        queue.clear()
-        if (cur != null) queue.add(cur)
-        queue.addAll(ordered)
+        rest.removeAll { it.mediaId == cur.mediaId }
         shuffled = true
-        p.setMediaItems(queue.map(::toItem), 0, p.currentPosition)
-        p.prepare()
-        if (wasPlaying) p.play()
+        replaceTail(smartOrder(rest))
         refreshQueueList()
-        toast("Shuffled.")
     }
 
     /** Adding to the queue always lands right after the current song, even when shuffled. */
@@ -643,7 +672,6 @@ class MainActivity : AppCompatActivity() {
         val at = (p.currentMediaItemIndex + 1).coerceIn(0, queue.size)
         queue.add(at, song)
         p.addMediaItem(at, toItem(song))
-        toast("Up next: ${song.title}")
         refreshQueueList()
     }
 
@@ -656,7 +684,6 @@ class MainActivity : AppCompatActivity() {
         }
         queue.add(song)
         p.addMediaItem(toItem(song))
-        toast("Added to queue: ${song.title}")
         refreshQueueList()
     }
 
@@ -799,12 +826,8 @@ class MainActivity : AppCompatActivity() {
                     null, null, null
                 )
                 CoroutineScope(Dispatchers.Main).launch {
-                    toast("Saving.")
                     when (val r = TagTools.writeTags(this@MainActivity, song, edit)) {
-                        is TagTools.WriteResult.Ok -> {
-                            toast("Saved.")
-                            scan()
-                        }
+                        is TagTools.WriteResult.Ok -> scan()
                         is TagTools.WriteResult.NeedsPermission -> {
                             pendingRetry = { tagEditorSaveRetry(song, edit) }
                             senderLauncher.launch(IntentSenderRequest.Builder(r.sender).build())
@@ -820,10 +843,7 @@ class MainActivity : AppCompatActivity() {
     private fun tagEditorSaveRetry(song: Song, edit: TagTools.Edit) {
         CoroutineScope(Dispatchers.Main).launch {
             when (val r = TagTools.writeTags(this@MainActivity, song, edit)) {
-                is TagTools.WriteResult.Ok -> {
-                    toast("Saved.")
-                    scan()
-                }
+                is TagTools.WriteResult.Ok -> scan()
                 is TagTools.WriteResult.NeedsPermission ->
                     senderLauncher.launch(IntentSenderRequest.Builder(r.sender).build())
                 is TagTools.WriteResult.Failed -> toast("Could not save: ${r.msg}")
@@ -841,7 +861,7 @@ class MainActivity : AppCompatActivity() {
                         is TagTools.WriteResult.Ok -> {
                             toast("Deleted.")
                             queue.removeAll { it.mediaId == song.mediaId }
-                            syncPlayerToQueue()
+                            removeFromPlayer(song.mediaId)
                             scan()
                         }
                         is TagTools.WriteResult.NeedsPermission -> {
@@ -870,14 +890,12 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun syncPlayerToQueue() {
+    /** Remove every occurrence of a song from the live player playlist, gapless. */
+    private fun removeFromPlayer(mediaId: Long) {
         val p = svc?.player ?: return
-        val idx = p.currentMediaItemIndex.coerceAtLeast(0).coerceAtMost(queue.size.coerceAtLeast(1) - 1)
-        val pos = p.currentPosition
-        val wasPlaying = p.isPlaying
-        p.setMediaItems(queue.map(::toItem), idx, pos)
-        p.prepare()
-        if (wasPlaying) p.play()
+        for (i in p.mediaItemCount - 1 downTo 0) {
+            if (p.getMediaItemAt(i).mediaId == mediaId.toString()) p.removeMediaItem(i)
+        }
     }
 
     // ---------- playlists ----------
@@ -891,7 +909,6 @@ class MainActivity : AppCompatActivity() {
                 val name = input.text.toString().ifBlank { "Playlist" }
                 val id = db.createPlaylist(name)
                 if (firstSong != null) db.addToPlaylist(id, listOf(firstSong))
-                toast("Playlist $name is ready.")
                 if (tab == 3) render()
             }
             .setNegativeButton("Cancel", null)
@@ -907,7 +924,6 @@ class MainActivity : AppCompatActivity() {
                 if (which == pls.size) createPlaylistDialog(ids.firstOrNull())
                 else {
                     db.addToPlaylist(pls[which].first, ids)
-                    toast("Added to ${pls[which].second}.")
                     if (tab == 3) render()
                 }
             }
@@ -1099,9 +1115,8 @@ class MainActivity : AppCompatActivity() {
             onMenu = { r ->
                 val s = (r as Row.SongRow).song
                 queue.removeAll { it.mediaId == s.mediaId }
-                syncPlayerToQueue()
+                removeFromPlayer(s.mediaId)
                 refreshQueueList()
-                toast("Removed ${s.title}.")
             }
         )
         qv.adapter = queueAdapter
@@ -1113,14 +1128,17 @@ class MainActivity : AppCompatActivity() {
                 val b = t.bindingAdapterPosition
                 java.util.Collections.swap(queue, a, b)
                 queueAdapter!!.notifyItemMoved(a, b)
-                syncPlayerToQueue()
+                if (a != b) svc?.player?.moveMediaItem(a, b)
                 return true
             }
 
             override fun onSwiped(h: RecyclerView.ViewHolder, dir: Int) {
                 val pos = h.bindingAdapterPosition
+                val s = queue.getOrNull(pos) ?: return
                 queue.removeAt(pos)
-                syncPlayerToQueue()
+                svc?.player?.let { p ->
+                    if (pos < p.mediaItemCount) p.removeMediaItem(pos)
+                }
                 refreshQueueList()
             }
         }).attachToRecyclerView(qv)
@@ -1185,10 +1203,7 @@ class MainActivity : AppCompatActivity() {
         moreBox.removeAllViews()
         moreBox.addView(section("Your music"))
         moreBox.addView(xpBtn("Scan for music").apply {
-            setOnClickListener {
-                toast("Scanning.")
-                scan()
-            }
+            setOnClickListener { scan() }
         })
         moreBox.addView(xpBtn("Choose a folder (optional)").apply {
             setOnClickListener {
@@ -1230,7 +1245,10 @@ class MainActivity : AppCompatActivity() {
         moreBox.addView(section("Boost"))
         deviceLabel = TextView(this).apply { textSize = 13f }
         moreBox.addView(deviceLabel)
-        boostLabel = TextView(this).apply { textSize = 14f }
+        boostLabel = TextView(this).apply {
+            textSize = 14f
+            setOnClickListener { boostEditDialog() }
+        }
         moreBox.addView(boostLabel)
         boostSeek = SeekBar(this).apply {
             max = 499 // 1 percent to 500 percent
@@ -1248,7 +1266,7 @@ class MainActivity : AppCompatActivity() {
         }
         moreBox.addView(boostSeek)
         moreBox.addView(TextView(this).apply {
-            text = "Your volume presets live below. Add as many as you want, name them, tap to use, hold to delete."
+            text = "Your volume presets live below. Add as many as you want, with names. Tap one to use it, hold one to delete it. Tap the percent above to type an exact number. Past 150 percent the quality drops, past 500 expect distortion, and nothing is capped, so be careful."
             textSize = 12f
         })
         renderPresets()
@@ -1278,7 +1296,6 @@ class MainActivity : AppCompatActivity() {
                 val now = !prefs.getBoolean(SafeVolumeGuard.KEY_HOLD, false)
                 prefs.edit().putBoolean(SafeVolumeGuard.KEY_HOLD, now).apply()
                 updateHoldToggle()
-                toast(if (now) "Guard on." else "Guard off.")
             }
         }
         moreBox.addView(holdToggle)
@@ -1313,7 +1330,6 @@ class MainActivity : AppCompatActivity() {
             dark = !dark
             prefs.edit().putBoolean("dark", dark).apply()
             applyThemeLive()
-            toast(if (dark) "Dark XP mode." else "Light XP mode.")
         }
         moreBox.addView(themeBtn)
 
@@ -1328,9 +1344,26 @@ class MainActivity : AppCompatActivity() {
             textSize = 13f
         })
         moreBox.addView(TextView(this).apply {
-            text = "BlissPlayer 0.3. Small, offline, no accounts, no ads."
+            text = "BlissPlayer 0.5. Small, offline, no accounts, no ads."
             textSize = 11f
         })
+        paintMore()
+    }
+
+    /** Recolor plain labels in More after a theme switch (section bars keep white). */
+    private fun paintMore() {
+        paintGroup(moreBox)
+    }
+
+    private fun paintGroup(vg: ViewGroup) {
+        for (i in 0 until vg.childCount) {
+            val c = vg.getChildAt(i)
+            if (c is TextView && !(c is Button) && c.background == null) {
+                c.setTextColor(iconColor())
+            } else if (c is ViewGroup) {
+                paintGroup(c)
+            }
+        }
     }
 
     private fun renderPresets() {
@@ -1345,10 +1378,7 @@ class MainActivity : AppCompatActivity() {
             val pct = (mult * 100).roundToInt()
             val b = xpBtn("$name ($pct percent)").apply {
                 setTag(R.id.tabMore, "preset")
-                setOnClickListener {
-                    vol.setBoost(mult.toFloat())
-                    toast("Boost: $name.")
-                }
+                setOnClickListener { vol.setBoost(mult.toFloat()) }
                 setOnLongClickListener {
                     AlertDialog.Builder(this@MainActivity)
                         .setTitle("Delete preset $name?")
@@ -1379,7 +1409,7 @@ class MainActivity : AppCompatActivity() {
         }
         val eName = EditText(this).apply { hint = "Name, like Quiet room" }
         val ePct = EditText(this).apply {
-            hint = "Percent, 1 to 500"
+            hint = "Percent, 1 to 2000"
             inputType = InputType.TYPE_CLASS_NUMBER
         }
         box.addView(eName)
@@ -1389,10 +1419,9 @@ class MainActivity : AppCompatActivity() {
             .setView(box)
             .setPositiveButton("Save") { _, _ ->
                 val name = eName.text.toString().ifBlank { "Preset" }
-                val pct = ePct.text.toString().toIntOrNull()?.coerceIn(1, 500) ?: 100
+                val pct = ePct.text.toString().toIntOrNull()?.coerceIn(1, 2000) ?: 100
                 db.putPreset(name, pct / 100.0)
                 buildMorePane()
-                toast("Preset $name saved.")
             }
             .setNegativeButton("Cancel", null)
             .show()
@@ -1410,11 +1439,35 @@ class MainActivity : AppCompatActivity() {
 
     private fun updateBoostViews() {
         val pct = (vol.boost * 100).roundToInt()
-        boostLabel?.text = "Boost: $pct percent" + if (pct > 150) " (loud, peaks capped)" else ""
-        boostSeek?.let { if ((it.progress + 1) != pct) it.progress = (pct - 1).coerceIn(0, 499) }
+        val warn = when {
+            pct > 500 -> " (expect heavy distortion)"
+            pct > 150 -> " (past here quality drops)"
+            else -> ""
+        }
+        boostLabel?.text = "Boost: $pct percent$warn. Tap to type an exact number."
+        boostLabel?.setTextColor(if (pct > 150) 0xFFB00020.toInt() else iconColor())
+        boostSeek?.let { if ((it.progress + 1) != pct.coerceIn(1, 500)) it.progress = (pct.coerceIn(1, 500) - 1).coerceIn(0, 499) }
         val auto = prefs.getBoolean(VolumeManager.KEY_AUTO_DEVICE, true)
         deviceLabel?.text = "Output: ${vol.currentDevice}" + if (auto) " (remembered per device)" else " (auto remember off)"
         refreshMini()
+    }
+
+    private fun boostEditDialog() {
+        val input = EditText(this).apply {
+            inputType = InputType.TYPE_CLASS_NUMBER
+            setText((vol.boost * 100).roundToInt().toString())
+            hint = "1 to 2000"
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Exact boost percent")
+            .setMessage("Nothing is capped. High numbers get loud and rough.")
+            .setView(pad(input))
+            .setPositiveButton("Set") { _, _ ->
+                val pct = input.text.toString().toIntOrNull()?.coerceIn(1, 2000) ?: 100
+                vol.setBoost(pct / 100f)
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
     }
 
     private fun applyThemeLive() {
@@ -1549,12 +1602,19 @@ class MainActivity : AppCompatActivity() {
     private fun toast(m: String) = Toast.makeText(this, m, Toast.LENGTH_SHORT).show()
 
     private fun skinStatic() {
+        findViewById<LinearLayout>(R.id.root).setBackgroundColor(
+            if (dark) 0xFF23262B.toInt() else 0xFFECE9D8.toInt()
+        )
         titleBarWrap.setBackgroundResource(if (dark) R.drawable.xp_title_bar_dark else R.drawable.xp_title_bar)
         findViewById<LinearLayout>(R.id.miniPlayer).setBackgroundResource(
             if (dark) R.drawable.xp_panel_dark else R.drawable.xp_panel
         )
         statusStrip.setBackgroundResource(if (dark) R.drawable.xp_status_dark else R.drawable.xp_status)
         statusStrip.setTextColor(iconColor())
+        crumb.setTextColor(if (dark) 0xFFA8ADB5.toInt() else 0xFF5A5A5A.toInt())
+        miniTitle.setTextColor(iconColor())
+        miniSub.setTextColor(if (dark) 0xFFA8ADB5.toInt() else 0xFF5A5A5A.toInt())
+        miniTime.setTextColor(if (dark) 0xFFA8ADB5.toInt() else 0xFF5A5A5A.toInt())
         headerBar.setBackgroundResource(if (dark) R.drawable.xp_title_bar_dark else R.drawable.xp_title_bar)
         listOf(
             R.id.tabSongs, R.id.tabArtists, R.id.tabAlbums, R.id.tabPlaylists, R.id.tabMore,

@@ -28,7 +28,7 @@ class VolumeManager(
         const val KEY_AUTO_DEVICE = "auto_device"
         const val DEVICE_SPEAKER = "Phone speaker / wired"
         const val MIN = 0.01f
-        const val MAX = 5.0f // 500 percent cap
+        const val MAX = 20.0f // 2000 percent. Not capped for quality, the warning text covers that.
     }
 
     var currentDevice: String = DEVICE_SPEAKER
