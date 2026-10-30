@@ -261,6 +261,7 @@ class PlayerService : MediaSessionService() {
 
     private fun buildNotification(): Notification {
         ensureChannel()
+        val simple = getSharedPreferences("bliss", MODE_PRIVATE).getString("notif_style", "Full") != "Full"
         val md = player.currentMediaItem?.mediaMetadata
         val playing = player.isPlaying
         val dur = player.duration.coerceAtLeast(0)
@@ -272,31 +273,8 @@ class PlayerService : MediaSessionService() {
         ).joinToString(" | ").ifBlank { "Ready" }
         val playIcon = if (playing) R.drawable.ic_pause_w else R.drawable.ic_play_w
 
-        val small = RemoteViews(packageName, R.layout.xp_notif_small).apply {
-            setTextViewText(R.id.n_title, title)
-            setTextViewText(R.id.n_artist, artist)
-            setImageViewResource(R.id.n_play, playIcon)
-            setImageViewResource(R.id.n_next, R.drawable.ic_next_w)
-            setOnClickPendingIntent(R.id.n_play, actionIntent(ACTION_TOGGLE, 2))
-            setOnClickPendingIntent(R.id.n_next, actionIntent(ACTION_NEXT, 3))
-        }
-        val big = RemoteViews(packageName, R.layout.xp_notif_big).apply {
-            setTextViewText(R.id.n_title, title)
-            setTextViewText(R.id.n_artist, artist)
-            setImageViewResource(R.id.n_play, playIcon)
-            setImageViewResource(R.id.n_next, R.drawable.ic_next_w)
-            setImageViewResource(R.id.n_prev, R.drawable.ic_prev_w)
-            setOnClickPendingIntent(R.id.n_play, actionIntent(ACTION_TOGGLE, 2))
-            setOnClickPendingIntent(R.id.n_next, actionIntent(ACTION_NEXT, 3))
-            setOnClickPendingIntent(R.id.n_prev, actionIntent(ACTION_PREV, 1))
-            setTextViewText(R.id.n_time, "${fmt(pos)} / ${fmt(dur)}")
-            if (dur > 0) setProgressBar(R.id.n_progress, 1000, ((pos * 1000) / dur).toInt().coerceIn(0, 1000), false)
-        }
-
         val b = NotificationCompat.Builder(this, CHANNEL)
             .setSmallIcon(R.mipmap.ic_launcher)
-            .setLargeIcon(android.graphics.BitmapFactory.decodeResource(resources, R.mipmap.ic_launcher))
-            .setSubText("BlissPlayer")
             .setContentTitle(title)
             .setContentText(artist)
             .setContentIntent(
@@ -310,8 +288,6 @@ class PlayerService : MediaSessionService() {
             .setOngoing(playing)
             .setShowWhen(false)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
-            .setCustomContentView(small)
-            .setCustomBigContentView(big)
             .addAction(android.R.drawable.ic_media_previous, "Previous", actionIntent(ACTION_PREV, 1))
             .addAction(
                 if (playing) android.R.drawable.ic_media_pause else android.R.drawable.ic_media_play,
@@ -325,8 +301,68 @@ class PlayerService : MediaSessionService() {
                     .setShowActionsInCompactView(0, 1, 2)
             )
             .setColor(0xFF0058E6.toInt())
+        if (!simple) {
+            b.setLargeIcon(notifArt())
+            b.setSubText("BlissPlayer")
+            val small = RemoteViews(packageName, R.layout.xp_notif_small).apply {
+                setTextViewText(R.id.n_title, title)
+                setTextViewText(R.id.n_artist, artist)
+                setImageViewResource(R.id.n_play, playIcon)
+                setImageViewResource(R.id.n_next, R.drawable.ic_next_w)
+                setOnClickPendingIntent(R.id.n_play, actionIntent(ACTION_TOGGLE, 2))
+                setOnClickPendingIntent(R.id.n_next, actionIntent(ACTION_NEXT, 3))
+            }
+            val big = RemoteViews(packageName, R.layout.xp_notif_big).apply {
+                setTextViewText(R.id.n_title, title)
+                setTextViewText(R.id.n_artist, artist)
+                setImageViewResource(R.id.n_play, playIcon)
+                setImageViewResource(R.id.n_next, R.drawable.ic_next_w)
+                setImageViewResource(R.id.n_prev, R.drawable.ic_prev_w)
+                setOnClickPendingIntent(R.id.n_play, actionIntent(ACTION_TOGGLE, 2))
+                setOnClickPendingIntent(R.id.n_next, actionIntent(ACTION_NEXT, 3))
+                setOnClickPendingIntent(R.id.n_prev, actionIntent(ACTION_PREV, 1))
+                setTextViewText(R.id.n_time, "${fmt(pos)} / ${fmt(dur)}")
+                if (dur > 0) setProgressBar(R.id.n_progress, 1000, ((pos * 1000) / dur).toInt().coerceIn(0, 1000), false)
+            }
+            b.setCustomContentView(small)
+            b.setCustomBigContentView(big)
+        }
         if (dur > 0) b.setProgress(dur.toInt().coerceAtLeast(1), pos.toInt(), false)
         return b.build()
+    }
+
+    /** XP artwork for the notification: blue gradient, app icon, name strip. */
+    private fun notifArt(): android.graphics.Bitmap {
+        val size = 512
+        val bmp = android.graphics.Bitmap.createBitmap(size, size, android.graphics.Bitmap.Config.ARGB_8888)
+        val c = android.graphics.Canvas(bmp)
+        val paint = android.graphics.Paint()
+        val grad = android.graphics.LinearGradient(
+            0f, 0f, size.toFloat(), size.toFloat(),
+            0xFF0058E6.toInt(), 0xFF3A93FF.toInt(),
+            android.graphics.Shader.TileMode.CLAMP
+        )
+        paint.shader = grad
+        c.drawRect(0f, 0f, size.toFloat(), size.toFloat(), paint)
+        paint.shader = null
+        val icon = android.graphics.BitmapFactory.decodeResource(resources, R.mipmap.ic_launcher)
+        if (icon != null) {
+            val s = (size * 0.52).toInt()
+            val scaled = android.graphics.Bitmap.createScaledBitmap(icon, s, s, true)
+            c.drawBitmap(scaled, ((size - s) / 2).toFloat(), ((size - s) / 2 - 30).toFloat(), null)
+        }
+        paint.color = 0xFFFFFFFF.toInt()
+        paint.textSize = 52f
+        paint.textAlign = android.graphics.Paint.Align.CENTER
+        paint.typeface = android.graphics.Typeface.DEFAULT_BOLD
+        c.drawText("BlissPlayer", (size / 2).toFloat(), (size - 52).toFloat(), paint)
+        val frame = android.graphics.Paint().apply {
+            style = android.graphics.Paint.Style.STROKE
+            strokeWidth = 10f
+            color = 0xFFFFFFFF.toInt()
+        }
+        c.drawRect(5f, 5f, (size - 5).toFloat(), (size - 5).toFloat(), frame)
+        return bmp
     }
 
     private fun fmt(ms: Long): String {
@@ -337,6 +373,11 @@ class PlayerService : MediaSessionService() {
     private fun postNotif() {
         if (!::player.isInitialized) return
         runCatching { notifManager.notify(NOTIF_ID, buildNotification()) }
+    }
+
+    fun repostNotif() {
+        if (!::player.isInitialized || player.mediaItemCount == 0) return
+        postNotif()
     }
 
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? = session

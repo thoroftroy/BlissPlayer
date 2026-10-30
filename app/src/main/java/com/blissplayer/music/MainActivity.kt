@@ -279,6 +279,12 @@ class MainActivity : AppCompatActivity() {
 
         restoredQueueIds = savedInstanceState?.getLongArray("queue")
         lastCountedId = savedInstanceState?.getLong("counted", -1L) ?: -1L
+        searchQuery = savedInstanceState?.getString("searchQuery", "") ?: ""
+        filterArtist = savedInstanceState?.getString("filterArtist", "") ?: ""
+        filterAlbum = savedInstanceState?.getString("filterAlbum", "") ?: ""
+        filterGenre = savedInstanceState?.getString("filterGenre", "") ?: ""
+        filterPlaylist = savedInstanceState?.getLong("filterPlaylist", -1L)?.takeIf { it != -1L && it != null }
+        filterPlaylistName = savedInstanceState?.getString("filterPlaylistName", "") ?: ""
 
         titleBarWrap = findViewById(R.id.titleBarWrap)
         titleBar = findViewById(R.id.titleBar)
@@ -305,6 +311,12 @@ class MainActivity : AppCompatActivity() {
         })
         filterBtn.setOnClickListener { filterDialog() }
         searchClear.setOnClickListener { clearSearch() }
+        if (searchQuery.isNotEmpty()) {
+            findViewById<LinearLayout>(R.id.searchRow)?.visibility = View.VISIBLE
+            searchBox.setText(searchQuery)
+        } else if (savedInstanceState?.getBoolean("searchOpen", false) == true) {
+            findViewById<LinearLayout>(R.id.searchRow)?.visibility = View.VISIBLE
+        }
         statusStrip = findViewById(R.id.statusStrip)
         list = findViewById(R.id.list)
         morePane = findViewById(R.id.morePane)
@@ -435,6 +447,13 @@ class MainActivity : AppCompatActivity() {
         super.onSaveInstanceState(outState)
         outState.putLongArray("queue", queue.map { it.mediaId }.toLongArray())
         outState.putLong("counted", lastCountedId)
+        outState.putString("searchQuery", searchQuery)
+        outState.putString("filterArtist", filterArtist)
+        outState.putString("filterAlbum", filterAlbum)
+        outState.putString("filterGenre", filterGenre)
+        outState.putLong("filterPlaylist", filterPlaylist ?: -1L)
+        outState.putString("filterPlaylistName", filterPlaylistName)
+        outState.putBoolean("searchOpen", findViewById<LinearLayout>(R.id.searchRow)?.visibility == View.VISIBLE)
     }
 
     override fun onDestroy() {
@@ -609,8 +628,15 @@ class MainActivity : AppCompatActivity() {
     private fun showTab(t: Int) {
         tab = t
         clearDrill(silent = true)
+        titleBar.text = "BlissPlayer: ${listOf("Songs", "Artists", "Albums", "Genres", "Playlists", "More")[t]}"
         morePane.visibility = if (t == 5) View.VISIBLE else View.GONE
         list.visibility = if (t == 5) View.GONE else View.VISIBLE
+        // The action row belongs to the library, not to settings.
+        val mainUi = if (t == 5) View.GONE else View.VISIBLE
+        findViewById<Button>(R.id.btnPlayAll).visibility = mainUi
+        crumb.visibility = mainUi
+        playlistAdd.visibility = View.GONE
+        headerBar.visibility = View.GONE
         updateTabs()
         if (t == 5) buildMorePane() else render()
     }
@@ -2210,7 +2236,7 @@ class MainActivity : AppCompatActivity() {
         }
         moreBox.addView(boostSeek)
         moreBox.addView(TextView(this).apply {
-            text = "Your volume presets live below. Add as many as you want, with names. Tap one to use it, hold one to delete it. Tap the percent above to type an exact number. Past 150 percent the quality drops, past 500 expect distortion, and nothing is capped, so be careful."
+            text = "Your volume presets live below. Add as many as you want, with names. Tap one to use it, hold one to delete it. Tap the percent above to type an exact number. Past 150 percent the quality drops, past 500 expect distortion, and nothing is capped, so be careful. The phone hardware sets the final ceiling."
             textSize = 12f
         })
         renderPresets()
@@ -2354,6 +2380,18 @@ class MainActivity : AppCompatActivity() {
             text = "Auto follows the phone. Portrait and Landscape lock it. Landscape shows two panels: lists on the left, the song and queue on the right."
             textSize = 12f
         })
+        val notifBtn = xpBtn("Notification style: ${prefs.getString("notif_style", "Full")}")
+        notifBtn.setOnClickListener {
+            val next = if (prefs.getString("notif_style", "Full") == "Full") "Simple" else "Full"
+            prefs.edit().putString("notif_style", next).apply()
+            notifBtn.text = "Notification style: $next"
+            svc?.repostNotif()
+        }
+        moreBox.addView(notifBtn)
+        moreBox.addView(TextView(this).apply {
+            text = "Full shows the artwork and progress bar. Simple is plain text and buttons."
+            textSize = 12f
+        })
         val showCounts = prefs.getBoolean("show_counts", false)
         moreBox.addView(xpBtn("Show play counts: ${if (showCounts) "On" else "Off"}").apply {
             setOnClickListener {
@@ -2466,14 +2504,20 @@ class MainActivity : AppCompatActivity() {
                 setTag(R.id.tabMore, "preset")
                 setOnClickListener { vol.setBoost(mult.toFloat()) }
                 setOnLongClickListener {
-                    AlertDialog.Builder(this@MainActivity)
-                        .setCustomTitle(xpTitle("Delete preset $name?"))
-                        .setPositiveButton("Delete") { _, _ ->
-                            db.deletePreset(name)
-                            buildMorePane()
+                    xpMenuDialog(name, listOf("Use", "Edit", "Delete")) { which ->
+                        when (which) {
+                            0 -> vol.setBoost(mult.toFloat())
+                            1 -> presetAddDialog(name, pct)
+                            2 -> AlertDialog.Builder(this@MainActivity)
+                                .setCustomTitle(xpTitle("Delete preset $name?"))
+                                .setPositiveButton("Delete") { _, _ ->
+                                    db.deletePreset(name)
+                                    buildMorePane()
+                                }
+                                .setNegativeButton("Keep", null)
+                                .show()
                         }
-                        .setNegativeButton("Keep", null)
-                        .show()
+                    }
                     true
                 }
             }
@@ -2488,24 +2532,29 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun presetAddDialog() {
+    private fun presetAddDialog(existingName: String? = null, existingPct: Int = 100) {
         val box = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(16), dp(8), dp(16), dp(8))
         }
-        val eName = EditText(this).apply { hint = "Name, like Quiet room" }
+        val eName = EditText(this).apply {
+            hint = "Name, like Quiet room"
+            existingName?.let { setText(it) }
+        }
         val ePct = EditText(this).apply {
-            hint = "Percent, 1 to 2000"
+            hint = "Percent, 1 to 500"
             inputType = InputType.TYPE_CLASS_NUMBER
+            setText(existingPct.toString())
         }
         box.addView(eName)
         box.addView(ePct)
         AlertDialog.Builder(this)
-            .setCustomTitle(xpTitle("New preset"))
+            .setCustomTitle(xpTitle(if (existingName == null) "New preset" else "Edit preset"))
             .setView(box)
             .setPositiveButton("Save") { _, _ ->
-                val name = eName.text.toString().ifBlank { "Preset" }
-                val pct = ePct.text.toString().toIntOrNull()?.coerceIn(1, 2000) ?: 100
+                val name = eName.text.toString().ifBlank { existingName ?: "Preset" }
+                val pct = ePct.text.toString().toIntOrNull()?.coerceIn(1, 500) ?: 100
+                if (existingName != null && existingName != name) db.deletePreset(existingName)
                 db.putPreset(name, pct / 100.0)
                 buildMorePane()
             }
