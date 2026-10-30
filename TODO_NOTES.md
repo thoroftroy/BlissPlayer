@@ -146,3 +146,11 @@ Log:
 - [x] Equalize optimized (sampled windows, 4 way parallel, mtime cache)
 - [x] Smart Shuffle (lifetime play count weighting, resets when all played once)
 - [x] Rebuild APK, verify, commit
+
+## [ ] 13. Launch crash fix (2026-10-29, v0.2.1)
+- [x] Found it: the segmented bar drawable put a shape XML inside a `<bitmap>` tag, which Android cannot decode. It inflated on the main screen, instant crash on launch. Rebuilt the segmented bar in code from a real PNG tile.
+- [x] Bluetooth device lookup now permission safe (was a second crash path).
+- [x] `lintDebug` is clean and runs before every build from now on.
+- [x] Min SDK 26 to 29 (Android 10+, needed for the delete/edit permission flows anyway).
+- [x] Crash reporter: if it ever crashes again, reopening the app shows the log with a Copy button. Paste it back here.
+- [ ] User installs v0.2.1 and confirms launch works.

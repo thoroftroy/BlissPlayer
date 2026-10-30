@@ -1,12 +1,16 @@
 package com.blissplayer.music
 
 import android.Manifest
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.ServiceConnection
 import android.content.SharedPreferences
 import android.content.pm.PackageManager
+import android.graphics.drawable.ClipDrawable
+import android.graphics.drawable.LayerDrawable
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -177,6 +181,8 @@ class MainActivity : AppCompatActivity() {
         dark = prefs.getBoolean("dark", false)
         setTheme(if (dark) R.style.Theme_BlissPlayer_Night else R.style.Theme_BlissPlayer_Day)
         super.onCreate(savedInstanceState)
+        CrashReporter.install(this)
+        val lastCrash = CrashReporter.read(this)
         setContentView(R.layout.activity_main)
         db = BlissDb(this)
 
@@ -240,6 +246,34 @@ class MainActivity : AppCompatActivity() {
         ensurePermissions()
         ticker.post(progressTick)
         buildMorePane()
+        lastCrash?.let { showCrashDialog(it) }
+    }
+
+    private fun showCrashDialog(log: String) {
+        val tv = TextView(this).apply {
+            text = log
+            textSize = 11f
+            typeface = android.graphics.Typeface.MONOSPACE
+            setPadding(dp(8), dp(8), dp(8), dp(8))
+        }
+        val sv = ScrollView(this).apply {
+            addView(tv)
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(300)
+            )
+        }
+        AlertDialog.Builder(this)
+            .setTitle("The app crashed last time")
+            .setMessage("Copy this and send it to the developer so it can be fixed:")
+            .setView(sv)
+            .setPositiveButton("Copy") { _, _ ->
+                val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                cm.setPrimaryClip(ClipData.newPlainText("crash", log))
+                toast("Copied. Paste it in chat.")
+            }
+            .setNegativeButton("Clear") { _, _ -> CrashReporter.clear(this) }
+            .setNeutralButton("Close", null)
+            .show()
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
@@ -1252,7 +1286,18 @@ class MainActivity : AppCompatActivity() {
         this, if (dark) R.drawable.xp_button_dark else R.drawable.xp_button
     )!!
 
-    private fun xpProgress() = ContextCompat.getDrawable(this, R.drawable.xp_progress_seg)!!
+    private fun xpProgress(): LayerDrawable {
+        val bg = ContextCompat.getDrawable(this, R.drawable.xp_progress_bg)!!
+        val bmp = android.graphics.BitmapFactory.decodeResource(resources, R.drawable.xp_seg_tile)
+        val tile = android.graphics.drawable.BitmapDrawable(resources, bmp).apply {
+            tileModeX = android.graphics.Shader.TileMode.REPEAT
+        }
+        val clip = ClipDrawable(tile, android.view.Gravity.LEFT, ClipDrawable.HORIZONTAL)
+        return LayerDrawable(arrayOf(bg, clip)).apply {
+            setId(0, android.R.id.background)
+            setId(1, android.R.id.progress)
+        }
+    }
 
     private fun xpThumb() = ContextCompat.getDrawable(this, R.drawable.xp_thumb)!!
 

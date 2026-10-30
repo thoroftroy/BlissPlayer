@@ -21,7 +21,7 @@ In plain words: copy your songs (YouTube downloads are fine: mp3, m4a, opus, ogg
 
 ## Install
 
-Copy `BlissPlayer-v0.2-debug.apk` to the Pixel and tap it (allow install from unknown sources when asked).
+Copy `BlissPlayer-v0.2-debug.apk` to the Android phone and tap it (allow install from unknown sources when asked).
 
 ## Notes
 

@@ -36,16 +36,19 @@ class VolumeManager(
         private set
 
     private val btReceiver = object : BroadcastReceiver() {
+        @android.annotation.SuppressLint("MissingPermission")
         override fun onReceive(c: Context, intent: Intent) {
             if (intent.action == BluetoothDevice.ACTION_ACL_CONNECTED) {
-                val dev: BluetoothDevice? = if (Build.VERSION.SDK_INT >= 33) {
-                    intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE, BluetoothDevice::class.java)
-                } else {
-                    @Suppress("DEPRECATION")
-                    intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE)
-                }
-                val name = runCatching { dev?.name }.getOrNull()?.takeIf { !it.isNullOrBlank() }
-                    ?: dev?.address ?: return
+                val name = runCatching {
+                    val dev: BluetoothDevice? = if (Build.VERSION.SDK_INT >= 33) {
+                        intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE, BluetoothDevice::class.java)
+                    } else {
+                        @Suppress("DEPRECATION")
+                        intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE)
+                    }
+                    dev?.name?.takeIf { !it.isNullOrBlank() } ?: dev?.address
+                }.getOrNull()
+                if (name == null) return
                 setDevice("BT: $name", saveManual = true)
             } else if (intent.action == AudioManager.ACTION_AUDIO_BECOMING_NOISY) {
                 setDevice(DEVICE_SPEAKER, saveManual = true)

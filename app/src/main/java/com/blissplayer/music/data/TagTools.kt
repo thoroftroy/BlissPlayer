@@ -67,7 +67,7 @@ object TagTools {
                     } ?: return@withContext WriteResult.Failed("System refused the write.")
                 } catch (e: RecoverableSecurityException) {
                     tmp.delete()
-                    val sender = if (Build.VERSION.SDK_INT >= 29) {
+                    val sender = if (Build.VERSION.SDK_INT >= 30) {
                         MediaStore.createWriteRequest(
                             context.contentResolver, listOf(uri)
                         ).intentSender
@@ -108,7 +108,7 @@ object TagTools {
                     WriteResult.NeedsPermission(sender)
                 } else WriteResult.Failed("Permission denied.")
             } catch (e: SecurityException) {
-                if (Build.VERSION.SDK_INT >= 29) {
+                if (Build.VERSION.SDK_INT >= 30) {
                     val sender = runCatching {
                         MediaStore.createDeleteRequest(
                             context.contentResolver, listOf(uri)

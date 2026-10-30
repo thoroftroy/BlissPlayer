@@ -1,3 +1,4 @@
+@file:OptIn(androidx.media3.common.util.UnstableApi::class)
 package com.blissplayer.music.playback
 
 import android.app.PendingIntent
@@ -23,6 +24,7 @@ import kotlin.math.log10
  *  - framework LoudnessEnhancer on the player's audio session handles boost (> 100%)
  * Both are public APIs, so this works on any device without custom DSP code.
  */
+@OptIn(androidx.media3.common.util.UnstableApi::class)
 class PlayerService : MediaSessionService() {
 
     lateinit var player: ExoPlayer
