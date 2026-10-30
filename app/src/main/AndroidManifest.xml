@@ -4,6 +4,8 @@
     <!-- Music library -->
     <uses-permission android:name="android.permission.READ_MEDIA_AUDIO" />
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
+    <!-- Keep CPU up during gapless local playback (wake mode) -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
     <!-- Playback in background / car / headphones -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />

@@ -216,3 +216,10 @@ Log:
 
 ## [x] 20. Round 9, still v0.4 (2026-10-29): file names in search
 - [x] File names (extension stripped) join the search index with fuzzy matching. Ranked below title, artist, album, genre. No lyrics, per user.
+
+## [x] 19. Round 10, still v0.5 (2026-10-29): sandbox emulator + wake crash
+- [x] Emulator (Android 35, x86_64, KVM) + AVD BlissPhone + launch script, all outside the repo. Repo stays product-only.
+- [x] Disc1 (19 FLACs) pushed to Music/Disc1, APK in Download, both visible in the Files app. Reboot indexes them: 19 of 19 found.
+- [x] Found it by testing: pressing play crashed without WAKE_LOCK (needed by the stay-awake fix). Permission declared, verified playing with position advancing and auto-advance.
+- [x] Crash dialog now has Copy and Save to file (BlissPlayer-crash.txt in Download), since copying out is awkward.
+- [x] Python GTK control panel (BlissPlayer-Sandbox.py, outside repo): start, force stop, restart, install/update app, push songs, screenshot.

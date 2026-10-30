@@ -3,6 +3,7 @@ package com.blissplayer.music
 import android.Manifest
 import android.content.ClipData
 import android.content.ClipboardManager
+import android.content.ContentValues
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
@@ -18,6 +19,7 @@ import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.provider.DocumentsContract
+import android.provider.MediaStore
 import android.provider.Settings
 import android.text.InputType
 import android.view.View
@@ -390,16 +392,31 @@ class MainActivity : AppCompatActivity() {
         }
         AlertDialog.Builder(this)
             .setTitle("The app crashed last time")
-            .setMessage("Copy this and send it to the developer so it can be fixed:")
+            .setMessage("Copy this and send it to the developer so it can be fixed. Or save it as a file and send the file.")
             .setView(sv)
             .setPositiveButton("Copy") { _, _ ->
                 val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
                 cm.setPrimaryClip(ClipData.newPlainText("crash", log))
-                toast("Copied. Paste it in chat.")
+                toast("Copied. Now paste it in chat.")
             }
-            .setNegativeButton("Clear") { _, _ -> CrashReporter.clear(this) }
-            .setNeutralButton("Close", null)
+            .setNeutralButton("Save to file") { _, _ -> saveCrashToDownloads(log) }
+            .setNegativeButton("Close") { _, _ -> CrashReporter.clear(this) }
             .show()
+    }
+
+    private fun saveCrashToDownloads(log: String) {
+        try {
+            val values = ContentValues().apply {
+                put(MediaStore.Downloads.DISPLAY_NAME, "BlissPlayer-crash.txt")
+                put(MediaStore.Downloads.MIME_TYPE, "text/plain")
+            }
+            val uri = contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+                ?: run { toast("Could not save the file."); return }
+            contentResolver.openOutputStream(uri)?.use { it.write(log.toByteArray()) }
+            toast("Saved in the Download folder as BlissPlayer-crash.txt.")
+        } catch (e: Exception) {
+            toast("Could not save the file.")
+        }
     }
 
     // ---------- permissions / scan ----------
