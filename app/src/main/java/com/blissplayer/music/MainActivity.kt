@@ -52,6 +52,7 @@ import com.blissplayer.music.data.TagTools
 import com.blissplayer.music.model.Song
 import com.blissplayer.music.playback.LoudnessScanner
 import com.blissplayer.music.playback.PlayerService
+import com.blissplayer.music.playback.SafeVolumeGuard
 import com.blissplayer.music.playback.VolumeManager
 import com.blissplayer.music.ui.LibraryAdapter
 import com.blissplayer.music.ui.Row
@@ -102,6 +103,7 @@ class MainActivity : AppCompatActivity() {
 
     private var svc: PlayerService? = null
     private lateinit var vol: VolumeManager
+    private lateinit var guard: SafeVolumeGuard
     private val ticker = Handler(Looper.getMainLooper())
 
     private var pendingRetry: (() -> Unit)? = null
@@ -257,6 +259,13 @@ class MainActivity : AppCompatActivity() {
             updateBoostViews()
         }
         vol.start()
+        guard = SafeVolumeGuard(this, prefs) { svc?.player?.isPlaying == true }
+        guard.onFightingSystem = {
+            runOnUiThread {
+                toast("The phone keeps lowering the volume. Open Sound settings and turn off the volume limit.")
+            }
+        }
+        guard.start()
 
         startService(Intent(this, PlayerService::class.java))
         bindService(
@@ -281,6 +290,7 @@ class MainActivity : AppCompatActivity() {
         ticker.removeCallbacksAndMessages(null)
         runCatching { unbindService(conn) }
         vol.stop()
+        guard.stop()
         eqJob?.cancel()
         super.onDestroy()
     }
@@ -1169,6 +1179,7 @@ class MainActivity : AppCompatActivity() {
     private var boostLabel: TextView? = null
     private var deviceLabel: TextView? = null
     private var deviceToggle: Button? = null
+    private var holdToggle: Button? = null
 
     private fun buildMorePane() {
         moreBox.removeAllViews()
@@ -1256,6 +1267,27 @@ class MainActivity : AppCompatActivity() {
             text = "With auto device on, each Bluetooth gadget keeps its own boost and it comes back when you reconnect."
             textSize = 12f
         })
+
+        moreBox.addView(section("Phone volume guard"))
+        moreBox.addView(TextView(this).apply {
+            text = "If the phone lowers the music by itself and shows a loud warning, no app can switch that off. The real switch is in the sound settings below. Turn the guard on and it will put the volume back while music plays. If you lower the volume yourself and it fights you, turn the guard back off."
+            textSize = 12f
+        })
+        holdToggle = xpBtn("").apply {
+            setOnClickListener {
+                val now = !prefs.getBoolean(SafeVolumeGuard.KEY_HOLD, false)
+                prefs.edit().putBoolean(SafeVolumeGuard.KEY_HOLD, now).apply()
+                updateHoldToggle()
+                toast(if (now) "Guard on." else "Guard off.")
+            }
+        }
+        moreBox.addView(holdToggle)
+        moreBox.addView(xpBtn("Open sound settings").apply {
+            setOnClickListener {
+                runCatching { startActivity(Intent(android.provider.Settings.ACTION_SOUND_SETTINGS)) }
+            }
+        })
+        updateHoldToggle()
         updateDeviceToggle()
         updateBoostViews()
 
@@ -1369,6 +1401,11 @@ class MainActivity : AppCompatActivity() {
     private fun updateDeviceToggle() {
         val on = prefs.getBoolean(VolumeManager.KEY_AUTO_DEVICE, true)
         deviceToggle?.text = "Auto device boost: ${if (on) "On" else "Off"}"
+    }
+
+    private fun updateHoldToggle() {
+        val on = prefs.getBoolean(SafeVolumeGuard.KEY_HOLD, false)
+        holdToggle?.text = "Hold system volume steady: ${if (on) "On" else "Off"}"
     }
 
     private fun updateBoostViews() {

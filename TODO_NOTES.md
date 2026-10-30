@@ -164,3 +164,9 @@ Log:
 - [x] Theme switch applies live, no restart, no lost place
 - [x] Fullscreen button and code removed
 - [x] Equalize uses all CPU cores and shows a live time estimate
+
+## [x] 15. Round 4, v0.4.0 (2026-10-29): phone volume guard
+- [x] Honest answer first: no normal app can switch the loud protection off, it is OS enforced. Real switch is in sound settings.
+- [x] SafeVolumeGuard: while music plays, a dropped system volume is put straight back. Throttled (3 restores a minute, then 5 min cooldown with a pointer to settings). Opt in, off by default.
+- [x] More pane: Phone volume guard section with plain explainer, on/off toggle, Open sound settings button.
+- [x] Note: BlissPlayer Boost works on the signal, not the system slider, so keeping system volume moderate and boosting in app already avoids most warnings.
