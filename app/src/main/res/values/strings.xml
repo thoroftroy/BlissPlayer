@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">BlissPlayer</string>
+    <string name="tagline">All your music. Same volume. No fuss.</string>
+    <string name="tab_songs">Songs</string>
+    <string name="tab_artists">Artists</string>
+    <string name="tab_albums">Albums</string>
+    <string name="tab_playlists">Playlists</string>
+    <string name="tab_more">More</string>
+    <string name="play_all">▶ Play all music</string>
+    <string name="shuffle_now">Shuffle everything</string>
+    <string name="scan">Scan for music</string>
+    <string name="equalize_all">Equalize all songs (one tap)</string>
+    <string name="equalize_undo">Undo equalize</string>
+    <string name="boost_label">Boost (loudness amp)</string>
+    <string name="theme_toggle">Dark XP mode</string>
+    <string name="help_title">New here? Start here.</string>
+    <string name="queue_title">Now playing (this is the real order)</string>
+    <string name="loop_off">Loop: off</string>
+    <string name="loop_all">Loop: all</string>
+    <string name="loop_one">Loop: one</string>
+    <string name="shuffle_on">Shuffled ✓ (tap to re-shuffle)</string>
+    <string name="shuffle_off">Shuffle</string>
+</resources>

@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.BlissPlayer.Day" parent="Theme.AppCompat.Light.NoActionBar">
+        <item name="android:windowBackground">@color/xp_face</item>
+        <item name="android:textColor">@color/xp_text</item>
+        <item name="android:textColorSecondary">@color/xp_text_dim</item>
+    </style>
+    <style name="Theme.BlissPlayer.Night" parent="Theme.AppCompat.NoActionBar">
+        <item name="android:windowBackground">@color/xp_n_face</item>
+        <item name="android:textColor">@color/xp_n_text</item>
+        <item name="android:textColorSecondary">@color/xp_n_text_dim</item>
+    </style>
+
+    <style name="XpTitleText">
+        <item name="android:textStyle">bold</item>
+        <item name="android:textSize">15sp</item>
+        <item name="android:textColor">@color/xp_title_text</item>
+        <item name="android:fontFamily">sans-serif</item>
+    </style>
+</resources>

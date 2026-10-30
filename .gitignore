@@ -1,0 +1,13 @@
+# ---> BlissPlayer .gitignore (local-ready for GitHub Desktop publish)
+.gradle/
+build/
+*/build/
+local.properties
+*.iml
+.idea/
+.DS_Store
+*.keystore
+*.jks
+# Ignore stray APKs, but keep the distributable copy at repo root.
+*.apk
+!/BlissPlayer-*.apk

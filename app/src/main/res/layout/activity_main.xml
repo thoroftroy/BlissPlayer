@@ -1,0 +1,121 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/root"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:padding="8dp">
+
+    <!-- XP window title bar -->
+    <TextView
+        android:id="@+id/titleBar"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:background="@drawable/xp_title_bar"
+        android:padding="10dp"
+        android:text="BlissPlayer"
+        android:textAppearance="@style/XpTitleText" />
+
+    <!-- Tab row -->
+    <LinearLayout
+        android:id="@+id/tabRow"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:layout_marginTop="6dp">
+
+        <Button android:id="@+id/tabSongs" android:layout_width="0dp" android:layout_height="wrap_content"
+            android:layout_weight="1" android:text="@string/tab_songs" android:background="@drawable/xp_button"
+            android:textSize="12sp" android:minHeight="40dp" />
+        <Button android:id="@+id/tabArtists" android:layout_width="0dp" android:layout_height="wrap_content"
+            android:layout_weight="1" android:text="@string/tab_artists" android:background="@drawable/xp_button"
+            android:textSize="12sp" android:minHeight="40dp" />
+        <Button android:id="@+id/tabAlbums" android:layout_width="0dp" android:layout_height="wrap_content"
+            android:layout_weight="1" android:text="@string/tab_albums" android:background="@drawable/xp_button"
+            android:textSize="12sp" android:minHeight="40dp" />
+        <Button android:id="@+id/tabPlaylists" android:layout_width="0dp" android:layout_height="wrap_content"
+            android:layout_weight="1" android:text="@string/tab_playlists" android:background="@drawable/xp_button"
+            android:textSize="12sp" android:minHeight="40dp" />
+        <Button android:id="@+id/tabMore" android:layout_width="0dp" android:layout_height="wrap_content"
+            android:layout_weight="1" android:text="@string/tab_more" android:background="@drawable/xp_button"
+            android:textSize="12sp" android:minHeight="40dp" />
+    </LinearLayout>
+
+    <!-- Big friendly actions -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:layout_marginTop="6dp">
+
+        <Button android:id="@+id/btnPlayAll" android:layout_width="0dp" android:layout_height="wrap_content"
+            android:layout_weight="1" android:text="@string/play_all" android:background="@drawable/xp_start"
+            android:textColor="#FFFFFF" android:textStyle="bold" android:minHeight="44dp" />
+        <Button android:id="@+id/btnShuffleAll" android:layout_width="0dp" android:layout_height="wrap_content"
+            android:layout_weight="1" android:text="@string/shuffle_now" android:background="@drawable/xp_button"
+            android:minHeight="44dp" android:layout_marginStart="6dp" />
+    </LinearLayout>
+
+    <TextView
+        android:id="@+id/crumb"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="6dp"
+        android:textSize="13sp" />
+
+    <androidx.recyclerview.widget.RecyclerView
+        android:id="@+id/list"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:layout_marginTop="4dp" />
+
+    <ScrollView
+        android:id="@+id/morePane"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:visibility="gone"
+        android:layout_marginTop="4dp">
+        <LinearLayout
+            android:id="@+id/moreBox"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical" />
+    </ScrollView>
+
+    <!-- Mini player -->
+    <LinearLayout
+        android:id="@+id/miniPlayer"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:background="@drawable/xp_panel"
+        android:padding="8dp"
+        android:layout_marginTop="6dp"
+        android:gravity="center_vertical">
+
+        <LinearLayout
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:orientation="vertical">
+            <TextView android:id="@+id/miniTitle" android:layout_width="match_parent"
+                android:layout_height="wrap_content" android:textStyle="bold" android:text="Nothing playing"
+                android:singleLine="true" />
+            <TextView android:id="@+id/miniSub" android:layout_width="match_parent"
+                android:layout_height="wrap_content" android:textSize="12sp"
+                android:text="Tap Play all music to start" android:singleLine="true" />
+        </LinearLayout>
+
+        <Button android:id="@+id/miniPlayPause" android:layout_width="wrap_content"
+            android:layout_height="wrap_content" android:text="⏸" android:background="@drawable/xp_button"
+            android:minWidth="48dp" />
+        <Button android:id="@+id/miniNext" android:layout_width="wrap_content"
+            android:layout_height="wrap_content" android:text="⏭" android:background="@drawable/xp_button"
+            android:minWidth="48dp" />
+        <Button android:id="@+id/miniQueue" android:layout_width="wrap_content"
+            android:layout_height="wrap_content" android:text="☰" android:background="@drawable/xp_button"
+            android:minWidth="48dp" />
+    </LinearLayout>
+</LinearLayout>
