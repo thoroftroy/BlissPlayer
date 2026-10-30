@@ -12,11 +12,11 @@ import android.database.sqlite.SQLiteOpenHelper
  *  playlists(id, name) + playlist_songs(playlist_id, media_id, position)
  *  boost(device_name PRIMARY KEY, gain_mult)  , per-device amp memory (car vs headphones)
  */
-class BlissDb(context: Context) : SQLiteOpenHelper(context, "bliss.db", null, 6) {
+class BlissDb(context: Context) : SQLiteOpenHelper(context, "bliss.db", null, 7) {
 
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL("CREATE TABLE gains(media_id INTEGER PRIMARY KEY, gain_mult REAL NOT NULL)")
-        db.execSQL("CREATE TABLE playlists(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL)")
+        db.execSQL("CREATE TABLE playlists(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, position INTEGER NOT NULL DEFAULT 0)")
         db.execSQL("CREATE TABLE playlist_songs(playlist_id INTEGER NOT NULL, media_id INTEGER NOT NULL, position INTEGER NOT NULL)")
         db.execSQL("CREATE INDEX idx_ps ON playlist_songs(playlist_id, position)")
         db.execSQL("CREATE TABLE boost(device_name TEXT PRIMARY KEY, gain_mult REAL NOT NULL)")
@@ -41,6 +41,10 @@ class BlissDb(context: Context) : SQLiteOpenHelper(context, "bliss.db", null, 6)
             db.execSQL("CREATE TABLE IF NOT EXISTS segments(id INTEGER PRIMARY KEY AUTOINCREMENT, media_id INTEGER NOT NULL, start_ms INTEGER NOT NULL, end_ms INTEGER NOT NULL, label TEXT NOT NULL DEFAULT '')")
             db.execSQL("CREATE INDEX IF NOT EXISTS idx_seg ON segments(media_id)")
             db.execSQL("CREATE TABLE IF NOT EXISTS song_genre(media_id INTEGER PRIMARY KEY, genre TEXT NOT NULL)")
+        }
+        if (old < 7) {
+            db.execSQL("ALTER TABLE playlists ADD COLUMN position INTEGER NOT NULL DEFAULT 0")
+            db.execSQL("UPDATE playlists SET position = (SELECT COUNT(*) FROM playlists p2 WHERE p2.name < playlists.name OR (p2.name = playlists.name AND p2.id < playlists.id))")
         }
     }
 
@@ -67,8 +71,18 @@ class BlissDb(context: Context) : SQLiteOpenHelper(context, "bliss.db", null, 6)
     fun clearGains() = writableDatabase.delete("gains", null, null)
 
     // ---- playlists ----
-    fun createPlaylist(name: String): Long =
-        writableDatabase.insert("playlists", null, ContentValues().apply { put("name", name) })
+    fun createPlaylist(name: String): Long {
+        val max = runCatching {
+            readableDatabase.compileStatement("SELECT COALESCE(MAX(position),-1) FROM playlists").simpleQueryForLong()
+        }.getOrDefault(-1)
+        return writableDatabase.insert(
+            "playlists", null,
+            ContentValues().apply {
+                put("name", name)
+                put("position", max + 1)
+            }
+        )
+    }
 
     fun renamePlaylist(id: Long, name: String) {
         writableDatabase.update("playlists", ContentValues().apply { put("name", name) }, "id=?", arrayOf(id.toString()))
@@ -81,10 +95,24 @@ class BlissDb(context: Context) : SQLiteOpenHelper(context, "bliss.db", null, 6)
 
     fun playlists(): List<Pair<Long, String>> {
         val out = mutableListOf<Pair<Long, String>>()
-        readableDatabase.rawQuery("SELECT id, name FROM playlists ORDER BY name", null)?.use { c ->
+        readableDatabase.rawQuery("SELECT id, name FROM playlists ORDER BY position, name", null)?.use { c ->
             while (c.moveToNext()) out.add(c.getLong(0) to c.getString(1))
         }
         return out
+    }
+
+    /** Persist a user drag-reordered playlist list. */
+    fun reorderPlaylists(ids: List<Long>) {
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            ids.forEachIndexed { i, id ->
+                db.execSQL("UPDATE playlists SET position=? WHERE id=?", arrayOf(i.toLong(), id))
+            }
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
     }
 
     fun songsIn(playlistId: Long): List<Long> {

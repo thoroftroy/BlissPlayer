@@ -285,6 +285,14 @@ class MainActivity : AppCompatActivity() {
         filterGenre = savedInstanceState?.getString("filterGenre", "") ?: ""
         filterPlaylist = savedInstanceState?.getLong("filterPlaylist", -1L)?.takeIf { it != -1L && it != null }
         filterPlaylistName = savedInstanceState?.getString("filterPlaylistName", "") ?: ""
+        tab = savedInstanceState?.getInt("tab", 0) ?: 0
+        drillArtist = savedInstanceState?.getString("drillArtist")
+        drillAlbum = savedInstanceState?.getString("drillAlbum")
+        drillGenre = savedInstanceState?.getString("drillGenre")
+        drillPlaylist = savedInstanceState?.let {
+            if (it.containsKey("drillPlaylist")) it.getLong("drillPlaylist") else null
+        }
+        drillPlaylistName = savedInstanceState?.getString("drillPlaylistName")
 
         titleBarWrap = findViewById(R.id.titleBarWrap)
         titleBar = findViewById(R.id.titleBar)
@@ -344,17 +352,29 @@ class MainActivity : AppCompatActivity() {
             ItemTouchHelper.UP or ItemTouchHelper.DOWN, ItemTouchHelper.LEFT or ItemTouchHelper.RIGHT
         ) {
             override fun onMove(rv: RecyclerView, h: RecyclerView.ViewHolder, t: RecyclerView.ViewHolder): Boolean {
-                // Drag reorder only makes sense inside a playlist drill.
-                if (drillPlaylist == null) return false
                 val rows = adapter.rows.toMutableList()
                 val a = h.bindingAdapterPosition
                 val b = t.bindingAdapterPosition
                 if (a !in rows.indices || b !in rows.indices) return false
-                java.util.Collections.swap(rows, a, b)
-                adapter.submit(rows)
-                val pid = drillPlaylist ?: return true
-                db.reorderPlaylist(pid, rows.mapNotNull { (it as? Row.SongRow)?.song?.mediaId })
-                return true
+                // Inside a playlist drill: reorder its songs, persist the order.
+                if (drillPlaylist != null) {
+                    java.util.Collections.swap(rows, a, b)
+                    adapter.submit(rows)
+                    val pid = drillPlaylist ?: return true
+                    db.reorderPlaylist(pid, rows.mapNotNull { (it as? Row.SongRow)?.song?.mediaId })
+                    return true
+                }
+                // On the playlists tab: reorder the playlists themselves.
+                if (tab == 4) {
+                    val ra = rows.getOrNull(a) as? Row.Group ?: return false
+                    val rb = rows.getOrNull(b) as? Row.Group ?: return false
+                    if (!ra.key.startsWith("pl:") || !rb.key.startsWith("pl:")) return false
+                    java.util.Collections.swap(rows, a, b)
+                    adapter.submit(rows)
+                    db.reorderPlaylists(rows.mapNotNull { (it as? Row.Group)?.key?.removePrefix("pl:")?.toLongOrNull() })
+                    return true
+                }
+                return false
             }
 
             override fun onSwiped(h: RecyclerView.ViewHolder, dir: Int) {
@@ -436,7 +456,20 @@ class MainActivity : AppCompatActivity() {
             conn, Context.BIND_AUTO_CREATE
         )
 
-        showTab(0)
+        // Restored drill state survives showTab's clearing so rotation and
+        // theme switches land back exactly where the user was.
+        val keepA = drillArtist
+        val keepB = drillAlbum
+        val keepG = drillGenre
+        val keepP = drillPlaylist
+        val keepN = drillPlaylistName
+        showTab(tab.coerceIn(0, 5))
+        drillArtist = keepA
+        drillAlbum = keepB
+        drillGenre = keepG
+        drillPlaylist = keepP
+        drillPlaylistName = keepN
+        render()
         ensurePermissions()
         ticker.post(progressTick)
         buildMorePane()
@@ -454,6 +487,12 @@ class MainActivity : AppCompatActivity() {
         outState.putLong("filterPlaylist", filterPlaylist ?: -1L)
         outState.putString("filterPlaylistName", filterPlaylistName)
         outState.putBoolean("searchOpen", findViewById<LinearLayout>(R.id.searchRow)?.visibility == View.VISIBLE)
+        outState.putInt("tab", tab)
+        outState.putString("drillArtist", drillArtist)
+        outState.putString("drillAlbum", drillAlbum)
+        outState.putString("drillGenre", drillGenre)
+        if (drillPlaylist != null) outState.putLong("drillPlaylist", drillPlaylist!!)
+        outState.putString("drillPlaylistName", drillPlaylistName)
     }
 
     override fun onDestroy() {
@@ -944,13 +983,14 @@ class MainActivity : AppCompatActivity() {
             else -> {
                 val pls = db.playlists()
                 crumb.text = if (pls.isEmpty()) "No playlists yet. Tap the first row, or use the dots on a song."
-                else "${pls.size} playlists. Tap to open, dots to rename or delete."
+                else "${pls.size} playlists. Tap to open, dots to rename or delete, drag to reorder."
                 val rows = mutableListOf<Row>(
                     Row.Group("__new", "Create playlist", "Keep a mix together")
                 )
                 pls.forEach { (id, name) ->
                     rows.add(Row.Group("pl:$id", name, "${db.songsIn(id).size} songs"))
                 }
+                adapter.numbered = true
                 adapter.submit(rows)
             }
         }
@@ -2363,9 +2403,11 @@ class MainActivity : AppCompatActivity() {
         moreBox.addView(section("Look and feel"))
         val themeBtn = xpBtn(if (dark) "Light XP mode" else "Dark XP mode")
         themeBtn.setOnClickListener {
-            dark = !dark
-            prefs.edit().putBoolean("dark", dark).apply()
-            applyThemeLive()
+            prefs.edit().putBoolean("dark", !dark).apply()
+            // Full recreate so every widget (including system-styled ones like
+            // text fields) picks up the theme. Tab, drill, queue, search, and
+            // playback all restore, nothing restarts from the beginning.
+            recreate()
         }
         moreBox.addView(themeBtn)
         val rotBtn = xpBtn("Rotation: ${prefs.getString("rotation", "Auto")}")
@@ -2632,17 +2674,6 @@ class MainActivity : AppCompatActivity() {
             "Landscape" -> android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
             else -> android.content.pm.ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
         }
-    }
-
-    private fun applyThemeLive() {
-        skinStatic()
-        updateTabs()
-        adapter.dark = dark
-        adapter.notifyDataSetChanged()
-        landQueueAdapter?.dark = dark
-        landQueueAdapter?.notifyDataSetChanged()
-        buildMorePane()
-        refreshMini()
     }
 
     private fun equalizeConfirm() {

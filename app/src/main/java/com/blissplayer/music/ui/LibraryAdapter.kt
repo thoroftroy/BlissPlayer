@@ -109,7 +109,7 @@ class LibraryAdapter(
                 }
             }
             is Row.Group -> {
-                h.title.text = row.title
+                h.title.text = if (numbered && row.key.startsWith("pl:")) "${pos + 1}. ${row.title}" else row.title
                 h.sub.text = row.sub
                 h.dur.text = ""
                 h.dur.visibility = android.view.View.GONE
