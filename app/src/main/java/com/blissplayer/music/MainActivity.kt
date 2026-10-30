@@ -2055,12 +2055,16 @@ class MainActivity : AppCompatActivity() {
         loopBtn = Button(this).apply {
             background = xpBtnBg()
             setTextColor(iconColor())
+            textSize = 12f
+            minimumHeight = dp(36)
             setOnClickListener { cycleRepeat() }
         }
         shuffleBtn = Button(this).apply {
             background = xpBtnBg()
             setTextColor(iconColor())
             text = getString(R.string.shuffle_off)
+            textSize = 12f
+            minimumHeight = dp(36)
             setOnClickListener { shuffleQueue() }
         }
         updateLoopBtn()

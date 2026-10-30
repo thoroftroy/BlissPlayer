@@ -18,6 +18,7 @@ import androidx.media.app.NotificationCompat.MediaStyle
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
+import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.session.MediaNotification
@@ -118,6 +119,15 @@ class PlayerService : MediaSessionService() {
     private val listener = object : Player.Listener {
         override fun onMediaItemTransition(item: MediaItem?, reason: Int) {
             applyGainFor(item)
+        }
+
+        override fun onPlayerError(error: PlaybackException) {
+            // Corrupt or missing file: skip it instead of stalling the queue.
+            if (::player.isInitialized && player.mediaItemCount > 1) {
+                player.seekToNextMediaItem()
+                player.prepare()
+                player.play()
+            }
         }
 
         override fun onAudioSessionIdChanged(audioSessionId: Int) {

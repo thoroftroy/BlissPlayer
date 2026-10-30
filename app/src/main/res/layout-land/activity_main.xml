@@ -244,10 +244,12 @@
 
             <Button android:id="@+id/npLoop" android:layout_width="0dp"
                 android:layout_height="wrap_content" android:layout_weight="1"
-                android:background="@drawable/xp_button" android:text="@string/loop_off" />
+                android:background="@drawable/xp_button" android:text="@string/loop_off"
+                android:textSize="12sp" android:minHeight="36dp" />
             <Button android:id="@+id/npShuffle" android:layout_width="0dp"
                 android:layout_height="wrap_content" android:layout_weight="1"
-                android:background="@drawable/xp_button" android:text="@string/shuffle_off" />
+                android:background="@drawable/xp_button" android:text="@string/shuffle_off"
+                android:textSize="12sp" android:minHeight="36dp" />
         </LinearLayout>
 
         <androidx.recyclerview.widget.RecyclerView
