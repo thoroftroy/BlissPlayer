@@ -873,7 +873,7 @@ class MainActivity : AppCompatActivity() {
     // ---------- playlists ----------
 
     private fun createPlaylistDialog(firstSong: Long?) {
-        val input = EditText(this).apply { hint = "Example: Car bangers" }
+        val input = EditText(this).apply { hint = "Example: Gym mix" }
         AlertDialog.Builder(this)
             .setTitle("New playlist")
             .setView(pad(input))
@@ -1261,7 +1261,7 @@ class MainActivity : AppCompatActivity() {
 
         moreBox.addView(section("Loudness"))
         moreBox.addView(TextView(this).apply {
-            text = "Songs from downloads are all over the place volume wise. Press the button once and BlissPlayer samples every song, finds the average, and turns the quiet ones up and the loud ones down. Nothing is rewritten, and Undo is one tap. Songs already done are skipped unless they changed."
+            text = "Songs from different sources are all over the place volume wise. Press the button once and BlissPlayer samples every song, finds the average, and turns the quiet ones up and the loud ones down. Nothing is rewritten, and Undo is one tap. Songs already done are skipped unless they changed."
             textSize = 12f
         })
         moreBox.addView(xpBtn(getString(R.string.equalize_all)).apply {
@@ -1290,7 +1290,7 @@ class MainActivity : AppCompatActivity() {
             text = "1. Copy songs anywhere on the phone. The Music folder is fine.\n" +
                 "2. Open More and tap Scan for music.\n" +
                 "3. Tap Play all music, or Shuffle.\n" +
-                "4. In the car, set Boost near 200 percent once. Each device remembers its own.\n" +
+                "4. If one output is much quieter than the rest, raise Boost for it. Each output remembers its own.\n" +
                 "5. Volumes jumping between songs? Run Equalize once.\n" +
                 "6. Tap the three dots on any song for play next, playlists, edit, delete."
             textSize = 13f
@@ -1345,7 +1345,7 @@ class MainActivity : AppCompatActivity() {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(16), dp(8), dp(16), dp(8))
         }
-        val eName = EditText(this).apply { hint = "Name, like Car" }
+        val eName = EditText(this).apply { hint = "Name, like Quiet room" }
         val ePct = EditText(this).apply {
             hint = "Percent, 1 to 500"
             inputType = InputType.TYPE_CLASS_NUMBER

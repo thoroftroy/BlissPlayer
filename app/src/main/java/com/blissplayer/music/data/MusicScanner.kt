@@ -6,8 +6,8 @@ import android.os.Build
 import android.provider.MediaStore
 import com.blissplayer.music.model.Song
 
-/** Scans device audio via MediaStore. YouTube downloads show up here as long as
- *  they are audio files (mp3/m4a/opus/ogg/flac/wav) anywhere on shared storage. */
+/** Scans device audio via MediaStore. Any audio file on shared storage shows up
+ *  (mp3, m4a, opus, ogg, flac, wav), tolerant of missing or partial tags. */
 object MusicScanner {
 
     /** Major audio extensions we list. MediaStore already filters to music, but we
