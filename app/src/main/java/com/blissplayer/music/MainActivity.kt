@@ -50,6 +50,7 @@ import androidx.recyclerview.widget.RecyclerView
 import com.blissplayer.music.data.BlissDb
 import com.blissplayer.music.data.MusicScanner
 import com.blissplayer.music.data.TagTools
+import com.blissplayer.music.model.Seg
 import com.blissplayer.music.model.Song
 import com.blissplayer.music.playback.LoudnessScanner
 import com.blissplayer.music.playback.PlayerService
@@ -59,6 +60,7 @@ import com.blissplayer.music.ui.LibraryAdapter
 import com.blissplayer.music.ui.PickAdapter
 import com.blissplayer.music.ui.PickRow
 import com.blissplayer.music.ui.Row
+import com.blissplayer.music.ui.SegmentSeekBar
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -219,6 +221,11 @@ class MainActivity : AppCompatActivity() {
         val song = p.currentMediaItem?.mediaId?.toLongOrNull()?.let { byId[it] }
         nowTitleView?.text = song?.title ?: "Now playing"
         nowArtistView?.text = song?.let { "${it.artist} | ${it.album}" } ?: ""
+        nowSegBar?.let { bar ->
+            bar.segments = song?.let { db.segmentsFor(it.mediaId) } ?: emptyList()
+            bar.maxMs = p.duration.coerceAtLeast(1)
+            bar.invalidate()
+        }
     }
 
     // ---------- lifecycle ----------
@@ -793,10 +800,7 @@ class MainActivity : AppCompatActivity() {
             miniProgress.max = 1000
             miniProgress.progress = ((pos * 1000) / p.duration).toInt().coerceIn(0, 1000)
             miniTime.text = fmt(pos)
-            nowSeek?.let {
-                it.max = p.duration.toInt()
-                it.progress = pos.toInt().coerceIn(0, it.max)
-            }
+            nowSegBar?.setPosition(pos, p.duration)
             nowTime?.text = "${fmt(pos)} / ${fmt(p.duration)}"
         } else {
             miniProgress.progress = 0
@@ -838,6 +842,7 @@ class MainActivity : AppCompatActivity() {
             "Play next",
             "Add to queue",
             "Add to playlist",
+            "Skip segments",
             "Edit details",
             "Delete song and file",
             "Details"
@@ -849,12 +854,16 @@ class MainActivity : AppCompatActivity() {
                     0 -> playNext(song)
                     1 -> addToQueueEnd(song)
                     2 -> addToPlaylistDialog(listOf(song.mediaId))
-                    3 -> tagEditorDialog(song)
-                    4 -> deleteConfirm(song)
-                    5 -> AlertDialog.Builder(this)
+                    3 -> segmentDialog(song)
+                    4 -> CoroutineScope(Dispatchers.Main).launch {
+                        val tags = TagTools.readTags(this@MainActivity, song)
+                        tagEditorDialog(song, tags)
+                    }
+                    5 -> deleteConfirm(song)
+                    6 -> AlertDialog.Builder(this)
                         .setTitle(song.title)
                         .setMessage(
-                            "Artist: ${song.artist}\nAlbum: ${song.album}\n" +
+                            "Artist: ${song.artist}\nAlbum: ${song.album}\nGenre: ${db.getGenre(song.mediaId)}\n" +
                                 "Length: ${fmt(song.durationMs)}\nSize: ${song.sizeBytes / 1024} KB\n" +
                                 (song.filePath ?: "")
                         )
@@ -865,7 +874,7 @@ class MainActivity : AppCompatActivity() {
             .show()
     }
 
-    private fun tagEditorDialog(song: Song) {
+    private fun tagEditorDialog(song: Song, fileTags: Array<String?>) {
         val pad = dp(16)
         val box = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -878,11 +887,12 @@ class MainActivity : AppCompatActivity() {
                 box.addView(this)
             }
         }
-        val eTitle = field("Title", song.title)
-        val eArtist = field("Artist", song.artist)
-        val eAlbum = field("Album", song.album)
+        val eTitle = field("Title", fileTags[0] ?: song.title)
+        val eArtist = field("Artist", fileTags[1] ?: song.artist)
+        val eAlbum = field("Album", fileTags[2] ?: song.album)
+        val eGenre = field("Genre", fileTags[3] ?: db.getGenre(song.mediaId))
         box.addView(TextView(this).apply {
-            text = "Whatever you type here is what BlissPlayer and most other players will show."
+            text = "Whatever you type here is what BlissPlayer and most other players will show. Empty genre means Uncategorized."
             textSize = 12f
         })
         AlertDialog.Builder(this)
@@ -893,11 +903,15 @@ class MainActivity : AppCompatActivity() {
                     eTitle.text.toString().ifBlank { song.title },
                     eArtist.text.toString().ifBlank { song.artist },
                     eAlbum.text.toString().ifBlank { song.album },
-                    null, null, null
+                    eGenre.text.toString().ifBlank { "Uncategorized" },
+                    null, null
                 )
                 CoroutineScope(Dispatchers.Main).launch {
                     when (val r = TagTools.writeTags(this@MainActivity, song, edit)) {
-                        is TagTools.WriteResult.Ok -> scan()
+                        is TagTools.WriteResult.Ok -> {
+                            db.setGenre(song.mediaId, edit.genre ?: "Uncategorized")
+                            scan()
+                        }
                         is TagTools.WriteResult.NeedsPermission -> {
                             pendingRetry = { tagEditorSaveRetry(song, edit) }
                             senderLauncher.launch(IntentSenderRequest.Builder(r.sender).build())
@@ -913,11 +927,179 @@ class MainActivity : AppCompatActivity() {
     private fun tagEditorSaveRetry(song: Song, edit: TagTools.Edit) {
         CoroutineScope(Dispatchers.Main).launch {
             when (val r = TagTools.writeTags(this@MainActivity, song, edit)) {
-                is TagTools.WriteResult.Ok -> scan()
+                is TagTools.WriteResult.Ok -> {
+                    db.setGenre(song.mediaId, edit.genre ?: "Uncategorized")
+                    scan()
+                }
                 is TagTools.WriteResult.NeedsPermission ->
                     senderLauncher.launch(IntentSenderRequest.Builder(r.sender).build())
                 is TagTools.WriteResult.Failed -> toast("Could not save: ${r.msg}")
             }
+        }
+    }
+
+    /** Skip segments for one song. Red on the bar, jumped over automatically. */
+    private fun segmentDialog(song: Song) {
+        svc?.let {
+            it.previewSongId = song.mediaId
+            it.refreshSegments()
+        }
+        val listView = RecyclerView(this).apply {
+            layoutManager = LinearLayoutManager(this@MainActivity)
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(300)
+            )
+        }
+        val segAdapter = LibraryAdapter(
+            dark = dark,
+            onTap = { row ->
+                val key = (row as? Row.Group)?.key ?: return@LibraryAdapter
+                if (key == "__add") {
+                    segmentEditDialog(song, null) { buildSegRows(song, listView) }
+                } else if (key.startsWith("seg:")) {
+                    val id = key.removePrefix("seg:").toLongOrNull() ?: return@LibraryAdapter
+                    db.segmentsFor(song.mediaId).firstOrNull { it.id == id }?.let { testSegment(song, it) }
+                }
+            },
+            onMenu = { row ->
+                val key = (row as? Row.Group)?.key ?: return@LibraryAdapter
+                if (key.startsWith("seg:")) {
+                    val id = key.removePrefix("seg:").toLongOrNull() ?: return@LibraryAdapter
+                    val seg = db.segmentsFor(song.mediaId).firstOrNull { it.id == id } ?: return@LibraryAdapter
+                    AlertDialog.Builder(this)
+                        .setTitle(seg.label.ifBlank { "Segment" } + " (${fmt(seg.startMs)} to ${fmt(seg.endMs)})")
+                        .setItems(arrayOf("Test it", "Edit", "Delete")) { _, which ->
+                            when (which) {
+                                0 -> testSegment(song, seg)
+                                1 -> segmentEditDialog(song, seg) { buildSegRows(song, listView) }
+                                2 -> {
+                                    db.deleteSegment(seg.id)
+                                    svc?.refreshSegments()
+                                    buildSegRows(song, listView)
+                                }
+                            }
+                        }
+                        .show()
+                }
+            }
+        )
+        listView.adapter = segAdapter
+        buildSegRows(song, listView)
+
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(8), dp(8), dp(8), dp(8))
+            addView(TextView(this@MainActivity).apply {
+                text = "Marked parts turn red on the player bar and get jumped over. " +
+                    "Tap one to hear it, hold for edit or delete. Testing turns the skipping off for this song until you close this."
+                textSize = 12f
+            })
+            addView(listView)
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Skip segments: ${song.title}")
+            .setView(box)
+            .setPositiveButton("Done", null)
+            .setOnDismissListener {
+                if (svc?.previewSongId == song.mediaId) svc?.previewSongId = null
+            }
+            .show()
+    }
+
+    private fun buildSegRows(song: Song, listView: RecyclerView) {
+        val rows = mutableListOf<Row>(
+            Row.Group("__add", "Add segment", "Mark an intro, noise, or end card")
+        )
+        db.segmentsFor(song.mediaId).forEach { s ->
+            rows.add(
+                Row.Group(
+                    "seg:${s.id}",
+                    (s.label.ifBlank { "Segment" }) + " (${fmt(s.startMs)} to ${fmt(s.endMs)})",
+                    "Tap to hear it, hold to change it"
+                )
+            )
+        }
+        (listView.adapter as? LibraryAdapter)?.submit(rows)
+    }
+
+    /** Play a segment's neighborhood so its boundaries can be checked by ear. */
+    private fun testSegment(song: Song, seg: Seg) {
+        val p = svc?.player
+        val curId = p?.currentMediaItem?.mediaId?.toLongOrNull()
+        if (p == null || curId != song.mediaId) {
+            playQueue(listOf(song), 0)
+        }
+        svc?.player?.seekTo((seg.startMs - 3000).coerceAtLeast(0))
+    }
+
+    private fun segmentEditDialog(song: Song, seg: Seg?, onChanged: () -> Unit) {
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(16), dp(8), dp(16), dp(8))
+        }
+        fun field(label: String, value: String): EditText {
+            box.addView(TextView(this).apply { text = label })
+            return EditText(this).apply {
+                setText(value)
+                hint = "minutes:seconds"
+                box.addView(this)
+            }
+        }
+        val eLabel = field("Name (optional)", seg?.label ?: "")
+        val eStart = field("Start", seg?.let { fmt(it.startMs) } ?: "0:00")
+        val eEnd = field("End", seg?.let { fmt(it.endMs) } ?: fmt(song.durationMs))
+        val playingThis = svc?.player?.currentMediaItem?.mediaId?.toLongOrNull() == song.mediaId
+        fun fillFromNow(target: EditText) {
+            if (!playingThis) {
+                toast("Play this song first, then capture the position.")
+                return
+            }
+            target.setText(fmt(svc?.player?.currentPosition ?: 0))
+        }
+        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        row.addView(xpBtn("Start = now").apply {
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            setOnClickListener { fillFromNow(eStart) }
+        })
+        row.addView(xpBtn("End = now").apply {
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            setOnClickListener { fillFromNow(eEnd) }
+        })
+        box.addView(row)
+        AlertDialog.Builder(this)
+            .setTitle(if (seg == null) "New segment" else "Edit segment")
+            .setView(box)
+            .setPositiveButton("Save") { _, _ ->
+                val start = parseTimeMs(eStart.text.toString())
+                val end = parseTimeMs(eEnd.text.toString())
+                if (start == null || end == null || end <= start) {
+                    toast("End must be after start. Use minutes:seconds.")
+                    return@setPositiveButton
+                }
+                val label = eLabel.text.toString()
+                if (seg == null) db.addSegment(song.mediaId, start, end.coerceAtMost(song.durationMs), label)
+                else db.updateSegment(seg.id, start, end.coerceAtMost(song.durationMs), label)
+                svc?.refreshSegments()
+                onChanged()
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    /** Accepts minutes:seconds or plain seconds. */
+    private fun parseTimeMs(t: String): Long? {
+        val s = t.trim()
+        if (s.isEmpty()) return null
+        return try {
+            if (':' in s) {
+                val parts = s.split(':')
+                if (parts.size != 2) return null
+                parts[0].toLong() * 60000 + (parts[1].toDouble() * 1000).toLong()
+            } else {
+                (s.toDouble() * 1000).toLong()
+            }.coerceAtLeast(0)
+        } catch (e: Exception) {
+            null
         }
     }
 
@@ -1152,7 +1334,7 @@ class MainActivity : AppCompatActivity() {
     private var queueListView: RecyclerView? = null
     private var nowTitleView: TextView? = null
     private var nowArtistView: TextView? = null
-    private var nowSeek: SeekBar? = null
+    private var nowSegBar: SegmentSeekBar? = null
     private var nowTime: TextView? = null
     private var nowPlayBtn: Button? = null
     private var loopBtn: Button? = null
@@ -1181,21 +1363,17 @@ class MainActivity : AppCompatActivity() {
             textSize = 13f
         }
         box.addView(nowArtistView)
-        nowSeek = SeekBar(this).apply {
-            max = (p.duration.coerceAtLeast(0)).toInt()
-            progress = p.currentPosition.toInt().coerceIn(0, max)
-            progressDrawable = xpProgress()
-            thumb = xpThumb()
-            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-                override fun onProgressChanged(s: SeekBar?, v: Int, fromUser: Boolean) {
-                    if (fromUser) p.seekTo(v.toLong())
-                }
-
-                override fun onStartTrackingTouch(s: SeekBar?) {}
-                override fun onStopTrackingTouch(s: SeekBar?) {}
-            })
+        nowSegBar = SegmentSeekBar(this).apply {
+            dark = this@MainActivity.dark
+            maxMs = p.duration.coerceAtLeast(1)
+            posMs = p.currentPosition.coerceIn(0, maxMs)
+            segments = song?.let { db.segmentsFor(it.mediaId) } ?: emptyList()
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
+            )
+            onSeek = { ms -> p.seekTo(ms) }
         }
-        box.addView(nowSeek)
+        box.addView(nowSegBar)
         nowTime = TextView(this).apply { text = "${fmt(p.currentPosition)} / ${fmt(p.duration)}" }
         box.addView(nowTime)
 
@@ -1309,7 +1487,7 @@ class MainActivity : AppCompatActivity() {
             .setOnDismissListener {
                 queueDialog = null
                 queueListView = null
-                nowSeek = null
+                nowSegBar = null
                 nowTime = null
                 nowPlayBtn = null
                 nowTitleView = null

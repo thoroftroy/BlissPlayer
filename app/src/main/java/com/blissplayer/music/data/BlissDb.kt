@@ -12,7 +12,7 @@ import android.database.sqlite.SQLiteOpenHelper
  *  playlists(id, name) + playlist_songs(playlist_id, media_id, position)
  *  boost(device_name PRIMARY KEY, gain_mult)  , per-device amp memory (car vs headphones)
  */
-class BlissDb(context: Context) : SQLiteOpenHelper(context, "bliss.db", null, 5) {
+class BlissDb(context: Context) : SQLiteOpenHelper(context, "bliss.db", null, 6) {
 
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL("CREATE TABLE gains(media_id INTEGER PRIMARY KEY, gain_mult REAL NOT NULL)")
@@ -24,6 +24,9 @@ class BlissDb(context: Context) : SQLiteOpenHelper(context, "bliss.db", null, 5)
         db.execSQL("CREATE TABLE measure(media_id INTEGER PRIMARY KEY, rms REAL NOT NULL, modified INTEGER NOT NULL)")
         db.execSQL("CREATE TABLE preset(name TEXT PRIMARY KEY, gain_mult REAL NOT NULL)")
         db.execSQL("CREATE TABLE plays_total(media_id INTEGER PRIMARY KEY, count INTEGER NOT NULL)")
+        db.execSQL("CREATE TABLE segments(id INTEGER PRIMARY KEY AUTOINCREMENT, media_id INTEGER NOT NULL, start_ms INTEGER NOT NULL, end_ms INTEGER NOT NULL, label TEXT NOT NULL DEFAULT '')")
+        db.execSQL("CREATE INDEX idx_seg ON segments(media_id)")
+        db.execSQL("CREATE TABLE song_genre(media_id INTEGER PRIMARY KEY, genre TEXT NOT NULL)")
     }
 
     override fun onUpgrade(db: SQLiteDatabase, old: Int, new: Int) {
@@ -34,6 +37,11 @@ class BlissDb(context: Context) : SQLiteOpenHelper(context, "bliss.db", null, 5)
         }
         if (old < 4) db.execSQL("CREATE TABLE IF NOT EXISTS preset(name TEXT PRIMARY KEY, gain_mult REAL NOT NULL)")
         if (old < 5) db.execSQL("CREATE TABLE IF NOT EXISTS plays_total(media_id INTEGER PRIMARY KEY, count INTEGER NOT NULL)")
+        if (old < 6) {
+            db.execSQL("CREATE TABLE IF NOT EXISTS segments(id INTEGER PRIMARY KEY AUTOINCREMENT, media_id INTEGER NOT NULL, start_ms INTEGER NOT NULL, end_ms INTEGER NOT NULL, label TEXT NOT NULL DEFAULT '')")
+            db.execSQL("CREATE INDEX IF NOT EXISTS idx_seg ON segments(media_id)")
+            db.execSQL("CREATE TABLE IF NOT EXISTS song_genre(media_id INTEGER PRIMARY KEY, genre TEXT NOT NULL)")
+        }
     }
 
     // ---- gains ----
@@ -158,6 +166,70 @@ class BlissDb(context: Context) : SQLiteOpenHelper(context, "bliss.db", null, 5)
             while (c.moveToNext()) m[c.getLong(0)] = c.getInt(1)
         }
         return m
+    }
+
+    // ---- skip segments (per song, milliseconds) ----
+    fun segmentsFor(mediaId: Long): List<com.blissplayer.music.model.Seg> {
+        val out = mutableListOf<com.blissplayer.music.model.Seg>()
+        readableDatabase.rawQuery(
+            "SELECT id, start_ms, end_ms, label FROM segments WHERE media_id=? ORDER BY start_ms",
+            arrayOf(mediaId.toString())
+        )?.use { c ->
+            while (c.moveToNext()) {
+                out.add(
+                    com.blissplayer.music.model.Seg(
+                        c.getLong(0), mediaId, c.getLong(1), c.getLong(2), c.getString(3) ?: ""
+                    )
+                )
+            }
+        }
+        return out
+    }
+
+    fun addSegment(mediaId: Long, startMs: Long, endMs: Long, label: String): Long =
+        writableDatabase.insert(
+            "segments", null,
+            ContentValues().apply {
+                put("media_id", mediaId)
+                put("start_ms", startMs)
+                put("end_ms", endMs)
+                put("label", label)
+            }
+        )
+
+    fun updateSegment(id: Long, startMs: Long, endMs: Long, label: String) {
+        writableDatabase.update(
+            "segments",
+            ContentValues().apply {
+                put("start_ms", startMs)
+                put("end_ms", endMs)
+                put("label", label)
+            },
+            "id=?", arrayOf(id.toString())
+        )
+    }
+
+    fun deleteSegment(id: Long) {
+        writableDatabase.delete("segments", "id=?", arrayOf(id.toString()))
+    }
+
+    // ---- genre per song (Uncategorized when nothing set) ----
+    fun getGenre(mediaId: Long): String {
+        readableDatabase.rawQuery("SELECT genre FROM song_genre WHERE media_id=?", arrayOf(mediaId.toString()))?.use { c ->
+            if (c.moveToFirst()) return c.getString(0)?.takeIf { it.isNotBlank() } ?: "Uncategorized"
+        }
+        return "Uncategorized"
+    }
+
+    fun setGenre(mediaId: Long, genre: String) {
+        writableDatabase.insertWithOnConflict(
+            "song_genre", null,
+            ContentValues().apply {
+                put("media_id", mediaId)
+                put("genre", genre.ifBlank { "Uncategorized" })
+            },
+            SQLiteDatabase.CONFLICT_REPLACE
+        )
     }
 
     // ---- loudness measure cache (Equalize) ----

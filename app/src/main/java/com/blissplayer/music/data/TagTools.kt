@@ -37,6 +37,34 @@ object TagTools {
         data class Failed(val msg: String) : WriteResult
     }
 
+    /**
+     * Read the embedded tag for prefilling the editor. Null when unreadable.
+     * Song name, artist, album, genre, in that order.
+     */
+    suspend fun readTags(context: Context, song: Song): Array<String?> =
+        withContext(Dispatchers.IO) {
+            val uri = Uri.parse(song.contentUri)
+            val tmp = File(context.cacheDir, "tagread_${song.mediaId}.tmp")
+            try {
+                context.contentResolver.openInputStream(uri)?.use { ins ->
+                    tmp.outputStream().use { ins.copyTo(it) }
+                } ?: return@withContext arrayOfNulls<String>(4)
+                val audio = runCatching { AudioFileIO.read(tmp) }.getOrNull()
+                    ?: return@withContext arrayOfNulls<String>(4)
+                val tag = audio.tag ?: return@withContext arrayOfNulls<String>(4)
+                arrayOf(
+                    runCatching { tag.getFirst(FieldKey.TITLE) }.getOrNull()?.takeIf { it.isNotBlank() },
+                    runCatching { tag.getFirst(FieldKey.ARTIST) }.getOrNull()?.takeIf { it.isNotBlank() },
+                    runCatching { tag.getFirst(FieldKey.ALBUM) }.getOrNull()?.takeIf { it.isNotBlank() },
+                    runCatching { tag.getFirst(FieldKey.GENRE) }.getOrNull()?.takeIf { it.isNotBlank() }
+                )
+            } catch (e: Exception) {
+                arrayOfNulls(4)
+            } finally {
+                tmp.delete()
+            }
+        }
+
     suspend fun writeTags(context: Context, song: Song, edit: Edit): WriteResult =
         withContext(Dispatchers.IO) {
             val uri = Uri.parse(song.contentUri)
