@@ -21,107 +21,114 @@ Primary use: play music downloaded from YouTube, in car + headphones.
 
 ---
 
-## [ ] 0. Naming + GitHub setup (DO FIRST, need user confirmation)
+## [ ] 0. Naming + GitHub setup (two steps waiting on you)
 - [x] Create this notes file
 - [x] User picks app name: BlissPlayer
-- [x] User confirms icon plan: user supplied BlissIcon.png (360px) → mipmap densities generated, wired as launcher icon
-- [x] `git init` in MusicPlayer/, initial commit with this file (branch `main`)
-- [ ] User: GitHub Desktop → File → Add Local Repository → ~/Downloads/MusicPlayer → Publish repository (private or public), steps at bottom of file
-- [ ] Confirm private vs public repo
+- [x] User icon: BlissIcon.png (360px) turned into all mipmap sizes, wired as launcher icon
+- [x] `git init` in MusicPlayer/, committed, branch `main`
+- [ ] WAITING ON YOU: GitHub Desktop, File, Add Local Repository, pick ~/Downloads/MusicPlayer, Publish (private or public). Steps at bottom of file.
+- [ ] WAITING ON YOU: say private or public so the note can record it
 
-Name candidates (pick one or suggest your own):
+Name candidates (picked #4):
 1. XPlayer, short, XP nod
 2. WinAmp'd, XP-era joke, might be trademark-adjacent
 3. LunaPlay, after XP's "Luna" theme name
-4. BlissPlayer, after XP Bliss wallpaper
+4. BlissPlayer, after XP Bliss wallpaper (CHOSEN)
 5. XPods / XP Music, dead simple, clear
 
 ## [x] 1. Project scaffold (name confirmed: BlissPlayer)
 - [x] Native Kotlin + Media3/ExoPlayer (lightest: no Compose, no network, no analytics)
-- [x] Min 26 / target+compile 35 for Pixel 10 Pro
+- [x] Min SDK 29 (raised from 26, needed for the edit/delete permission flows) / target+compile 35
 - [x] Package `com.blissplayer.music`
 - [x] Gradle wrapper + one-command `./build-apk.sh`
-- [x] Verify APK builds, BUILD SUCCESSFUL 2026-10-29 (`BlissPlayer-v0.1-debug.apk`, 7.5 MB, minSdk 26 / target 35). On-device install test pending on Pixel.
+- [x] APK builds clean: lint + assemble pass every time. Current: `BlissPlayer-v0.4-debug.apk`, ~6.7 MB, versionName 0.4.0 (frozen per user, code bumps silently)
+- [x] Installed and launching on-device (user past v0.2.1, crash fixed, app in daily use)
 
-## [x] 2. (code done 2026-10-29, on-device test pending) Library / scanning
-- [ ] Setting: choose which folder(s) to scan, default = auto-scan all device storage
-- [ ] Support major extensions: mp3, m4a/aac, opus, ogg, flac, wav, mkv-audio? (confirm list)
-- [ ] MediaStore scan + file fallback (for YouTube downloads with bad paths)
-- [ ] Group by Artists / Albums from metadata (partial metadata tolerant, "Unknown Artist/Album" fallback)
-- [ ] Song list: title, artist, album, duration, file size, format
-- [ ] Search + sort (A–Z, newest, longest, etc.)
-- [ ] Play All Music button (big, obvious, XP button style)
+## [x] 2. Library / scanning (code done, on-device in use)
+- [x] Setting: choose which folder(s) to scan, default = scan everything automatically
+- [x] Extensions: mp3, m4a/aac, opus, ogg, flac, wav (mkv-audio skipped, video container, out of scope)
+- [x] MediaStore scan, tolerant of partial and missing tags
+- [x] Group by Artists / Albums ("Unknown artist/album" fallback)
+- [x] Song list: title, artist, album, duration, file size, format
+- [ ] Search + sort: NOT BUILT (never asked for after v1, say the word)
+- [x] Play all music button, big and green like the XP Start button
+- [x] Shuffle button
+- [x] Explorer header row + durations on every song row
 
-## [x] 3. (code done 2026-10-29, on-device test pending) Playback core
-- [ ] Play / pause / next / prev, seek bar (XP segmented style)
-- [ ] Notification + lockscreen controls, headset/Bluetooth + car (Android Auto basic?) controls
-- [ ] Handle audio focus (calls/nav), resume after interrupt
-- [ ] Background playback, low-power (no animations draining battery, no network, no analytics)
-- [ ] Lightweight check: cold start time, idle battery drain, APK size (< ~5 MB goal)
+## [x] 3. Playback core (code done, on-device in use)
+- [x] Play / pause / next / prev, XP segmented seek bar (custom drawn, red skip zones in v0.4)
+- [x] Notification + lockscreen + headset + Bluetooth/car controls (custom XP notification, persistent while playing)
+- [x] Audio focus handled by hand: passing sounds never pause music, only a real loss like a call pauses it. Wake mode on so local playback never stalls.
+- [x] Background playback: foreground service, keeps playing with the app closed or the screen off
+- [x] Lightweight: no network, no analytics, no background work except while playing. APK ~6.7 MB.
+- [ ] Measured cold start / battery drain numbers: NOT MEASURED (no lab setup, say the word)
 
-## [x] 4. (code done 2026-10-29, on-device test pending) Queue logic (must be exact)
-- [ ] Queue screen always shows TRUE current order
-- [ ] Modes: Loop All (loop queue) / Loop One (repeat single) / Shuffle
-- [ ] Shuffle = actually reorders queue list and display updates; press Shuffle again = re-shuffles current queue
-- [ ] "Add to queue" / "Play next" inserts directly after current song, even when shuffled (regression test this)
-- [ ] Remove / reorder (drag) / clear queue, save queue as playlist
+## [x] 4. Queue logic, exact (code done, on-device in use)
+- [x] Queue screen always shows the true current order (mirror checked against the player before every op)
+- [x] Modes: Loop Off / Loop All / Loop One, Shuffle that favors less-played songs
+- [x] Shuffle reorders the queue itself and the screen shows it. Tap again = re-shuffle. Gapless since v0.5 (playing song untouched).
+- [x] Play next inserts directly after the current song, even when shuffled
+- [x] Remove (swipe, hold) / reorder (drag), all surgical, no rebuild stutter
+- [ ] Clear queue button: NOT BUILT (say the word)
+- [ ] Save queue as playlist: NOT BUILT (say the word)
 
-## [x] 5. (code done 2026-10-29, on-device test pending) Playlists
-- [ ] Create / rename / delete playlists, add single song / album / artist to playlist
-- [ ] Playlists stored locally (Room/MStore), export/import simple format (m3u?)
-- [ ] Confirm: need playlist folders or just flat list?
+## [x] 5. Playlists (code done, overhauled in v0.6)
+- [x] Create / rename / delete, add songs, artists, albums (picker with filter in v0.6)
+- [x] Creating a playlist lands straight inside it
+- [x] Stored locally in app DB
+- [ ] m3u export/import: NOT BUILT (was a maybe, never confirmed)
+- [ ] Playlist folders: NOT BUILT (flat list only, never confirmed)
 
-## [x] 6. (code done 2026-10-29, on-device test pending) Metadata edit + delete (in-app)
-- [ ] Edit: title, artist, album, album artist?, genre, year, track #, writes back to file tag (needs SAF/File write permission flow)
-- [ ] Delete: delete from library AND option to delete file from storage (with XP-style "Are you sure?" dialog + confirm)
-- [ ] After edit/delete: rescan + refresh UI immediately
+## [x] 6. Metadata edit + delete, in app (code done, on-device in use)
+- [x] Edit: title, artist, album, genre (writes the file tag AND the app copy, Uncategorized when empty)
+- [ ] Album artist / year / track fields: NOT BUILT (editor covers the four used ones, say the word)
+- [x] Delete song + file with confirm dialog
+- [x] Rescan + refresh UI immediately after edit/delete
 
-## [x] 7. (code done 2026-10-29, on-device test pending) Volume: Boost (car speakers), KEY FEATURE
-- [ ] Master Gain / Pre-amp slider, up to +200% (confirm: 200% enough or want 300-400%?)
-- [ ] Applies live on top of equalization (Gain = system volume × boost × per-song norm)
-- [ ] Presets: e.g. Car / Headphones / Normal, one-tap switch (user asked: amplify higher/lower as needed)
-- [ ] Safety: limiter to prevent clipping/distortion, warning at >150%?
-- [ ] Confirm: remember separate boost per output device (car BT vs headphones)?
+## [x] 7. Volume Boost (code done, on-device in use)
+- [x] Boost 1 to 2000 percent, type any exact number. No cap, warnings instead (past 150 quality drops, past 500 expect distortion). Hardware sets the final ceiling.
+- [x] Applies live on top of equalization (final = per-song norm x boost)
+- [x] User presets with names (fixed presets removed per user), tap to use, hold to delete
+- [x] Per-device auto memory with on/off toggle (car BT vs headphones)
+- [x] Phone volume guard: optional restore when the OS lowers volume, throttled, points at the real system switch
 
-## [x] 8. (code done 2026-10-29, on-device test pending) Volume: One-tap Equalize / Normalize (baked, not real-time), KEY FEATURE
-- [ ] "EQUALIZE ALL" button: scans selected music dir, measures average loudness per song (EBU R128 / RMS, confirm method)
-- [ ] Computes target = average loudness across all songs
-- [ ] Raises quiet songs, lowers loud songs toward target, smoothly (no pumping), one press, no per-song fiddling
-- [ ] OPEN QUESTION (need answer before build): "baked" = ?
-  - Option A (recommended, non-destructive): store per-song gain in app DB, applied at playback, originals untouched, instant undo, fast
-  - Option B (destructive): actually rewrite volume of MP3/FLAC files, permanent, slow, risky, can't undo
-  - Default to A unless user insists on B. Confirm.
-- [ ] Show progress bar (XP style) + per-song before/after dB + "Undo / Reset" button
-- [ ] Works combined with Boost: final = normalized gain × user boost
-- [ ] So user never touches phone volume between songs
+## [x] 8. One-tap Equalize, baked not real-time (code done, user confirms it works well)
+- [x] Measures with RMS sampling (two windows per song, all CPU cores, cache by file date). EBU R128 skipped, RMS won for speed.
+- [x] Target = average loudness across all songs. Quiet up, loud down, 12 dB window.
+- [x] Safe gains in app DB, originals untouched, one-tap Undo
+- [x] Progress with live time estimate. Skip when nothing changed, status line shows last run and coverage.
+- [ ] Per-song before/after dB readout: NOT BUILT (status line covers it, say the word)
+- [x] Works combined with Boost
 
-## [x] 9. (code done 2026-10-29, on-device test pending) XP Theming (light + dark), intuitive + explained
-- [ ] Light theme: Luna blue title bars, light gray (#ECE9D8-ish) faces, segmented progress bars, Tahoma-like font, beveled buttons, green Start-like play button?
-- [ ] Dark theme: same XP language but dark grays/navy, still beveled/segmented (not flat Material)
-- [ ] Theme toggle in Settings + quick toggle on main screen
-- [ ] Customization screen: accent color? title-bar gradient? font size? (minimal UI but max customization, confirm which knobs)
-- [ ] Every screen has short plain-English helper text ("This button makes all songs the same loudness…"), no AI-sounding copy
-- [ ] Empty states explain what to do ("No music found, tap Scan or copy YouTube downloads to /Music")
+## [x] 9. XP theming, intuitive + explained (code done, on-device in use)
+- [x] Light: Luna blue title bars, gray faces, segmented bars, beveled buttons, green Start play button
+- [x] Dark: same XP language in dark grays/navy, paints the full background since v0.5, switches live with no restart
+- [x] Theme toggle in More
+- [ ] Accent color / font size / album art toggles: NOT BUILT (minimal UI won, say the word)
+- [x] Every feature explained in its own section, plain words, no AI copy. Help page removed per user, About shows name + version only.
+- [x] Product wording everywhere: README and app read as a general music player, nothing user-specific
 
-## [x] 10. (code done 2026-10-29, on-device test pending) Settings / customization
-- [ ] Music folders picker, rescan, file-type toggles
-- [ ] Boost + loudness target + limiter toggles
-- [ ] Theme (XP light / XP dark), font size, show/hide album art?
-- [ ] "Explain like I'm new" help page with car/headphone walkthrough
+## [x] 10. Settings / customization (code done, Minus the not-built bits below)
+- [x] Music folders picker, rescan
+- [ ] File-type toggles: NOT BUILT (all major types always on, say the word)
+- [x] Boost presets + per-device toggle + volume guard + equalize + undo
+- [x] Theme (XP light / XP dark), play counts display toggle
+- [x] Stats section: library size, songs played, total plays, skips, time listening, most played song and artist
+- [ ] Explained walkthrough page: REMOVED per user (each feature explains itself)
 
-## [ ] 11. Build, test, ship
-- [ ] `./build-apk.sh` produces `app-debug.apk` (+ release later if wanted)
-- [ ] Manual test checklist on Pixel 10 Pro: install, scan YouTube downloads, play all, shuffle re-shuffle, play-next while shuffled, loop modes, playlist CRUD, edit tag, delete song, boost 200% in car, equalize-all then verify no volume jumps, dark/light switch
-- [ ] Push to GitHub, tag v0.1, attach APK to Release (so user can download straight to phone)
-- [ ] GitHub Desktop check: open repo, see history, push/pull works
+## [ ] 11. Build, test, ship (code side done, two steps waiting on you)
+- [x] `./build-apk.sh` one-command build, lint clean every time
+- [x] Device tested by user across versions: install, scan, play all, shuffle, play-next, loop, playlists, edit, delete, boost, equalize, dark/light, notification, segments
+- [ ] WAITING ON YOU: push to GitHub via Desktop, tag a release, attach the APK so the phone can pull it
+- [ ] Release (signed, shrunk) build: NOT DONE (debug APK only so far, say the word)
 
-## Open questions for user (STOP, answer before any code)
-1. App name + package name + repo name + private/public?
-2. Equalize = Option A (safe gains DB) or B (rewrite files)?
-3. Boost cap: 200% or higher? Need per-device memory (car vs headphones auto-switch)?
-4. Playlist extras: m3u export needed? Android Auto needed?
-5. Icon: you said you'll make one, placeholder OK until then? What size/style (XP icon 48px pixel style)?
-6. GitHub: can you create the empty repo, or want me to walk you through it click-by-click?
+## Open questions for user, all answered, kept for the record
+1. App name: BlissPlayer. Package com.blissplayer.music. Repo private/public: still open, waiting on you.
+2. Equalize: Option A, safe gains DB. Confirmed working well by user.
+3. Boost: uncapped (1 to 2000 percent) with warnings. Per-device auto memory with toggle. Confirmed.
+4. Playlist extras: picker built. m3u + Android Auto: never confirmed, not built.
+5. Icon: user-supplied BlissIcon, wired in.
+6. GitHub: local repo ready, Desktop publish waiting on you.
 
 ---
 Log:
@@ -147,13 +154,13 @@ Log:
 - [x] Smart Shuffle (lifetime play count weighting, resets when all played once)
 - [x] Rebuild APK, verify, commit
 
-## [ ] 13. Launch crash fix (2026-10-29, v0.2.1)
+## [x] 13. Launch crash fix (2026-10-29, v0.2.1, confirmed fixed by user daily use since)
 - [x] Found it: the segmented bar drawable put a shape XML inside a `<bitmap>` tag, which Android cannot decode. It inflated on the main screen, instant crash on launch. Rebuilt the segmented bar in code from a real PNG tile.
 - [x] Bluetooth device lookup now permission safe (was a second crash path).
 - [x] `lintDebug` is clean and runs before every build from now on.
 - [x] Min SDK 26 to 29 (Android 10+, needed for the delete/edit permission flows anyway).
 - [x] Crash reporter: if it ever crashes again, reopening the app shows the log with a Copy button. Paste it back here.
-- [ ] User installs v0.2.1 and confirms launch works.
+- [x] User installs and confirms launch works (user on v0.3+ since, no launch crash reported).
 
 ## [x] 14. Round 3 polish, v0.3.0 (2026-10-29, user feedback)
 - [x] Shuffle everything is now Shuffle, Now Playing shuffle button always says Shuffle
