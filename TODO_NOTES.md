@@ -192,9 +192,18 @@ Log:
 - [x] Playlists: creating one lands straight inside it. Add songs picker with artists, albums, individual songs, and a filter.
 - [x] Play counts toggle in Look and feel. Lists and queue show total plays, cycle plays, and next up chance by the duration.
 - [x] Stats section in More: library size, songs played, total plays, skips, time listening, most played song and artist. Skips counted from manual jumps, listen time accumulated while playing.
+- [x] Every More section carries its own plain-words explainer (Music, Playback controls, Boost, Phone volume guard, Loudness, Look and feel, Stats, About). Verified, no AI copy.
 
 ## [x] 18. Round 7, still v0.4 (2026-10-29, user feedback, version frozen per user)
 - [x] Skip segments: saved per song, editor with start/end in minutes:seconds, set to now buttons, tap to hear, hold to edit or delete. Red zones on the player bar, auto skip in the service. Testing pauses skipping for that song until the editor closes.
 - [x] Pause gaps: passing notification sounds no longer pause music, only a real loss like a call does. Wake mode on for gapless local playback. App closed or screen off keeps playing.
 - [x] Genres: stored per song, Uncategorized when empty, editor field writes the file tag and the app copy, Details shows it.
 - [x] Version stays 0.4.0 until the user says bump. Code bumps silently so installs replace cleanly. One stable APK name.
+
+## Standing process rules (from user feedback, apply to every round)
+- [x] Temp todo file per round, deleted when done (rounds 2, 3, 4, 5, 6, 7 all did this).
+- [x] No emojis and no em dashes in user-facing text, ever. Lint-clean + copy-checked each round.
+- [x] README and app read as a general music player. User setup details go into behavior only, never into words.
+- [x] Version stays 0.4.0 until the user says bump. Invisible code bumps only.
+- [x] Toasts only for errors, guidance, destructive confirms, long-op results, and the volume guard fighting the phone.
+- [x] Never drop a requested feature silently. If it cannot be done (OS blocks it), say so plainly with the real alternative.
