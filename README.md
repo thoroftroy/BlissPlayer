@@ -19,23 +19,9 @@ In plain words: copy your songs (YouTube downloads are fine: mp3, m4a, opus, ogg
 - Playback notification with title, artist, position bar, and skip buttons. Works on the lockscreen and over Bluetooth
 - Fullscreen toggle plus padding that respects the status bar and gesture bar
 
-## Build
+## Install
 
-```bash
-./build-apk.sh
-```
-
-APK lands at `BlissPlayer-v0.2-debug.apk` in this folder (copied from the Gradle output).
-
-Needs: JDK 17+, Android SDK (build tools 35, platform 35). `local.properties` points at `~/Android/Sdk`. Change it if yours differs.
-
-Install: copy the APK to the Pixel and tap it (allow install from unknown sources when asked), or `adb install -r BlissPlayer-v0.2-debug.apk`.
-
-## Publish to GitHub (GitHub Desktop)
-
-1. GitHub Desktop, File, Add Local Repository, pick this folder.
-2. Publish repository, name it `BlissPlayer`, Private or Public.
-3. Push future changes the same way.
+Copy `BlissPlayer-v0.2-debug.apk` to the Pixel and tap it (allow install from unknown sources when asked).
 
 ## Notes
 
