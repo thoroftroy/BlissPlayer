@@ -213,3 +213,6 @@ Log:
 - [x] Fuzzy match: lowercased, accents stripped, typo tolerant (1 typo short words, 2 long), ranked title first, then artist, album, genre.
 - [x] Filters: artist text, album text, genre picker, playlist picker, removable chips. Song titles still match loosely with filters on.
 - [x] Playing from results keeps the results as the queue context.
+
+## [x] 20. Round 9, still v0.4 (2026-10-29): file names in search
+- [x] File names (extension stripped) join the search index with fuzzy matching. Ranked below title, artist, album, genre. No lyrics, per user.

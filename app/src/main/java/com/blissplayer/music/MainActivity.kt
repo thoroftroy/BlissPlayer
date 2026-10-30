@@ -100,6 +100,7 @@ class MainActivity : AppCompatActivity() {
         val artist: String,
         val album: String,
         val genre: String,
+        val file: String,
         val all: String,
         val words: List<String>
     )
@@ -453,8 +454,9 @@ class MainActivity : AppCompatActivity() {
                     val a = norm(s.artist)
                     val al = norm(s.album)
                     val gn = norm(g)
-                    val all = "$t $a $al $gn"
-                    SearchIdx(s, t, a, al, gn, all, all.split(' ').filter { it.isNotEmpty() })
+                    val fn = norm(s.filePath?.substringAfterLast('/')?.substringBeforeLast('.') ?: "")
+                    val all = "$t $a $al $gn $fn"
+                    SearchIdx(s, t, a, al, gn, fn, all, all.split(' ').filter { it.isNotEmpty() })
                 }
                 restoreQueueIfNeeded()
                 if (pendingQueueSync) {
@@ -593,6 +595,7 @@ class MainActivity : AppCompatActivity() {
             if (e.artist.contains(q)) score -= 50
             if (e.album.contains(q)) score -= 20
             if (e.genre.contains(q)) score -= 10
+            if (e.file.contains(q)) score -= 8
             for (t in tokens) {
                 if (e.all.contains(t)) {
                     score -= 5
@@ -720,7 +723,7 @@ class MainActivity : AppCompatActivity() {
         }
         box.addView(pBtn)
         box.addView(TextView(this).apply {
-            text = "Filters narrow the search to matching songs. Song titles still match loosely, so typos are fine."
+            text = "Filters narrow the search to matching songs. Titles and file names still match loosely, so typos are fine."
             textSize = 12f
         })
         AlertDialog.Builder(this)
