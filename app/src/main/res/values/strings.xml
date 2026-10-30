@@ -7,8 +7,7 @@
     <string name="tab_albums">Albums</string>
     <string name="tab_playlists">Playlists</string>
     <string name="tab_more">More</string>
-    <string name="play_all">Play all music</string>
-    <string name="shuffle_now">Shuffle</string>
+    <string name="play_all">Play</string>
     <string name="scan">Scan for music</string>
     <string name="equalize_all">Equalize all songs</string>
     <string name="equalize_undo">Undo equalize</string>

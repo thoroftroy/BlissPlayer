@@ -62,6 +62,7 @@ class PickAdapter(
                 val cb = h.itemView as CheckBox
                 cb.text = if (row.sub.isBlank()) row.title else "${row.title}\n${row.sub}"
                 cb.setTextColor(if (dark) 0xFFE8E8E8.toInt() else 0xFF000000.toInt())
+                cb.buttonTintList = android.content.res.ColorStateList.valueOf(0xFF0058E6.toInt())
                 cb.setOnCheckedChangeListener(null)
                 cb.isChecked = row.key in checked
                 cb.setOnCheckedChangeListener { _, on ->

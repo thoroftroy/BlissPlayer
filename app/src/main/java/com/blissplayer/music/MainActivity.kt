@@ -111,9 +111,10 @@ class MainActivity : AppCompatActivity() {
     private var searchJob: Job? = null
 
     // Library view state
-    private var tab = 0 // 0 songs 1 artists 2 albums 3 playlists
+    private var tab = 0 // 0 songs, 1 artists, 2 albums, 3 genres, 4 playlists, 5 more
     private var drillArtist: String? = null
     private var drillAlbum: String? = null
+    private var drillGenre: String? = null
     private var drillPlaylist: Long? = null
     private var drillPlaylistName: String? = null
 
@@ -127,6 +128,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var filterBtn: Button
     private lateinit var searchClear: Button
     private lateinit var chipsRow: LinearLayout
+    private lateinit var searchToggle: ImageButton
     private lateinit var statusStrip: TextView
     private lateinit var list: RecyclerView
     private lateinit var morePane: ScrollView
@@ -207,6 +209,7 @@ class MainActivity : AppCompatActivity() {
 
         override fun onIsPlayingChanged(isPlaying: Boolean) {
             miniPlayPause.setImageResource(if (isPlaying) R.drawable.ic_pause else R.drawable.ic_play)
+            npPlay?.setImageResource(if (isPlaying) R.drawable.ic_pause else R.drawable.ic_play)
             setPlayBtnIcon(isPlaying)
             refreshMini()
         }
@@ -248,8 +251,14 @@ class MainActivity : AppCompatActivity() {
         val song = p.currentMediaItem?.mediaId?.toLongOrNull()?.let { byId[it] }
         nowTitleView?.text = song?.title ?: "Now playing"
         nowArtistView?.text = song?.let { "${it.artist} | ${it.album}" } ?: ""
+        val segs = song?.let { db.segmentsFor(it.mediaId) } ?: emptyList()
         nowSegBar?.let { bar ->
-            bar.segments = song?.let { db.segmentsFor(it.mediaId) } ?: emptyList()
+            bar.segments = segs
+            bar.maxMs = p.duration.coerceAtLeast(1)
+            bar.invalidate()
+        }
+        npBar?.let { bar ->
+            bar.segments = segs
             bar.maxMs = p.duration.coerceAtLeast(1)
             bar.invalidate()
         }
@@ -263,6 +272,7 @@ class MainActivity : AppCompatActivity() {
         setTheme(if (dark) R.style.Theme_BlissPlayer_Night else R.style.Theme_BlissPlayer_Day)
         super.onCreate(savedInstanceState)
         CrashReporter.install(this)
+        applyRotation()
         val lastCrash = CrashReporter.read(this)
         setContentView(R.layout.activity_main)
         db = BlissDb(this)
@@ -283,6 +293,8 @@ class MainActivity : AppCompatActivity() {
         filterBtn = findViewById(R.id.filterBtn)
         searchClear = findViewById(R.id.searchClear)
         chipsRow = findViewById(R.id.chipsRow)
+        searchToggle = findViewById(R.id.searchToggle)
+        searchToggle.setOnClickListener { toggleSearch() }
         searchBox.addTextChangedListener(object : android.text.TextWatcher {
             override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
             override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
@@ -316,14 +328,42 @@ class MainActivity : AppCompatActivity() {
         adapter = LibraryAdapter(dark = dark, onTap = ::onRowTap, onMenu = ::onRowMenu)
         list.layoutManager = LinearLayoutManager(this)
         list.adapter = adapter
+        ItemTouchHelper(object : ItemTouchHelper.SimpleCallback(
+            ItemTouchHelper.UP or ItemTouchHelper.DOWN, ItemTouchHelper.LEFT or ItemTouchHelper.RIGHT
+        ) {
+            override fun onMove(rv: RecyclerView, h: RecyclerView.ViewHolder, t: RecyclerView.ViewHolder): Boolean {
+                // Drag reorder only makes sense inside a playlist drill.
+                if (drillPlaylist == null) return false
+                val rows = adapter.rows.toMutableList()
+                val a = h.bindingAdapterPosition
+                val b = t.bindingAdapterPosition
+                if (a !in rows.indices || b !in rows.indices) return false
+                java.util.Collections.swap(rows, a, b)
+                adapter.submit(rows)
+                val pid = drillPlaylist ?: return true
+                db.reorderPlaylist(pid, rows.mapNotNull { (it as? Row.SongRow)?.song?.mediaId })
+                return true
+            }
+
+            override fun onSwiped(h: RecyclerView.ViewHolder, dir: Int) {
+                val pid = drillPlaylist
+                val row = adapter.rows.getOrNull(h.bindingAdapterPosition) as? Row.SongRow
+                if (pid == null || row == null) {
+                    adapter.notifyItemChanged(h.bindingAdapterPosition)
+                    return
+                }
+                db.removeFromPlaylist(pid, row.song.mediaId)
+                render()
+            }
+        }).attachToRecyclerView(list)
 
         findViewById<Button>(R.id.tabSongs).setOnClickListener { showTab(0) }
         findViewById<Button>(R.id.tabArtists).setOnClickListener { showTab(1) }
         findViewById<Button>(R.id.tabAlbums).setOnClickListener { showTab(2) }
-        findViewById<Button>(R.id.tabPlaylists).setOnClickListener { showTab(3) }
-        findViewById<Button>(R.id.tabMore).setOnClickListener { showTab(4) }
-        findViewById<Button>(R.id.btnPlayAll).setOnClickListener { playAll(shuffle = false) }
-        findViewById<Button>(R.id.btnShuffleAll).setOnClickListener { playAll(shuffle = true) }
+        findViewById<Button>(R.id.tabPlaylists).setOnClickListener { showTab(4) }
+        findViewById<Button>(R.id.tabGenres).setOnClickListener { showTab(3) }
+        findViewById<Button>(R.id.tabMore).setOnClickListener { showTab(5) }
+        findViewById<Button>(R.id.btnPlayAll).setOnClickListener { playContext() }
         crumb.setOnClickListener {
             if (isSearchActive()) clearSearch() else clearDrill()
         }
@@ -331,6 +371,36 @@ class MainActivity : AppCompatActivity() {
         findViewById<ImageButton>(R.id.miniNext).setOnClickListener { skipNext() }
         findViewById<ImageButton>(R.id.miniQueue).setOnClickListener { openNowPlaying() }
         findViewById<LinearLayout>(R.id.miniPlayer).setOnClickListener { openNowPlaying() }
+
+        // Landscape right panel. Absent in portrait, so everything is null-safe.
+        npBar = findViewById(R.id.npBar)
+        npTime = findViewById(R.id.npTime)
+        npTitle = findViewById(R.id.npTitle)
+        npArtist = findViewById(R.id.npArtist)
+        npPlay = findViewById(R.id.npPlay)
+        npLoop = findViewById(R.id.npLoop)
+        npBar?.dark = dark
+        findViewById<ImageButton>(R.id.npPlay)?.setOnClickListener { togglePlay() }
+        findViewById<ImageButton>(R.id.npPrev)?.setOnClickListener { skipPrev() }
+        findViewById<ImageButton>(R.id.npNext)?.setOnClickListener { skipNext() }
+        findViewById<Button>(R.id.npLoop)?.setOnClickListener { cycleRepeat() }
+        findViewById<Button>(R.id.npShuffle)?.setOnClickListener { shuffleQueue() }
+        findViewById<Button>(R.id.npSaveQueue)?.setOnClickListener {
+            if (queue.isEmpty()) {
+                toast("Queue is empty.")
+                return@setOnClickListener
+            }
+            createPlaylistDialog(queue.map { it.mediaId })
+        }
+        findViewById<Button>(R.id.npSegEdit)?.setOnClickListener {
+            currentSong()?.let { segmentDialog(it) } ?: toast("Play something first.")
+        }
+        findViewById<RecyclerView>(R.id.npQueue)?.let { qv ->
+            qv.layoutManager = LinearLayoutManager(this)
+            landQueueAdapter = makeQueueAdapter()
+            qv.adapter = landQueueAdapter
+            attachQueueTouch(qv) { landQueueAdapter }
+        }
 
         vol = VolumeManager(this, db, prefs) { b ->
             svc?.let {
@@ -391,7 +461,7 @@ class MainActivity : AppCompatActivity() {
             )
         }
         AlertDialog.Builder(this)
-            .setTitle("The app crashed last time")
+            .setCustomTitle(xpTitle("The app crashed last time"))
             .setMessage("Copy this and send it to the developer so it can be fixed. Or save it as a file and send the file.")
             .setView(sv)
             .setPositiveButton("Copy") { _, _ ->
@@ -482,6 +552,7 @@ class MainActivity : AppCompatActivity() {
                 }
                 render()
                 updateStatus()
+                refreshMini()
                 if (filtered.isEmpty()) {
                     crumb.text = if (all.isEmpty())
                         "No music found. Copy songs into the Music folder, then open More and tap Scan."
@@ -505,10 +576,21 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    /** If mirror and player disagree in size, the player wins. */
+    /** If mirror and player disagree in size OR on the current song, the player wins. */
     private fun ensureQueueSync() {
         val p = svc?.player ?: return
-        if (p.mediaItemCount != queue.size) syncQueueFromPlayer()
+        if (p.mediaItemCount != queue.size) {
+            syncQueueFromPlayer()
+            return
+        }
+        if (p.mediaItemCount == 0 || byId.isEmpty()) return
+        val curId = p.currentMediaItem?.mediaId?.toLongOrNull()
+        val mirrorId = queue.getOrNull(p.currentMediaItemIndex.coerceAtLeast(0))?.mediaId
+        if (curId != null && mirrorId != null && curId != mirrorId) {
+            syncQueueFromPlayer()
+            refreshMini()
+            refreshQueueList()
+        }
     }
 
     private fun restoreQueueIfNeeded() {
@@ -527,13 +609,13 @@ class MainActivity : AppCompatActivity() {
     private fun showTab(t: Int) {
         tab = t
         clearDrill(silent = true)
-        morePane.visibility = if (t == 4) View.VISIBLE else View.GONE
-        list.visibility = if (t == 4) View.GONE else View.VISIBLE
+        morePane.visibility = if (t == 5) View.VISIBLE else View.GONE
+        list.visibility = if (t == 5) View.GONE else View.VISIBLE
         updateTabs()
-        if (t == 4) buildMorePane() else render()
+        if (t == 5) buildMorePane() else render()
     }
 
-    private val tabIds = listOf(R.id.tabSongs, R.id.tabArtists, R.id.tabAlbums, R.id.tabPlaylists, R.id.tabMore)
+    private val tabIds = listOf(R.id.tabSongs, R.id.tabArtists, R.id.tabAlbums, R.id.tabGenres, R.id.tabPlaylists, R.id.tabMore)
 
     private fun updateTabs() {
         tabIds.forEachIndexed { i, id ->
@@ -547,13 +629,14 @@ class MainActivity : AppCompatActivity() {
     private fun clearDrill(silent: Boolean = false) {
         drillArtist = null
         drillAlbum = null
+        drillGenre = null
         drillPlaylist = null
         drillPlaylistName = null
         if (!silent) render()
     }
 
     private fun showingSongs(): Boolean =
-        tab == 0 || drillArtist != null || drillAlbum != null || drillPlaylist != null
+        tab == 0 || drillArtist != null || drillAlbum != null || drillGenre != null || drillPlaylist != null
 
     // ---------- search (fuzzy + filters) ----------
 
@@ -641,7 +724,7 @@ class MainActivity : AppCompatActivity() {
         searchJob = CoroutineScope(Dispatchers.Main).launch {
             kotlinx.coroutines.delay(150)
             val res = kotlinx.coroutines.withContext(Dispatchers.Default) { computeResults() }
-            if (tab != 4 && isSearchActive()) {
+            if (tab != 5 && isSearchActive()) {
                 adapter.submit(res.map { Row.SongRow(it) })
                 crumb.text = "${res.size} results | tap to clear"
                 headerBar.visibility = View.VISIBLE
@@ -652,6 +735,20 @@ class MainActivity : AppCompatActivity() {
                 searchClear.visibility = if (isSearchActive()) View.VISIBLE else View.GONE
                 if (!isSearchActive()) render()
             }
+        }
+    }
+
+    private fun toggleSearch() {
+        val row = findViewById<LinearLayout>(R.id.searchRow) ?: return
+        if (row.visibility == View.VISIBLE) {
+            row.visibility = View.GONE
+            chipsRow.visibility = View.GONE
+            clearSearch()
+        } else {
+            row.visibility = View.VISIBLE
+            searchBox.requestFocus()
+            val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as android.view.inputmethod.InputMethodManager
+            imm.showSoftInput(searchBox, android.view.inputmethod.InputMethodManager.SHOW_IMPLICIT)
         }
     }
 
@@ -692,6 +789,7 @@ class MainActivity : AppCompatActivity() {
         val box = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(16), dp(8), dp(16), dp(8))
+            background = xpBtnPanel()
         }
         fun field(label: String, value: String): EditText {
             box.addView(TextView(this).apply { text = label })
@@ -708,34 +806,28 @@ class MainActivity : AppCompatActivity() {
         val gBtn = xpBtn(if (gSel.isBlank()) "Genre: any" else "Genre: $gSel").apply {
             setOnClickListener {
                 val all = (genreMap.values.distinct().sorted() + "Uncategorized").distinct().sorted()
-                val names = (listOf("Any genre") + all).toTypedArray()
-                AlertDialog.Builder(this@MainActivity)
-                    .setTitle("Genre")
-                    .setItems(names) { _, which ->
-                        gSel = if (which == 0) "" else all[which - 1]
-                        text = if (gSel.isBlank()) "Genre: any" else "Genre: $gSel"
-                    }
-                    .show()
+                val names = (listOf("Any genre") + all)
+                xpMenuDialog("Genre", names) { which ->
+                    gSel = if (which == 0) "" else all[which - 1]
+                    text = if (gSel.isBlank()) "Genre: any" else "Genre: $gSel"
+                }
             }
         }
         box.addView(gBtn)
         val pBtn = xpBtn(if (pSel == null) "Playlist: any" else "Playlist: $pName").apply {
             setOnClickListener {
                 val pls = db.playlists()
-                val names = (listOf("Any playlist") + pls.map { it.second }).toTypedArray()
-                AlertDialog.Builder(this@MainActivity)
-                    .setTitle("In playlist")
-                    .setItems(names) { _, which ->
-                        if (which == 0) {
-                            pSel = null
-                            pName = ""
-                        } else {
-                            pSel = pls[which - 1].first
-                            pName = pls[which - 1].second
-                        }
-                        text = if (pSel == null) "Playlist: any" else "Playlist: $pName"
+                val names = (listOf("Any playlist") + pls.map { it.second })
+                xpMenuDialog("In playlist", names) { which ->
+                    if (which == 0) {
+                        pSel = null
+                        pName = ""
+                    } else {
+                        pSel = pls[which - 1].first
+                        pName = pls[which - 1].second
                     }
-                    .show()
+                    text = if (pSel == null) "Playlist: any" else "Playlist: $pName"
+                }
             }
         }
         box.addView(pBtn)
@@ -744,7 +836,7 @@ class MainActivity : AppCompatActivity() {
             textSize = 12f
         })
         AlertDialog.Builder(this)
-            .setTitle("Search filters")
+            .setCustomTitle(xpTitle("Search filters"))
             .setView(box)
             .setPositiveButton("Apply") { _, _ ->
                 filterArtist = eArtist.text.toString()
@@ -761,8 +853,9 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun render() {
-        if (tab == 4) return
-        titleBar.text = "BlissPlayer: ${listOf("Songs", "Artists", "Albums", "Playlists")[tab]}"
+        if (tab == 5) return
+        adapter.numbered = false
+        titleBar.text = "BlissPlayer: ${listOf("Songs", "Artists", "Albums", "Genres", "Playlists")[tab]}"
         headerBar.visibility = if (showingSongs()) View.VISIBLE else View.GONE
         if (isSearchActive()) {
             titleBar.text = "BlissPlayer: Search"
@@ -788,13 +881,20 @@ class MainActivity : AppCompatActivity() {
                 crumb.text = "$a (${inA.size}) | tap here to go back"
                 adapter.submit(inA.map { Row.SongRow(it) })
             }
+            drillGenre != null -> {
+                val g = drillGenre!!
+                val inG = songs.filter { (genreMap[it.mediaId] ?: "Uncategorized") == g }
+                crumb.text = "$g (${inG.size}) | tap here to go back"
+                adapter.submit(inG.map { Row.SongRow(it) })
+            }
             drillPlaylist != null -> {
                 val ids = db.songsIn(drillPlaylist!!).mapNotNull { byId[it] }
                 crumb.text = "${drillPlaylistName ?: "Playlist"} (${ids.size}) | tap here to go back"
+                adapter.numbered = true
                 adapter.submit(ids.map { Row.SongRow(it) })
             }
             tab == 0 -> {
-                crumb.text = if (songs.isEmpty()) "" else "${songs.size} songs. Tap to play, dots for options."
+                crumb.text = if (songs.isEmpty()) "" else "${songs.size} songs. Tap a song to play."
                 adapter.submit(songs.map { Row.SongRow(it) })
             }
             tab == 1 -> {
@@ -808,6 +908,12 @@ class MainActivity : AppCompatActivity() {
                 adapter.submit(groups.map { (k, v) ->
                     Row.Group("al:$k", k, "${v.first().artist} | ${v.size} songs")
                 })
+            }
+            tab == 3 -> {
+                val groups = songs.groupBy { genreMap[it.mediaId] ?: "Uncategorized" }
+                    .toSortedMap(String.CASE_INSENSITIVE_ORDER)
+                crumb.text = "${groups.size} genres"
+                adapter.submit(groups.map { (k, v) -> Row.Group("ge:$k", k, "${v.size} songs") })
             }
             else -> {
                 val pls = db.playlists()
@@ -836,9 +942,15 @@ class MainActivity : AppCompatActivity() {
      * and the chance of coming up next under Smart Shuffle.
      */
     private fun statLines(): Map<Long, String> {
+        val smart = prefs.getBoolean("shuffle_smart", true)
+        val strength = prefs.getFloat("shuffle_strength", 1.0f).toDouble().coerceIn(0.0, 3.0)
         val counts = db.playCounts()
         val totals = db.totalPlays()
-        val weights = songs.associate { it.mediaId to 1.0 / (1 + (counts[it.mediaId] ?: 0)) }
+        val weights = if (!smart) {
+            songs.associate { it.mediaId to 1.0 }
+        } else {
+            songs.associate { it.mediaId to 1.0 / Math.pow((1 + (counts[it.mediaId] ?: 0)).toDouble(), strength) }
+        }
         val sum = weights.values.sum().coerceAtLeast(1e-9)
         return songs.associate { s ->
             val ever = totals[s.mediaId] ?: 0
@@ -861,13 +973,17 @@ class MainActivity : AppCompatActivity() {
                 playQueue(context, idx)
             }
             is Row.Group -> when {
-                row.key == "__new" -> createPlaylistDialog(null)
+                row.key == "__new" -> createPlaylistDialog(emptyList())
                 row.key.startsWith("ar:") -> {
                     drillArtist = row.key.removePrefix("ar:")
                     render()
                 }
                 row.key.startsWith("al:") -> {
                     drillAlbum = row.key.removePrefix("al:")
+                    render()
+                }
+                row.key.startsWith("ge:") -> {
+                    drillGenre = row.key.removePrefix("ge:")
                     render()
                 }
                 row.key.startsWith("pl:") -> {
@@ -887,7 +1003,8 @@ class MainActivity : AppCompatActivity() {
                     playlistMenu(row.key.removePrefix("pl:").toLong(), row.title)
                 row.key.startsWith("ar:") -> artistMenu(row.key.removePrefix("ar:"))
                 row.key.startsWith("al:") -> albumMenu(row.key.removePrefix("al:"))
-                row.key == "__new" -> createPlaylistDialog(null)
+                row.key.startsWith("ge:") -> genreMenu(row.key.removePrefix("ge:"))
+                row.key == "__new" -> createPlaylistDialog(emptyList())
             }
         }
     }
@@ -919,53 +1036,44 @@ class MainActivity : AppCompatActivity() {
         refreshMini()
     }
 
-    private fun playAll(shuffle: Boolean) {
+    /** The Play button plays whatever is showing: search results, a drill list, or everything. */
+    private fun playContext() {
+        if (isSearchActive()) {
+            val res = visibleSongs()
+            if (res.isEmpty()) {
+                toast("No results to play.")
+                return
+            }
+            playQueue(res, 0)
+            return
+        }
+        val ctx = visibleSongs()
+        if (ctx.isNotEmpty()) {
+            playQueue(ctx, 0)
+            return
+        }
         if (songs.isEmpty()) {
             toast("No music yet. Copy songs on, then Scan.")
             return
         }
-        val p = svc?.player ?: run { toast("Player is starting. Try again in a second."); return }
-        if (shuffle) {
-            val ordered = smartOrder(songs)
-            val cur = queue.getOrNull(p.currentMediaItemIndex.coerceAtLeast(0))
-            if (p.mediaItemCount > 0 && cur != null && ordered.any { it.mediaId == cur.mediaId }) {
-                // Gapless path: keep the playing song, swap everything behind it.
-                queue.clear()
-                queue.addAll(ordered)
-                shuffled = true
-                replaceTail(ordered.filter { it.mediaId != cur.mediaId })
-                refreshQueueList()
-                return
-            }
-            queue.clear()
-            queue.addAll(ordered)
-            shuffled = true
-            p.setMediaItems(ordered.map(::toItem), 0, 0)
-            p.repeatMode = REPEAT_MODE_OFF
-            p.prepare()
-            p.play()
-        } else {
-            queue.clear()
-            queue.addAll(songs)
-            shuffled = false
-            p.setMediaItems(songs.map(::toItem), 0, 0)
-            p.repeatMode = REPEAT_MODE_OFF
-            p.prepare()
-            p.play()
-        }
-        refreshMini()
+        playQueue(songs, 0)
     }
 
     /**
      * Smart Shuffle. Each song carries a lifetime play count. Songs played
      * less get a bigger slice of the odds, so the mix stays fresh instead
      * of repeating favorites. When everything has played once, counts reset.
+     * Strength 0 is gentle, 1 is balanced, higher is harsher. Off = true random.
      */
     private fun smartOrder(list: List<Song>): List<Song> {
+        if (!prefs.getBoolean("shuffle_smart", true)) {
+            return list.shuffled(Random(System.currentTimeMillis()))
+        }
+        val strength = prefs.getFloat("shuffle_strength", 1.0f).toDouble().coerceIn(0.0, 3.0)
         val counts = db.playCounts()
         val rnd = Random(System.currentTimeMillis())
         return list.map { s ->
-            val weight = 1.0 / (1 + (counts[s.mediaId] ?: 0))
+            val weight = 1.0 / Math.pow((1 + (counts[s.mediaId] ?: 0)).toDouble(), strength)
             s to Math.pow(rnd.nextDouble().coerceAtLeast(1e-9), 1.0 / weight)
         }.sortedBy { it.second }.map { it.first }
     }
@@ -1067,10 +1175,13 @@ class MainActivity : AppCompatActivity() {
         val song = item?.mediaId?.toLongOrNull()?.let { byId[it] }
         miniTitle.text = song?.title ?: "Nothing playing"
         miniSub.text = song?.let { "${it.artist} | Boost ${(vol.boost * 100).roundToInt()} percent" }
-            ?: "Tap Play all music to start"
+            ?: "Tap Play to start"
         miniPlayPause.setImageResource(if (p?.isPlaying == true) R.drawable.ic_pause else R.drawable.ic_play)
+        npTitle?.text = song?.title ?: "Nothing playing"
+        npArtist?.text = song?.let { "${it.artist} | ${it.album}" } ?: ""
+        npPlay?.setImageResource(if (p?.isPlaying == true) R.drawable.ic_pause else R.drawable.ic_play)
         adapter.highlightId = song?.mediaId
-        if (tab != 4) adapter.notifyDataSetChanged()
+        if (tab != 5) adapter.notifyDataSetChanged()
         updateProgressViews()
         updateStatus()
     }
@@ -1084,6 +1195,19 @@ class MainActivity : AppCompatActivity() {
             miniTime.text = fmt(pos)
             nowSegBar?.setPosition(pos, p.duration)
             nowTime?.text = "${fmt(pos)} / ${fmt(p.duration)}"
+            npBar?.setPosition(pos, p.duration)
+            npTime?.text = "${fmt(pos)} / ${fmt(p.duration)}"
+            segEditBar?.let { bar ->
+                if (segEditSong?.mediaId == p.currentMediaItem?.mediaId?.toLongOrNull()) {
+                    bar.setPosition(pos, p.duration)
+                    segEditTime?.text = "${fmt(pos)} / ${fmt(p.duration)}"
+                } else {
+                    val d = segEditSong?.durationMs ?: p.duration
+                    bar.setPosition(0, d)
+                    segEditTime?.text = "0:00 / ${fmt(d)}"
+                }
+                updateSegPlayBtn()
+            }
         } else {
             miniProgress.progress = 0
             miniTime.text = "0:00"
@@ -1101,6 +1225,7 @@ class MainActivity : AppCompatActivity() {
                     persistListenTime()
                 }
             }
+            ensureQueueSync()
             updateProgressViews()
             ticker.postDelayed(this, 500)
         }
@@ -1120,7 +1245,7 @@ class MainActivity : AppCompatActivity() {
     // ---------- song menu / tags / delete ----------
 
     private fun songMenu(song: Song) {
-        val items = arrayOf(
+        val items = listOf(
             "Play next",
             "Add to queue",
             "Add to playlist",
@@ -1129,31 +1254,28 @@ class MainActivity : AppCompatActivity() {
             "Delete song and file",
             "Details"
         )
-        AlertDialog.Builder(this)
-            .setTitle(song.title)
-            .setItems(items) { _, which ->
-                when (which) {
-                    0 -> playNext(song)
-                    1 -> addToQueueEnd(song)
-                    2 -> addToPlaylistDialog(listOf(song.mediaId))
-                    3 -> segmentDialog(song)
-                    4 -> CoroutineScope(Dispatchers.Main).launch {
-                        val tags = TagTools.readTags(this@MainActivity, song)
-                        tagEditorDialog(song, tags)
-                    }
-                    5 -> deleteConfirm(song)
-                    6 -> AlertDialog.Builder(this)
-                        .setTitle(song.title)
-                        .setMessage(
-                            "Artist: ${song.artist}\nAlbum: ${song.album}\nGenre: ${db.getGenre(song.mediaId)}\n" +
-                                "Length: ${fmt(song.durationMs)}\nSize: ${song.sizeBytes / 1024} KB\n" +
-                                (song.filePath ?: "")
-                        )
-                        .setPositiveButton("OK", null)
-                        .show()
+        xpMenuDialog(song.title, items) { which ->
+            when (which) {
+                0 -> playNext(song)
+                1 -> addToQueueEnd(song)
+                2 -> addToPlaylistDialog(listOf(song.mediaId))
+                3 -> segmentDialog(song)
+                4 -> CoroutineScope(Dispatchers.Main).launch {
+                    val tags = TagTools.readTags(this@MainActivity, song)
+                    tagEditorDialog(song, tags)
                 }
+                5 -> deleteConfirm(song)
+                6 -> AlertDialog.Builder(this)
+                    .setCustomTitle(xpTitle(song.title))
+                    .setMessage(
+                        "Artist: ${song.artist}\nAlbum: ${song.album}\nGenre: ${db.getGenre(song.mediaId)}\n" +
+                            "Length: ${fmt(song.durationMs)}\nSize: ${song.sizeBytes / 1024} KB\n" +
+                            (song.filePath ?: "")
+                    )
+                    .setPositiveButton("OK", null)
+                    .show()
             }
-            .show()
+        }
     }
 
     private fun tagEditorDialog(song: Song, fileTags: Array<String?>) {
@@ -1161,6 +1283,7 @@ class MainActivity : AppCompatActivity() {
         val box = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(pad, pad, pad, pad)
+            background = xpBtnPanel()
         }
         fun field(label: String, value: String): EditText {
             box.addView(TextView(this).apply { text = label })
@@ -1178,7 +1301,7 @@ class MainActivity : AppCompatActivity() {
             textSize = 12f
         })
         AlertDialog.Builder(this)
-            .setTitle("Edit details")
+            .setCustomTitle(xpTitle("Edit details"))
             .setView(box)
             .setPositiveButton("Save") { _, _ ->
                 val edit = TagTools.Edit(
@@ -1221,26 +1344,145 @@ class MainActivity : AppCompatActivity() {
     }
 
     /** Skip segments for one song. Red on the bar, jumped over automatically. */
+    private var segEditDialog: AlertDialog? = null
+    private var segEditSong: Song? = null
+    private var segEditBar: SegmentSeekBar? = null
+    private var segEditTime: TextView? = null
+    private var segEditList: RecyclerView? = null
+    private var segEditPlayBtn: Button? = null
+    private var segFieldLabel: EditText? = null
+    private var segFieldStart: EditText? = null
+    private var segFieldEnd: EditText? = null
+    private var segSelectedId: Long? = null
+
+    /**
+     * Full skip-part studio for one song. Big bar with red zones, transport to
+     * play and scrub, tap a part to select it (white frame), type exact times
+     * or grab them live, test with skipping paused.
+     */
     private fun segmentDialog(song: Song) {
         svc?.let {
             it.previewSongId = song.mediaId
             it.refreshSegments()
         }
-        val listView = RecyclerView(this).apply {
+        segEditSong = song
+        segSelectedId = null
+
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(12), dp(12), dp(12), dp(12))
+            background = xpBtnPanel()
+        }
+        box.addView(TextView(this).apply {
+            text = "Skip parts: ${song.title}"
+            textSize = 15f
+            typeface = android.graphics.Typeface.DEFAULT_BOLD
+            setTextColor(0xFFFFFFFF.toInt())
+            background = ContextCompat.getDrawable(
+                this@MainActivity,
+                if (dark) R.drawable.xp_title_bar_dark else R.drawable.xp_title_bar
+            )
+            setPadding(dp(8), dp(8), dp(8), dp(8))
+        })
+        box.addView(TextView(this).apply {
+            text = "Red parts get jumped over. Tap a part below to select it, drag the bar to scrub, type times or grab them live."
+            textSize = 12f
+            setTextColor(iconColor())
+        })
+
+        segEditBar = SegmentSeekBar(this).apply {
+            this.dark = this@MainActivity.dark
+            maxMs = song.durationMs.coerceAtLeast(1)
+            segments = db.segmentsFor(song.mediaId)
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(56)
+            )
+            onSeek = { ms ->
+                if (svc?.player?.currentMediaItem?.mediaId?.toLongOrNull() == song.mediaId) {
+                    svc?.player?.seekTo(ms)
+                } else {
+                    toast("Play the song first, then scrub.")
+                }
+            }
+        }
+        box.addView(segEditBar)
+
+        val transport = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        segEditPlayBtn = Button(this).apply {
+            text = "Play"
+            background = xpBtnBg()
+            setTextColor(iconColor())
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            setOnClickListener { toggleSegPlay() }
+        }
+        transport.addView(segEditPlayBtn)
+        segEditTime = TextView(this).apply {
+            text = "0:00 / ${fmt(song.durationMs)}"
+            textSize = 13f
+            setTextColor(iconColor())
+            setPadding(dp(8), 0, 0, 0)
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        }
+        transport.addView(segEditTime)
+        box.addView(transport)
+
+        segFieldLabel = EditText(this).apply { hint = "Name, like Intro noise" }
+        segFieldStart = EditText(this).apply {
+            hint = "Start minutes:seconds"
+            inputType = InputType.TYPE_CLASS_DATETIME
+        }
+        segFieldEnd = EditText(this).apply {
+            hint = "End minutes:seconds"
+            inputType = InputType.TYPE_CLASS_DATETIME
+        }
+        box.addView(labeled("Name (optional)", segFieldLabel!!))
+        val times = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        times.addView(labeled("Start", segFieldStart!!).apply {
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        })
+        times.addView(labeled("End", segFieldEnd!!).apply {
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        })
+        box.addView(times)
+        val nowRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        nowRow.addView(xpBtn("Start = now").apply {
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            setOnClickListener { grabNow(segFieldStart!!, song) }
+        })
+        nowRow.addView(xpBtn("End = now").apply {
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            setOnClickListener { grabNow(segFieldEnd!!, song) }
+        })
+        box.addView(nowRow)
+        val saveRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        saveRow.addView(xpBtn("Save part").apply {
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            setOnClickListener { saveSegFields(song) }
+        })
+        saveRow.addView(xpBtn("Delete part").apply {
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            setOnClickListener {
+                val id = segSelectedId ?: return@setOnClickListener
+                db.deleteSegment(id)
+                segSelectedId = null
+                svc?.refreshSegments()
+                reloadSegEditor()
+            }
+        })
+        box.addView(saveRow)
+
+        segEditList = RecyclerView(this).apply {
             layoutManager = LinearLayoutManager(this@MainActivity)
             layoutParams = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, dp(300)
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(180)
             )
         }
         val segAdapter = LibraryAdapter(
             dark = dark,
             onTap = { row ->
                 val key = (row as? Row.Group)?.key ?: return@LibraryAdapter
-                if (key == "__add") {
-                    segmentEditDialog(song, null) { buildSegRows(song, listView) }
-                } else if (key.startsWith("seg:")) {
-                    val id = key.removePrefix("seg:").toLongOrNull() ?: return@LibraryAdapter
-                    db.segmentsFor(song.mediaId).firstOrNull { it.id == id }?.let { testSegment(song, it) }
+                if (key.startsWith("seg:")) {
+                    selectSeg(song, key.removePrefix("seg:").toLongOrNull())
                 }
             },
             onMenu = { row ->
@@ -1248,60 +1490,134 @@ class MainActivity : AppCompatActivity() {
                 if (key.startsWith("seg:")) {
                     val id = key.removePrefix("seg:").toLongOrNull() ?: return@LibraryAdapter
                     val seg = db.segmentsFor(song.mediaId).firstOrNull { it.id == id } ?: return@LibraryAdapter
-                    AlertDialog.Builder(this)
-                        .setTitle(seg.label.ifBlank { "Segment" } + " (${fmt(seg.startMs)} to ${fmt(seg.endMs)})")
-                        .setItems(arrayOf("Test it", "Edit", "Delete")) { _, which ->
-                            when (which) {
-                                0 -> testSegment(song, seg)
-                                1 -> segmentEditDialog(song, seg) { buildSegRows(song, listView) }
-                                2 -> {
-                                    db.deleteSegment(seg.id)
-                                    svc?.refreshSegments()
-                                    buildSegRows(song, listView)
-                                }
+                    xpMenuDialog(
+                        (seg.label.ifBlank { "Segment" }) + " (${fmt(seg.startMs)} to ${fmt(seg.endMs)})",
+                        listOf("Test it", "Delete")
+                    ) { which ->
+                        when (which) {
+                            0 -> testSegment(song, seg)
+                            1 -> {
+                                db.deleteSegment(seg.id)
+                                if (segSelectedId == seg.id) segSelectedId = null
+                                svc?.refreshSegments()
+                                reloadSegEditor()
                             }
                         }
-                        .show()
+                    }
                 }
             }
         )
-        listView.adapter = segAdapter
-        buildSegRows(song, listView)
+        segEditList!!.adapter = segAdapter
+        box.addView(segEditList)
+        reloadSegEditor()
 
-        val box = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(8), dp(8), dp(8), dp(8))
-            addView(TextView(this@MainActivity).apply {
-                text = "Marked parts turn red on the player bar and get jumped over. " +
-                    "Tap one to hear it, hold for edit or delete. Testing turns the skipping off for this song until you close this."
-                textSize = 12f
-            })
-            addView(listView)
-        }
-        AlertDialog.Builder(this)
-            .setTitle("Skip segments: ${song.title}")
+        segEditDialog = AlertDialog.Builder(this)
             .setView(box)
             .setPositiveButton("Done", null)
             .setOnDismissListener {
+                segEditDialog = null
+                segEditSong = null
+                segEditBar = null
+                segEditTime = null
+                segEditList = null
+                segEditPlayBtn = null
+                segSelectedId = null
                 if (svc?.previewSongId == song.mediaId) svc?.previewSongId = null
             }
             .show()
+        updateSegPlayBtn()
     }
 
-    private fun buildSegRows(song: Song, listView: RecyclerView) {
-        val rows = mutableListOf<Row>(
-            Row.Group("__add", "Add segment", "Mark an intro, noise, or end card")
-        )
-        db.segmentsFor(song.mediaId).forEach { s ->
-            rows.add(
-                Row.Group(
-                    "seg:${s.id}",
-                    (s.label.ifBlank { "Segment" }) + " (${fmt(s.startMs)} to ${fmt(s.endMs)})",
-                    "Tap to hear it, hold to change it"
-                )
+    private fun labeled(label: String, v: View): LinearLayout =
+        LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(TextView(this@MainActivity).apply {
+                text = label
+                textSize = 12f
+                setTextColor(iconColor())
+            })
+            addView(v, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
+        }
+
+    private fun xpBtnPanel() = ContextCompat.getDrawable(
+        this, if (dark) R.drawable.xp_panel_dark else R.drawable.xp_panel
+    )!!
+
+    private fun selectSeg(song: Song, id: Long?) {
+        segSelectedId = id
+        val seg = db.segmentsFor(song.mediaId).firstOrNull { it.id == id }
+        segFieldLabel?.setText(seg?.label ?: "")
+        segFieldStart?.setText(seg?.let { fmt(it.startMs) } ?: "")
+        segFieldEnd?.setText(seg?.let { fmt(it.endMs) } ?: "")
+        segEditBar?.selectedId = id
+        segEditBar?.invalidate()
+        reloadSegRowsOnly(song)
+    }
+
+    private fun reloadSegRowsOnly(song: Song) {
+        val rows = db.segmentsFor(song.mediaId).map { s ->
+            val mark = if (s.id == segSelectedId) "[selected] " else ""
+            Row.Group(
+                "seg:${s.id}",
+                mark + (s.label.ifBlank { "Segment" }) + " (${fmt(s.startMs)} to ${fmt(s.endMs)})",
+                "Tap to select, hold to test or delete"
             )
         }
-        (listView.adapter as? LibraryAdapter)?.submit(rows)
+        (segEditList?.adapter as? LibraryAdapter)?.submit(rows)
+    }
+
+    private fun reloadSegEditor() {
+        val song = segEditSong ?: return
+        val segs = db.segmentsFor(song.mediaId)
+        segEditBar?.segments = segs
+        segEditBar?.selectedId = segSelectedId
+        segEditBar?.invalidate()
+        reloadSegRowsOnly(song)
+    }
+
+    private fun grabNow(target: EditText, song: Song) {
+        if (svc?.player?.currentMediaItem?.mediaId?.toLongOrNull() != song.mediaId) {
+            toast("Play this song first, then capture the position.")
+            return
+        }
+        target.setText(fmt(svc?.player?.currentPosition ?: 0))
+    }
+
+    private fun saveSegFields(song: Song) {
+        val start = parseTimeMs(segFieldStart?.text?.toString() ?: "")
+        val end = parseTimeMs(segFieldEnd?.text?.toString() ?: "")
+        if (start == null || end == null || end <= start) {
+            toast("End must be after start. Use minutes:seconds.")
+            return
+        }
+        val label = segFieldLabel?.text?.toString() ?: ""
+        val id = segSelectedId
+        if (id == null) {
+            val newId = db.addSegment(song.mediaId, start, end.coerceAtMost(song.durationMs), label)
+            segSelectedId = newId
+        } else {
+            db.updateSegment(id, start, end.coerceAtMost(song.durationMs), label)
+        }
+        svc?.refreshSegments()
+        reloadSegEditor()
+    }
+
+    private fun toggleSegPlay() {
+        val song = segEditSong ?: return
+        val p = svc?.player ?: return
+        if (p.currentMediaItem?.mediaId?.toLongOrNull() == song.mediaId) {
+            if (p.isPlaying) p.pause() else p.play()
+        } else {
+            playQueue(listOf(song), 0)
+        }
+        updateSegPlayBtn()
+    }
+
+    private fun updateSegPlayBtn() {
+        val song = segEditSong
+        val playing = svc?.player?.isPlaying == true &&
+            svc?.player?.currentMediaItem?.mediaId?.toLongOrNull() == song?.mediaId
+        segEditPlayBtn?.text = if (playing) "Pause" else "Play"
     }
 
     /** Play a segment's neighborhood so its boundaries can be checked by ear. */
@@ -1312,60 +1628,6 @@ class MainActivity : AppCompatActivity() {
             playQueue(listOf(song), 0)
         }
         svc?.player?.seekTo((seg.startMs - 3000).coerceAtLeast(0))
-    }
-
-    private fun segmentEditDialog(song: Song, seg: Seg?, onChanged: () -> Unit) {
-        val box = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(16), dp(8), dp(16), dp(8))
-        }
-        fun field(label: String, value: String): EditText {
-            box.addView(TextView(this).apply { text = label })
-            return EditText(this).apply {
-                setText(value)
-                hint = "minutes:seconds"
-                box.addView(this)
-            }
-        }
-        val eLabel = field("Name (optional)", seg?.label ?: "")
-        val eStart = field("Start", seg?.let { fmt(it.startMs) } ?: "0:00")
-        val eEnd = field("End", seg?.let { fmt(it.endMs) } ?: fmt(song.durationMs))
-        val playingThis = svc?.player?.currentMediaItem?.mediaId?.toLongOrNull() == song.mediaId
-        fun fillFromNow(target: EditText) {
-            if (!playingThis) {
-                toast("Play this song first, then capture the position.")
-                return
-            }
-            target.setText(fmt(svc?.player?.currentPosition ?: 0))
-        }
-        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        row.addView(xpBtn("Start = now").apply {
-            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-            setOnClickListener { fillFromNow(eStart) }
-        })
-        row.addView(xpBtn("End = now").apply {
-            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-            setOnClickListener { fillFromNow(eEnd) }
-        })
-        box.addView(row)
-        AlertDialog.Builder(this)
-            .setTitle(if (seg == null) "New segment" else "Edit segment")
-            .setView(box)
-            .setPositiveButton("Save") { _, _ ->
-                val start = parseTimeMs(eStart.text.toString())
-                val end = parseTimeMs(eEnd.text.toString())
-                if (start == null || end == null || end <= start) {
-                    toast("End must be after start. Use minutes:seconds.")
-                    return@setPositiveButton
-                }
-                val label = eLabel.text.toString()
-                if (seg == null) db.addSegment(song.mediaId, start, end.coerceAtMost(song.durationMs), label)
-                else db.updateSegment(seg.id, start, end.coerceAtMost(song.durationMs), label)
-                svc?.refreshSegments()
-                onChanged()
-            }
-            .setNegativeButton("Cancel", null)
-            .show()
     }
 
     /** Accepts minutes:seconds or plain seconds. */
@@ -1387,7 +1649,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun deleteConfirm(song: Song) {
         AlertDialog.Builder(this)
-            .setTitle("Delete this song?")
+            .setCustomTitle(xpTitle("Delete this song?"))
             .setMessage("This removes it from the app and deletes the file from your phone. This cannot be undone.")
             .setPositiveButton("Delete") { _, _ ->
                 CoroutineScope(Dispatchers.Main).launch {
@@ -1434,18 +1696,18 @@ class MainActivity : AppCompatActivity() {
 
     // ---------- playlists ----------
 
-    private fun createPlaylistDialog(firstSong: Long?) {
+    private fun createPlaylistDialog(firstSongs: List<Long>) {
         val input = EditText(this).apply { hint = "Example: Gym mix" }
         AlertDialog.Builder(this)
-            .setTitle("New playlist")
+            .setCustomTitle(xpTitle("New playlist"))
             .setView(pad(input))
             .setPositiveButton("Create") { _, _ ->
                 val name = input.text.toString().ifBlank { "Playlist" }
                 val id = db.createPlaylist(name)
-                if (firstSong != null) db.addToPlaylist(id, listOf(firstSong))
+                if (firstSongs.isNotEmpty()) db.addToPlaylist(id, firstSongs)
                 // Land straight inside the new playlist.
-                tab = 3
-                showTab(3)
+                tab = 4
+                showTab(4)
                 drillPlaylist = id
                 drillPlaylistName = name
                 render()
@@ -1456,17 +1718,14 @@ class MainActivity : AppCompatActivity() {
 
     private fun addToPlaylistDialog(ids: List<Long>) {
         val pls = db.playlists().toMutableList()
-        val names = (pls.map { it.second } + "New playlist").toTypedArray()
-        AlertDialog.Builder(this)
-            .setTitle("Add to playlist")
-            .setItems(names) { _, which ->
-                if (which == pls.size) createPlaylistDialog(ids.firstOrNull())
-                else {
-                    db.addToPlaylist(pls[which].first, ids)
-                    if (tab == 3) render()
-                }
+        val names = (pls.map { it.second } + "New playlist").toList()
+        xpMenuDialog("Add to playlist", names) { which ->
+            if (which == pls.size) createPlaylistDialog(ids)
+            else {
+                db.addToPlaylist(pls[which].first, ids)
+                if (tab == 4) render()
             }
-            .show()
+        }
     }
 
     /** Add whole artists, whole albums, or individual songs to a playlist. */
@@ -1528,7 +1787,7 @@ class MainActivity : AppCompatActivity() {
             addView(listView)
         }
         AlertDialog.Builder(this)
-            .setTitle("Add to $name")
+            .setCustomTitle(xpTitle("Add to $name"))
             .setView(box)
             .setPositiveButton("Add selected") { _, _ ->
                 val ids = mutableListOf<Long>()
@@ -1549,64 +1808,83 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun playlistMenu(id: Long, name: String) {
-        AlertDialog.Builder(this)
-            .setTitle(name)
-            .setItems(arrayOf("Play this playlist", "Rename", "Delete playlist")) { _, which ->
-                when (which) {
-                    0 -> {
-                        val listSongs = db.songsIn(id).mapNotNull { byId[it] }
-                        if (listSongs.isEmpty()) toast("Playlist is empty. Its songs may have moved.")
-                        else playQueue(listSongs, 0)
+        xpMenuDialog(name, listOf("Play this playlist", "Shuffle play", "Rename", "Delete playlist")) { which ->
+            when (which) {
+                0 -> {
+                    val listSongs = db.songsIn(id).mapNotNull { byId[it] }
+                    if (listSongs.isEmpty()) toast("Playlist is empty. Its songs may have moved.")
+                    else playQueue(listSongs, 0)
+                }
+                1 -> {
+                    val listSongs = db.songsIn(id).mapNotNull { byId[it] }
+                    if (listSongs.isEmpty()) {
+                        toast("Playlist is empty. Its songs may have moved.")
+                        return@xpMenuDialog
                     }
-                    1 -> {
-                        val input = EditText(this).apply { setText(name) }
-                        AlertDialog.Builder(this).setTitle("Rename")
-                            .setView(pad(input))
-                            .setPositiveButton("Save") { _, _ ->
-                                db.renamePlaylist(id, input.text.toString().ifBlank { name })
-                                render()
-                            }
-                            .setNegativeButton("Cancel", null).show()
-                    }
-                    2 -> AlertDialog.Builder(this)
-                        .setTitle("Delete $name?")
-                        .setMessage("The playlist goes away. Your songs stay.")
-                        .setPositiveButton("Delete") { _, _ ->
-                            db.deletePlaylist(id)
+                    playQueue(smartOrder(listSongs), 0)
+                    shuffled = true
+                }
+                2 -> {
+                    val input = EditText(this).apply { setText(name) }
+                    AlertDialog.Builder(this).setCustomTitle(xpTitle("Rename"))
+                        .setView(pad(input))
+                        .setPositiveButton("Save") { _, _ ->
+                            db.renamePlaylist(id, input.text.toString().ifBlank { name })
                             render()
                         }
-                        .setNegativeButton("Keep", null).show()
+                        .setNegativeButton("Cancel", null).show()
                 }
+                3 -> AlertDialog.Builder(this)
+                    .setCustomTitle(xpTitle("Delete $name?"))
+                    .setMessage("The playlist goes away. Your songs stay.")
+                    .setPositiveButton("Delete") { _, _ ->
+                        db.deletePlaylist(id)
+                        render()
+                    }
+                    .setNegativeButton("Keep", null).show()
             }
-            .show()
+        }
+    }
+
+    private fun genreMenu(genre: String) {
+        val inG = songs.filter { (genreMap[it.mediaId] ?: "Uncategorized") == genre }
+        xpMenuDialog(genre, listOf("Play all", "Shuffle play", "Add all to queue", "Add all to playlist")) { which ->
+            when (which) {
+                0 -> playQueue(inG, 0)
+                1 -> {
+                    if (inG.isEmpty()) {
+                        toast("Nothing here yet.")
+                        return@xpMenuDialog
+                    }
+                    playQueue(smartOrder(inG), 0)
+                    shuffled = true
+                }
+                2 -> inG.forEach { addToQueueEnd(it) }
+                3 -> addToPlaylistDialog(inG.map { it.mediaId })
+            }
+        }
     }
 
     private fun artistMenu(artist: String) {
         val inA = songs.filter { it.artist == artist }
-        AlertDialog.Builder(this)
-            .setTitle(artist)
-            .setItems(arrayOf("Play all", "Add all to queue", "Add all to playlist")) { _, which ->
+        xpMenuDialog(artist, listOf("Play all", "Add all to queue", "Add all to playlist")) { which ->
                 when (which) {
                     0 -> playQueue(inA, 0)
                     1 -> inA.forEach { addToQueueEnd(it) }
                     2 -> addToPlaylistDialog(inA.map { it.mediaId })
                 }
-            }
-            .show()
+        }
     }
 
     private fun albumMenu(album: String) {
         val inA = songs.filter { it.album == album }
-        AlertDialog.Builder(this)
-            .setTitle(album)
-            .setItems(arrayOf("Play album", "Add all to queue", "Add all to playlist")) { _, which ->
+        xpMenuDialog(album, listOf("Play album", "Add all to queue", "Add all to playlist")) { which ->
                 when (which) {
                     0 -> playQueue(inA, 0)
                     1 -> inA.forEach { addToQueueEnd(it) }
                     2 -> addToPlaylistDialog(inA.map { it.mediaId })
                 }
-            }
-            .show()
+        }
     }
 
     // ---------- Now Playing (controls + true-order queue) ----------
@@ -1617,10 +1895,66 @@ class MainActivity : AppCompatActivity() {
     private var nowTitleView: TextView? = null
     private var nowArtistView: TextView? = null
     private var nowSegBar: SegmentSeekBar? = null
+    private var landQueueAdapter: LibraryAdapter? = null
+    private var npBar: SegmentSeekBar? = null
+    private var npTime: TextView? = null
+    private var npTitle: TextView? = null
+    private var npArtist: TextView? = null
+    private var npPlay: ImageButton? = null
+    private var npLoop: Button? = null
     private var nowTime: TextView? = null
     private var nowPlayBtn: Button? = null
     private var loopBtn: Button? = null
     private var shuffleBtn: Button? = null
+
+    private fun currentSong(): Song? =
+        svc?.player?.currentMediaItem?.mediaId?.toLongOrNull()?.let { byId[it] }
+
+    /** Queue adapter shared by the Now Playing dialog and the landscape panel. */
+    private fun makeQueueAdapter(): LibraryAdapter {
+        val p = svc?.player
+        return LibraryAdapter(
+            dark = dark,
+            rows = queue.map { Row.SongRow(it) },
+            highlightId = p?.currentMediaItem?.mediaId?.toLongOrNull(),
+            onTap = { r ->
+                ensureQueueSync()
+                val idx = queue.indexOfFirst { it.mediaId == (r as Row.SongRow).song.mediaId }
+                if (idx >= 0) svc?.player?.seekTo(idx, 0)
+            },
+            onMenu = { r ->
+                val s = (r as Row.SongRow).song
+                queue.removeAll { it.mediaId == s.mediaId }
+                removeFromPlayer(s.mediaId)
+                refreshQueueList()
+            }
+        )
+    }
+
+    private fun attachQueueTouch(rv: RecyclerView, getAdapter: () -> LibraryAdapter?) {
+        ItemTouchHelper(object : ItemTouchHelper.SimpleCallback(
+            ItemTouchHelper.UP or ItemTouchHelper.DOWN, ItemTouchHelper.LEFT or ItemTouchHelper.RIGHT
+        ) {
+            override fun onMove(rv2: RecyclerView, h: RecyclerView.ViewHolder, t: RecyclerView.ViewHolder): Boolean {
+                val a = h.bindingAdapterPosition
+                val b = t.bindingAdapterPosition
+                java.util.Collections.swap(queue, a, b)
+                getAdapter()?.notifyItemMoved(a, b)
+                if (a != b) svc?.player?.moveMediaItem(a, b)
+                return true
+            }
+
+            override fun onSwiped(h: RecyclerView.ViewHolder, dir: Int) {
+                val pos = h.bindingAdapterPosition
+                val s = queue.getOrNull(pos) ?: return
+                queue.removeAt(pos)
+                svc?.player?.let { p ->
+                    if (pos < p.mediaItemCount) p.removeMediaItem(pos)
+                }
+                refreshQueueList()
+            }
+        }).attachToRecyclerView(rv)
+    }
 
     private fun openNowPlaying() {
         ensureQueueSync()
@@ -1721,50 +2055,29 @@ class MainActivity : AppCompatActivity() {
             )
         }
         queueListView = qv
-        queueAdapter = LibraryAdapter(
-            dark = dark,
-            rows = queue.map { Row.SongRow(it) },
-            highlightId = p.currentMediaItem?.mediaId?.toLongOrNull(),
-            onTap = { r ->
-                ensureQueueSync()
-                val idx = queue.indexOfFirst { it.mediaId == (r as Row.SongRow).song.mediaId }
-                if (idx >= 0) p.seekTo(idx, 0)
-            },
-            onMenu = { r ->
-                val s = (r as Row.SongRow).song
-                queue.removeAll { it.mediaId == s.mediaId }
-                removeFromPlayer(s.mediaId)
-                refreshQueueList()
-            }
-        )
+        queueAdapter = makeQueueAdapter()
         qv.adapter = queueAdapter
-        ItemTouchHelper(object : ItemTouchHelper.SimpleCallback(
-            ItemTouchHelper.UP or ItemTouchHelper.DOWN, ItemTouchHelper.LEFT or ItemTouchHelper.RIGHT
-        ) {
-            override fun onMove(rv: RecyclerView, h: RecyclerView.ViewHolder, t: RecyclerView.ViewHolder): Boolean {
-                val a = h.bindingAdapterPosition
-                val b = t.bindingAdapterPosition
-                java.util.Collections.swap(queue, a, b)
-                queueAdapter!!.notifyItemMoved(a, b)
-                if (a != b) svc?.player?.moveMediaItem(a, b)
-                return true
-            }
-
-            override fun onSwiped(h: RecyclerView.ViewHolder, dir: Int) {
-                val pos = h.bindingAdapterPosition
-                val s = queue.getOrNull(pos) ?: return
-                queue.removeAt(pos)
-                svc?.player?.let { p ->
-                    if (pos < p.mediaItemCount) p.removeMediaItem(pos)
-                }
-                refreshQueueList()
-            }
-        }).attachToRecyclerView(qv)
+        attachQueueTouch(qv) { queueAdapter }
         box.addView(qv)
 
         queueDialog = AlertDialog.Builder(this)
-            .setTitle(R.string.queue_title)
+            .setCustomTitle(xpTitle(getString(R.string.queue_title)))
             .setView(box)
+            .setNegativeButton("Save queue") { _, _ ->
+                if (queue.isEmpty()) {
+                    toast("Queue is empty.")
+                    return@setNegativeButton
+                }
+                createPlaylistDialog(queue.map { it.mediaId })
+            }
+            .setNeutralButton("Segment Editor") { _, _ ->
+                val cur = currentSong()
+                if (cur == null) {
+                    toast("Play something first.")
+                    return@setNeutralButton
+                }
+                segmentDialog(cur)
+            }
             .setPositiveButton("Close", null)
             .setOnDismissListener {
                 queueDialog = null
@@ -1781,25 +2094,33 @@ class MainActivity : AppCompatActivity() {
 
     private fun scrollQueueToCurrent() {
         val p = svc?.player ?: return
-        val qv = queueListView ?: return
         val idx = p.currentMediaItemIndex
-        if (idx >= 0) qv.post { qv.scrollToPosition(idx) }
+        if (idx < 0) return
+        queueListView?.post { queueListView?.scrollToPosition(idx) }
+        findViewById<RecyclerView>(R.id.npQueue)?.let { npqv ->
+            npqv.post { npqv.scrollToPosition(idx) }
+        }
     }
 
     private fun refreshQueueList() {
         val p = svc?.player
-        queueAdapter?.highlightId = p?.currentMediaItem?.mediaId?.toLongOrNull()
+        val cur = p?.currentMediaItem?.mediaId?.toLongOrNull()
+        queueAdapter?.highlightId = cur
         queueAdapter?.submit(queue.map { Row.SongRow(it) })
+        landQueueAdapter?.highlightId = cur
+        landQueueAdapter?.submit(queue.map { Row.SongRow(it) })
         scrollQueueToCurrent()
     }
 
     private fun updateLoopBtn() {
         val p = svc?.player ?: return
-        loopBtn?.text = when (p.repeatMode) {
+        val txt = when (p.repeatMode) {
             REPEAT_MODE_ALL -> getString(R.string.loop_all)
             REPEAT_MODE_ONE -> getString(R.string.loop_one)
             else -> getString(R.string.loop_off)
         }
+        loopBtn?.text = txt
+        npLoop?.text = txt
     }
 
     private fun setPlayBtnIcon(isPlaying: Boolean) {
@@ -1818,6 +2139,9 @@ class MainActivity : AppCompatActivity() {
     private var deviceLabel: TextView? = null
     private var deviceToggle: Button? = null
     private var holdToggle: Button? = null
+    private var smartToggle: Button? = null
+    private var shuffleSeek: SeekBar? = null
+    private var shuffleStrengthLabel: TextView? = null
 
     private fun buildMorePane() {
         moreBox.removeAllViews()
@@ -1960,6 +2284,52 @@ class MainActivity : AppCompatActivity() {
             }
         })
 
+        moreBox.addView(section("Shuffle"))
+        moreBox.addView(TextView(this).apply {
+            text = "Smart Shuffle plays songs you play less more often, so favorites stop repeating. Turn it off for plain random. The slider sets how harsh that is: gentle lets favorites come back sooner, harsh keeps them away longer."
+            textSize = 12f
+        })
+        smartToggle = xpBtn("").apply {
+            setOnClickListener {
+                val now = !prefs.getBoolean("shuffle_smart", true)
+                prefs.edit().putBoolean("shuffle_smart", now).apply()
+                updateShuffleViews()
+            }
+        }
+        moreBox.addView(smartToggle)
+        shuffleStrengthLabel = TextView(this).apply { textSize = 13f }
+        moreBox.addView(shuffleStrengthLabel)
+        shuffleSeek = SeekBar(this).apply {
+            max = 300
+            progress = (prefs.getFloat("shuffle_strength", 1.0f) * 100).roundToInt().coerceIn(0, 300)
+            progressDrawable = xpProgress()
+            thumb = xpThumb()
+            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(s: SeekBar?, v: Int, fromUser: Boolean) {
+                    if (fromUser) {
+                        prefs.edit().putFloat("shuffle_strength", v / 100f).apply()
+                        updateShuffleViews()
+                    }
+                }
+
+                override fun onStartTrackingTouch(s: SeekBar?) {}
+                override fun onStopTrackingTouch(s: SeekBar?) {}
+            })
+        }
+        moreBox.addView(shuffleSeek)
+        moreBox.addView(xpBtn("Reset shuffle cycle").apply {
+            setOnClickListener {
+                db.resetPlays()
+                buildMorePane()
+                render()
+            }
+        })
+        moreBox.addView(TextView(this).apply {
+            text = "Starts the Smart Shuffle cycle over. Lifetime totals stay."
+            textSize = 12f
+        })
+        updateShuffleViews()
+
         moreBox.addView(section("Look and feel"))
         val themeBtn = xpBtn(if (dark) "Light XP mode" else "Dark XP mode")
         themeBtn.setOnClickListener {
@@ -1968,6 +2338,22 @@ class MainActivity : AppCompatActivity() {
             applyThemeLive()
         }
         moreBox.addView(themeBtn)
+        val rotBtn = xpBtn("Rotation: ${prefs.getString("rotation", "Auto")}")
+        rotBtn.setOnClickListener {
+            val next = when (prefs.getString("rotation", "Auto")) {
+                "Auto" -> "Portrait"
+                "Portrait" -> "Landscape"
+                else -> "Auto"
+            }
+            prefs.edit().putString("rotation", next).apply()
+            rotBtn.text = "Rotation: $next"
+            applyRotation()
+        }
+        moreBox.addView(rotBtn)
+        moreBox.addView(TextView(this).apply {
+            text = "Auto follows the phone. Portrait and Landscape lock it. Landscape shows two panels: lists on the left, the song and queue on the right."
+            textSize = 12f
+        })
         val showCounts = prefs.getBoolean("show_counts", false)
         moreBox.addView(xpBtn("Show play counts: ${if (showCounts) "On" else "Off"}").apply {
             setOnClickListener {
@@ -2010,6 +2396,36 @@ class MainActivity : AppCompatActivity() {
                 "Most played artist: $topArtistTxt"
             textSize = 13f
         })
+        moreBox.addView(xpBtn("Reset shuffle cycle").apply {
+            setOnClickListener {
+                db.resetPlays()
+                buildMorePane()
+            }
+        })
+        moreBox.addView(TextView(this).apply {
+            text = "Starts the Smart Shuffle cycle over. Lifetime totals stay."
+            textSize = 12f
+        })
+        moreBox.addView(xpBtn("Reset all stats").apply {
+            setOnClickListener {
+                AlertDialog.Builder(this@MainActivity)
+                    .setCustomTitle(xpTitle("Reset all stats?"))
+                    .setMessage("This wipes play counts, skips, and listening time. Equalize data and playlists stay.")
+                    .setPositiveButton("Reset") { _, _ ->
+                        db.resetPlays()
+                        db.clearTotals()
+                        prefs.edit()
+                            .putLong("stats_skips", 0)
+                            .putLong("stats_listen_ms", 0)
+                            .apply()
+                        listenAccumMs = 0
+                        buildMorePane()
+                        render()
+                    }
+                    .setNegativeButton("Keep", null)
+                    .show()
+            }
+        })
 
         moreBox.addView(section("About"))
         moreBox.addView(TextView(this).apply {
@@ -2051,7 +2467,7 @@ class MainActivity : AppCompatActivity() {
                 setOnClickListener { vol.setBoost(mult.toFloat()) }
                 setOnLongClickListener {
                     AlertDialog.Builder(this@MainActivity)
-                        .setTitle("Delete preset $name?")
+                        .setCustomTitle(xpTitle("Delete preset $name?"))
                         .setPositiveButton("Delete") { _, _ ->
                             db.deletePreset(name)
                             buildMorePane()
@@ -2085,7 +2501,7 @@ class MainActivity : AppCompatActivity() {
         box.addView(eName)
         box.addView(ePct)
         AlertDialog.Builder(this)
-            .setTitle("New preset")
+            .setCustomTitle(xpTitle("New preset"))
             .setView(box)
             .setPositiveButton("Save") { _, _ ->
                 val name = eName.text.toString().ifBlank { "Preset" }
@@ -2100,6 +2516,23 @@ class MainActivity : AppCompatActivity() {
     private fun updateDeviceToggle() {
         val on = prefs.getBoolean(VolumeManager.KEY_AUTO_DEVICE, true)
         deviceToggle?.text = "Auto device boost: ${if (on) "On" else "Off"}"
+    }
+
+    private fun updateShuffleViews() {
+        val smart = prefs.getBoolean("shuffle_smart", true)
+        val strength = prefs.getFloat("shuffle_strength", 1.0f)
+        smartToggle?.text = "Smart shuffle: ${if (smart) "On" else "Off"}"
+        val band = when {
+            !smart -> "off, plain random"
+            strength < 0.5f -> "Gentle"
+            strength < 1.5f -> "Balanced"
+            else -> "Harsh"
+        }
+        shuffleStrengthLabel?.text = "Anti-repeat strength: ${"%.1f".format(strength)} ($band)"
+        shuffleSeek?.let {
+            val want = (strength * 100).roundToInt().coerceIn(0, 300)
+            if (it.progress != want) it.progress = want
+        }
     }
 
     private fun updateHoldToggle() {
@@ -2129,7 +2562,7 @@ class MainActivity : AppCompatActivity() {
             hint = "1 to 2000"
         }
         AlertDialog.Builder(this)
-            .setTitle("Exact boost percent")
+            .setCustomTitle(xpTitle("Exact boost percent"))
             .setMessage("Nothing is capped. High numbers get loud and rough.")
             .setView(pad(input))
             .setPositiveButton("Set") { _, _ ->
@@ -2140,11 +2573,21 @@ class MainActivity : AppCompatActivity() {
             .show()
     }
 
+    private fun applyRotation() {
+        requestedOrientation = when (prefs.getString("rotation", "Auto")) {
+            "Portrait" -> android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+            "Landscape" -> android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
+            else -> android.content.pm.ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+        }
+    }
+
     private fun applyThemeLive() {
         skinStatic()
         updateTabs()
         adapter.dark = dark
         adapter.notifyDataSetChanged()
+        landQueueAdapter?.dark = dark
+        landQueueAdapter?.notifyDataSetChanged()
         buildMorePane()
         refreshMini()
     }
@@ -2159,7 +2602,7 @@ class MainActivity : AppCompatActivity() {
         val need = songs.count { s -> s.mediaId !in gains || cached[s.mediaId]?.second != s.modified }
         if (need == 0) {
             AlertDialog.Builder(this)
-                .setTitle("Already equalized")
+                .setCustomTitle(xpTitle("Already equalized"))
                 .setMessage("Every song is already equalized and nothing changed, so there is nothing to do.")
                 .setPositiveButton("OK", null)
                 .setNegativeButton("Measure again anyway") { _, _ -> runEqualize() }
@@ -2167,7 +2610,7 @@ class MainActivity : AppCompatActivity() {
             return
         }
         AlertDialog.Builder(this)
-            .setTitle("Equalize ${songs.size} songs?")
+            .setCustomTitle(xpTitle("Equalize ${songs.size} songs?"))
             .setMessage("$need new or changed, the rest are reused from last time. This runs in the background and you can keep using the app. Nothing about your files changes, and Undo is one tap.")
             .setPositiveButton("Equalize") { _, _ -> runEqualize() }
             .setNegativeButton("Not now", null)
@@ -2193,7 +2636,7 @@ class MainActivity : AppCompatActivity() {
             addView(bar)
         }
         val dlg = AlertDialog.Builder(this)
-            .setTitle("Equalizing")
+            .setCustomTitle(xpTitle("Equalizing"))
             .setView(box)
             .setNegativeButton("Cancel") { _, _ -> eqJob?.cancel() }
             .setCancelable(false)
@@ -2220,11 +2663,11 @@ class MainActivity : AppCompatActivity() {
                 .putInt("eq_up", res.raised)
                 .putInt("eq_down", res.lowered)
                 .apply()
-            if (tab == 4) buildMorePane()
+            if (tab == 5) buildMorePane()
             val skippedTxt = if (res.skipped > 0) ", skipped ${res.skipped}" else ""
             val reusedTxt = if (res.reused > 0) " ${res.reused} reused from last time." else ""
             AlertDialog.Builder(this@MainActivity)
-                .setTitle("Done")
+                .setCustomTitle(xpTitle("Done"))
                 .setMessage(
                     "Checked ${res.measured} songs.$reusedTxt Turned up ${res.raised}, turned down ${res.lowered}$skippedTxt. " +
                         "From now on everything plays at the same average volume, on top of your Boost."
@@ -2280,6 +2723,42 @@ class MainActivity : AppCompatActivity() {
             setTextColor(iconColor())
         }
 
+    /** XP blue gradient title bar for every dialog. */
+    private fun xpTitle(t: String): TextView =
+        TextView(this).apply {
+            text = t
+            textSize = 16f
+            typeface = android.graphics.Typeface.DEFAULT_BOLD
+            setTextColor(0xFFFFFFFF.toInt())
+            background = ContextCompat.getDrawable(
+                this@MainActivity,
+                if (dark) R.drawable.xp_title_bar_dark else R.drawable.xp_title_bar
+            )
+            setPadding(dp(12), dp(10), dp(12), dp(10))
+        }
+
+    /** A context menu that looks like the rest of the app: title bar + beveled buttons. */
+    private fun xpMenuDialog(title: String, items: List<String>, onPick: (Int) -> Unit) {
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(8), dp(8), dp(8), dp(8))
+        }
+        lateinit var dlg: AlertDialog
+        items.forEachIndexed { i, label ->
+            box.addView(xpBtn(label).apply {
+                setOnClickListener {
+                    runCatching { dlg.dismiss() }
+                    onPick(i)
+                }
+            })
+        }
+        dlg = AlertDialog.Builder(this)
+            .setCustomTitle(xpTitle(title))
+            .setView(box)
+            .create()
+        dlg.show()
+    }
+
     private fun pad(v: View): View =
         LinearLayout(this).apply {
             setPadding(dp(16), dp(8), dp(16), dp(8))
@@ -2295,6 +2774,7 @@ class MainActivity : AppCompatActivity() {
             if (dark) 0xFF23262B.toInt() else 0xFFECE9D8.toInt()
         )
         titleBarWrap.setBackgroundResource(if (dark) R.drawable.xp_title_bar_dark else R.drawable.xp_title_bar)
+        findViewById<ImageButton>(R.id.searchToggle)?.setColorFilter(0xFFFFFFFF.toInt())
         findViewById<LinearLayout>(R.id.miniPlayer).setBackgroundResource(
             if (dark) R.drawable.xp_panel_dark else R.drawable.xp_panel
         )
@@ -2306,15 +2786,12 @@ class MainActivity : AppCompatActivity() {
         miniTime.setTextColor(if (dark) 0xFFA8ADB5.toInt() else 0xFF5A5A5A.toInt())
         headerBar.setBackgroundResource(if (dark) R.drawable.xp_title_bar_dark else R.drawable.xp_title_bar)
         listOf(
-            R.id.tabSongs, R.id.tabArtists, R.id.tabAlbums, R.id.tabPlaylists, R.id.tabMore,
-            R.id.btnShuffleAll, R.id.btnPlayAll
+            R.id.tabSongs, R.id.tabArtists, R.id.tabAlbums, R.id.tabGenres, R.id.tabPlaylists, R.id.tabMore,
+            R.id.btnPlayAll
         ).forEach { id ->
             findViewById<Button>(id).setTextColor(if (id == R.id.btnPlayAll) 0xFFFFFFFF.toInt() else iconColor())
         }
         updateTabs()
-        findViewById<Button>(R.id.btnShuffleAll).setBackgroundResource(
-            if (dark) R.drawable.xp_button_dark else R.drawable.xp_button
-        )
         playlistAdd.setBackgroundResource(if (dark) R.drawable.xp_button_dark else R.drawable.xp_button)
         playlistAdd.setTextColor(iconColor())
         filterBtn.setBackgroundResource(if (dark) R.drawable.xp_button_dark else R.drawable.xp_button)
@@ -2326,12 +2803,29 @@ class MainActivity : AppCompatActivity() {
             R.id.miniNext to R.drawable.ic_next,
             R.id.miniQueue to R.drawable.ic_queue
         ).forEach { (id, icon) ->
-            findViewById<ImageButton>(id).apply {
+            findViewById<ImageButton>(id)?.apply {
                 setBackgroundResource(if (dark) R.drawable.xp_button_dark else R.drawable.xp_button)
                 setImageResource(icon)
                 setColorFilter(iconColor())
             }
         }
+        mapOf(
+            R.id.npPlay to R.drawable.ic_play,
+            R.id.npPrev to R.drawable.ic_prev,
+            R.id.npNext to R.drawable.ic_next
+        ).forEach { (id, icon) ->
+            findViewById<ImageButton>(id)?.apply {
+                setBackgroundResource(if (dark) R.drawable.xp_button_dark else R.drawable.xp_button)
+                setImageResource(icon)
+                setColorFilter(iconColor())
+            }
+        }
+        findViewById<Button>(R.id.npLoop)?.setTextColor(iconColor())
+        findViewById<Button>(R.id.npShuffle)?.setTextColor(iconColor())
+        findViewById<Button>(R.id.npSaveQueue)?.setTextColor(iconColor())
+        findViewById<Button>(R.id.npSegEdit)?.setTextColor(iconColor())
+        npBar?.dark = dark
+        npBar?.invalidate()
     }
 
     /** content://.../tree/primary:Music to /storage/emulated/0/Music (primary volume only). */

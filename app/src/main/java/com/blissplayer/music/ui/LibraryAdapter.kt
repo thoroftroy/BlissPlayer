@@ -25,6 +25,8 @@ class LibraryAdapter(
     /** Extra small stats line under the duration, keyed by mediaId. */
     var showStats: Boolean = false,
     var statLines: Map<Long, String> = emptyMap(),
+    /** When true, song rows show track numbers (playlist order). */
+    var numbered: Boolean = false,
     val onTap: (Row) -> Unit = {},
     val onMenu: (Row) -> Unit = {}
 ) : RecyclerView.Adapter<LibraryAdapter.Holder>() {
@@ -66,6 +68,7 @@ class LibraryAdapter(
         val dur = TextView(ctx).apply {
             textSize = 12f
             setPadding(8, 0, 8, 0)
+            gravity = android.view.Gravity.END
         }
         val more = ImageButton(ctx).apply {
             setImageDrawable(ContextCompat.getDrawable(ctx, R.drawable.ic_more))
@@ -87,10 +90,10 @@ class LibraryAdapter(
 
     override fun onBindViewHolder(h: Holder, pos: Int) {
         val row = rows[pos]
-        val selected = (row as? Row.SongRow)?.song?.mediaId == highlightId
+        val selected = highlightId != null && (row as? Row.SongRow)?.song?.mediaId == highlightId
         when (row) {
             is Row.SongRow -> {
-                h.title.text = row.song.title
+                h.title.text = if (numbered) "${pos + 1}. ${row.song.title}" else row.song.title
                 h.sub.text = "${row.song.artist} | ${row.song.album}"
                 val base = fmt(row.song.durationMs)
                 if (showStats) {
@@ -112,6 +115,7 @@ class LibraryAdapter(
                 h.dur.visibility = android.view.View.GONE
             }
         }
+        // Selected rows keep white icons; unselected follow the theme.
         val tc = if (dark) 0xFFE8E8E8.toInt() else 0xFF000000.toInt()
         val sc = if (dark) 0xFFA8ADB5.toInt() else 0xFF5A5A5A.toInt()
         h.title.setTextColor(if (selected) 0xFFFFFFFF.toInt() else tc)

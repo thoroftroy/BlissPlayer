@@ -20,6 +20,8 @@ class SegmentSeekBar @JvmOverloads constructor(
     var maxMs: Long = 1L
     var posMs: Long = 0L
     var segments: List<Seg> = emptyList()
+    /** Id of the selected segment, drawn with a white frame. */
+    var selectedId: Long? = null
     var dark: Boolean = false
     var onSeek: ((ms: Long) -> Unit)? = null
 
@@ -37,6 +39,11 @@ class SegmentSeekBar @JvmOverloads constructor(
     private val thumbEdge = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
         strokeWidth = 3f
+    }
+    private val selectFrame = Paint().apply {
+        style = Paint.Style.STROKE
+        strokeWidth = 4f
+        color = 0xFFFFFFFF.toInt()
     }
 
     fun setPosition(pos: Long, max: Long) {
@@ -81,7 +88,10 @@ class SegmentSeekBar @JvmOverloads constructor(
         segments.forEach { s ->
             val a = pad + (w - pad * 2) * (s.startMs.toDouble() / maxMs.toDouble()).coerceIn(0.0, 1.0)
             val b = pad + (w - pad * 2) * (s.endMs.toDouble() / maxMs.toDouble()).coerceIn(0.0, 1.0)
-            if (b > a) c.drawRect(a.toFloat(), top, b.toFloat(), bottom, skip)
+            if (b > a) {
+                c.drawRect(a.toFloat(), top, b.toFloat(), bottom, skip)
+                if (s.id == selectedId) c.drawRect(a.toFloat(), top, b.toFloat(), bottom, selectFrame)
+            }
         }
         c.drawRect(pad, top, w - pad, bottom, border)
         // Thumb square.

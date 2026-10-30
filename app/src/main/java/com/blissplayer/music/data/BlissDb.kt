@@ -118,6 +118,24 @@ class BlissDb(context: Context) : SQLiteOpenHelper(context, "bliss.db", null, 6)
         writableDatabase.delete("playlist_songs", "playlist_id=? AND media_id=?", arrayOf(playlistId.toString(), mediaId.toString()))
     }
 
+    /** Persist a user drag-reordered playlist. */
+    fun reorderPlaylist(playlistId: Long, mediaIds: List<Long>) {
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            db.delete("playlist_songs", "playlist_id=?", arrayOf(playlistId.toString()))
+            mediaIds.forEachIndexed { i, id ->
+                db.execSQL(
+                    "INSERT INTO playlist_songs(playlist_id, media_id, position) VALUES(?,?,?)",
+                    arrayOf(playlistId, id, i.toLong())
+                )
+            }
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
+    }
+
     // ---- per-device boost memory ----
     fun putBoost(device: String, mult: Double) {
         writableDatabase.insertWithOnConflict(
@@ -158,6 +176,8 @@ class BlissDb(context: Context) : SQLiteOpenHelper(context, "bliss.db", null, 6)
     }
 
     fun resetPlays() = writableDatabase.delete("plays", null, null)
+
+    fun clearTotals() = writableDatabase.delete("plays_total", null, null)
 
     /** Never reset. Total plays per song since install. */
     fun totalPlays(): Map<Long, Int> {

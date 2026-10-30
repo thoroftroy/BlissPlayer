@@ -50,6 +50,7 @@ class PlayerService : MediaSessionService() {
         const val ACTION_TOGGLE = "bliss.toggle"
         const val ACTION_NEXT = "bliss.next"
         const val ACTION_PREV = "bliss.prev"
+        const val ACTION_STOP = "bliss.stop"
         private const val CHANNEL = "bliss_playback"
         private const val NOTIF_ID = 1001
     }
@@ -218,6 +219,11 @@ class PlayerService : MediaSessionService() {
                 ACTION_TOGGLE -> if (player.isPlaying) player.pause() else player.play()
                 ACTION_NEXT -> player.seekToNextMediaItem()
                 ACTION_PREV -> player.seekToPreviousMediaItem()
+                // Swiping the notification away means done with music: stop it all.
+                ACTION_STOP -> {
+                    player.pause()
+                    stopSelf()
+                }
             }
         }
         return super.onStartCommand(intent, flags, startId)
@@ -264,13 +270,13 @@ class PlayerService : MediaSessionService() {
             md?.artist?.toString(),
             md?.albumTitle?.toString()
         ).joinToString(" | ").ifBlank { "Ready" }
-        val playIcon = if (playing) R.drawable.ic_pause else R.drawable.ic_play
+        val playIcon = if (playing) R.drawable.ic_pause_w else R.drawable.ic_play_w
 
         val small = RemoteViews(packageName, R.layout.xp_notif_small).apply {
             setTextViewText(R.id.n_title, title)
             setTextViewText(R.id.n_artist, artist)
             setImageViewResource(R.id.n_play, playIcon)
-            setImageViewResource(R.id.n_next, R.drawable.ic_next)
+            setImageViewResource(R.id.n_next, R.drawable.ic_next_w)
             setOnClickPendingIntent(R.id.n_play, actionIntent(ACTION_TOGGLE, 2))
             setOnClickPendingIntent(R.id.n_next, actionIntent(ACTION_NEXT, 3))
         }
@@ -278,8 +284,8 @@ class PlayerService : MediaSessionService() {
             setTextViewText(R.id.n_title, title)
             setTextViewText(R.id.n_artist, artist)
             setImageViewResource(R.id.n_play, playIcon)
-            setImageViewResource(R.id.n_next, R.drawable.ic_next)
-            setImageViewResource(R.id.n_prev, R.drawable.ic_prev)
+            setImageViewResource(R.id.n_next, R.drawable.ic_next_w)
+            setImageViewResource(R.id.n_prev, R.drawable.ic_prev_w)
             setOnClickPendingIntent(R.id.n_play, actionIntent(ACTION_TOGGLE, 2))
             setOnClickPendingIntent(R.id.n_next, actionIntent(ACTION_NEXT, 3))
             setOnClickPendingIntent(R.id.n_prev, actionIntent(ACTION_PREV, 1))
@@ -289,6 +295,8 @@ class PlayerService : MediaSessionService() {
 
         val b = NotificationCompat.Builder(this, CHANNEL)
             .setSmallIcon(R.mipmap.ic_launcher)
+            .setLargeIcon(android.graphics.BitmapFactory.decodeResource(resources, R.mipmap.ic_launcher))
+            .setSubText("BlissPlayer")
             .setContentTitle(title)
             .setContentText(artist)
             .setContentIntent(
@@ -297,7 +305,7 @@ class PlayerService : MediaSessionService() {
                     PendingIntent.FLAG_IMMUTABLE
                 )
             )
-            .setDeleteIntent(actionIntent(ACTION_TOGGLE, 4))
+            .setDeleteIntent(actionIntent(ACTION_STOP, 5))
             .setOnlyAlertOnce(true)
             .setOngoing(playing)
             .setShowWhen(false)

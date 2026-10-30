@@ -51,7 +51,7 @@
             android:layout_height="44dp"
             android:background="#00000000"
             android:scaleType="center"
-            android:src="@drawable/ic_prev" />
+            android:src="@drawable/ic_prev_w" />
 
         <ImageButton
             android:id="@+id/n_play"
@@ -59,7 +59,7 @@
             android:layout_height="48dp"
             android:background="#00000000"
             android:scaleType="center"
-            android:src="@drawable/ic_pause" />
+            android:src="@drawable/ic_pause_w" />
 
         <ImageButton
             android:id="@+id/n_next"
@@ -67,7 +67,7 @@
             android:layout_height="44dp"
             android:background="#00000000"
             android:scaleType="center"
-            android:src="@drawable/ic_next" />
+            android:src="@drawable/ic_next_w" />
     </LinearLayout>
 
     <LinearLayout

@@ -32,6 +32,15 @@
             android:singleLine="true"
             android:text="BlissPlayer"
             android:textAppearance="@style/XpTitleText" />
+
+        <ImageButton
+            android:id="@+id/searchToggle"
+            android:layout_width="40dp"
+            android:layout_height="40dp"
+            android:background="#00000000"
+            android:contentDescription="Search"
+            android:scaleType="center"
+            android:src="@drawable/ic_search" />
     </LinearLayout>
 
     <!-- Tab row -->
@@ -44,19 +53,22 @@
 
         <Button android:id="@+id/tabSongs" android:layout_width="0dp" android:layout_height="wrap_content"
             android:layout_weight="1" android:text="@string/tab_songs" android:background="@drawable/xp_button"
-            android:textSize="12sp" android:minHeight="40dp" />
+            android:textSize="11sp" android:minHeight="40dp" />
         <Button android:id="@+id/tabArtists" android:layout_width="0dp" android:layout_height="wrap_content"
             android:layout_weight="1" android:text="@string/tab_artists" android:background="@drawable/xp_button"
-            android:textSize="12sp" android:minHeight="40dp" />
+            android:textSize="11sp" android:minHeight="40dp" />
         <Button android:id="@+id/tabAlbums" android:layout_width="0dp" android:layout_height="wrap_content"
             android:layout_weight="1" android:text="@string/tab_albums" android:background="@drawable/xp_button"
-            android:textSize="12sp" android:minHeight="40dp" />
+            android:textSize="11sp" android:minHeight="40dp" />
+        <Button android:id="@+id/tabGenres" android:layout_width="0dp" android:layout_height="wrap_content"
+            android:layout_weight="1" android:text="Genres" android:background="@drawable/xp_button"
+            android:textSize="11sp" android:minHeight="40dp" />
         <Button android:id="@+id/tabPlaylists" android:layout_width="0dp" android:layout_height="wrap_content"
             android:layout_weight="1" android:text="@string/tab_playlists" android:background="@drawable/xp_button"
-            android:textSize="12sp" android:minHeight="40dp" />
+            android:textSize="11sp" android:minHeight="40dp" />
         <Button android:id="@+id/tabMore" android:layout_width="0dp" android:layout_height="wrap_content"
             android:layout_weight="1" android:text="@string/tab_more" android:background="@drawable/xp_button"
-            android:textSize="12sp" android:minHeight="40dp" />
+            android:textSize="11sp" android:minHeight="40dp" />
     </LinearLayout>
 
     <!-- Search + filters -->
@@ -65,7 +77,8 @@
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_marginTop="6dp"
-        android:orientation="horizontal">
+        android:orientation="horizontal"
+        android:visibility="gone">
 
         <EditText android:id="@+id/searchBox" android:layout_width="0dp" android:layout_height="wrap_content"
             android:layout_weight="1" android:hint="Search songs"
@@ -94,12 +107,9 @@
         android:layout_marginTop="6dp"
         android:orientation="horizontal">
 
-        <Button android:id="@+id/btnPlayAll" android:layout_width="0dp" android:layout_height="wrap_content"
-            android:layout_weight="1" android:text="@string/play_all" android:background="@drawable/xp_start"
+        <Button android:id="@+id/btnPlayAll" android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:text="@string/play_all" android:background="@drawable/xp_start"
             android:textColor="#FFFFFF" android:textStyle="bold" android:minHeight="44dp" />
-        <Button android:id="@+id/btnShuffleAll" android:layout_width="0dp" android:layout_height="wrap_content"
-            android:layout_weight="1" android:text="@string/shuffle_now" android:background="@drawable/xp_button"
-            android:minHeight="44dp" android:layout_marginStart="6dp" />
     </LinearLayout>
 
     <TextView
