@@ -102,50 +102,8 @@ Clicking playlists takes me to generas for soem reason?
 ## Message 29 (messages first)
 make sure all the messages are in the todo notes, that should be the first thing you do not the last
 
+## Message 30 (v6 priority batch)
+Look in downloads music player for my app bliss player, Copy this message to the bottom of the TODO notes like the ohter messages, read and then look at the v6 checklist.Ive been using the app for a bit and we have some major important changes ot make. The new features priority isnt a specific checklist but they are the main features to work on, keep going until its coimplete and funcitonal with no glitches or errors, stable and feature complete. Once everyhting is perfectly done sleep the computer
 
-## [x] 23. Round 11 (still v0.5): dots fix, dialogs, genres, notification, queue buttons
-- [x] Overflow dots were invisible (layer-list icon had no size). Replaced with a real vector, verified visible on every row.
-- [x] Crumb text fixed, no dots mention.
-- [x] Every dialog has an XP blue title bar. Every list menu is XP buttons.
-- [x] Genres tab added; tap wiring missed on first pass, fixed same session. Playlists miswired to Genres by the renumber, fixed same session.
-- [x] Notification: white icons, XP artwork baked into image, verified branded in shade.
-- [x] Swipe-away on notification stops everything (pause + stopSelf). App swipe keeps playing (verified live).
-- [x] Now Playing bottom row is three small buttons: Save queue | Segment Editor | Close.
-- [x] createPlaylistDialog takes a list so a whole queue can be saved.
 
-## [x] 24. Round 12 (still v0.5): queue truth, rotation, landscape, play, playlists, shuffle options
-- [x] Genre rows drill down with dots menu and genre menu (Play/Shuffle/Add/Playlist).
-- [x] Queue desync hardening: current song by media id, mirror self-heals on mismatch.
-- [x] Rotation refreshes library + mini player after scan.
-- [x] Landscape two-panel layout + rotation lock (Auto/Portrait/Landscape).
-- [x] Play button contextual everywhere, top Shuffle removed, Shuffle in menus.
-- [x] Playlist drill: drag reorder persisted, swipe removes, track numbers.
-- [x] Search hides behind magnifier toggle in title bar.
-- [x] Shuffle options section: smart on/off, anti-repeat strength slider, reset moved here.
-- [x] Emulator verified: tabs, dots, themed menus, genre drill, playlist drill + numbers, landscape render, minimize/swipe-app/screen-off playback.
 
-## [x] 25. Round 10 (still v0.5): sandbox emulator + wake crash + python panel
-- [x] Emulator (Android 35, KVM) + BlissPhone AVD + launch script, all outside the repo.
-- [x] Disc1 (19 FLACs) in Music/Disc1, APK in Download, both visible in Files. Reboot indexes them.
-- [x] Found by testing: pressing play crashed without WAKE_LOCK (needed by wake mode). Declared it, verified playing.
-- [x] Crash dialog has Copy + Save to file (BlissPlayer-crash.txt in Download).
-- [x] Python GTK panel (BlissPlayer-Sandbox.py, outside repo): start/stop/restart emulator, force-stop/restart app, install/update APK, push songs, screenshot, status log.
-
-## [x] 26. Round 11 (still v0.5): dots fix, dialogs, genres, notification, queue buttons
-- [x] Overflow dots were invisible (layer-list icon had no size). Real vector now, verified on rows.
-- [x] Crumb fixed, every dialog has an XP title bar, every list menu is XP buttons.
-- [x] Genres tab added. Tap wiring + Playlists miswire + auto-open miswire fixed same session.
-- [x] Notification: white icons, XP artwork image, verified branded in shade.
-- [x] Swipe-away on notification stops everything (pause + stopSelf). App swipe keeps playing (verified live).
-- [x] Now Playing bottom row is three small buttons: Save queue | Segment Editor | Close.
-- [x] createPlaylistDialog takes a list so a whole queue can be saved.
-
-## [x] 27. Round 12 (still v0.5): queue truth, rotation, landscape, play, playlists, search, shuffle
-- [x] Genre rows drill + dots menu + genre menu. Search toggle (magnifier) hides the bar.
-- [x] Queue desync hardening: current song by media id, mirror self-heals.
-- [x] Rotation refreshes library + mini player after scan. Landscape two-panel + rotation lock.
-- [x] Play button contextual everywhere, top Shuffle removed, Shuffle in menus.
-- [x] Playlist drill: drag reorder persisted, swipe removes, track numbers. Playlists tab: drag reorder persisted with numbers.
-- [x] Shuffle options section: smart on/off, anti-repeat strength slider, reset moved here.
-- [x] Theme switch recreates with full state restore (tab, drill, queue, search) so every widget follows the theme.
-- [x] Skip unplayable files instead of stalling (onPlayerError).

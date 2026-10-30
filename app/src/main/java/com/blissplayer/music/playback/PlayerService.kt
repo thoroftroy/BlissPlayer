@@ -97,9 +97,20 @@ class PlayerService : MediaSessionService() {
     }
 
     private val focusListener = AudioManager.OnAudioFocusChangeListener { change ->
+        val mode = getSharedPreferences("bliss", MODE_PRIVATE).getString("focus_mode", "CallsOnly") ?: "CallsOnly"
+        if (mode == "Off") return@OnAudioFocusChangeListener
         when (change) {
             AudioManager.AUDIOFOCUS_LOSS -> {
                 if (::player.isInitialized && player.isPlaying) {
+                    pausedByFocusLoss = true
+                    player.pause()
+                }
+            }
+            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT,
+            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> {
+                // CallsOnly (default): passing sounds and nav prompts never pause.
+                // All: any transient loss pauses until focus returns.
+                if (mode == "All" && ::player.isInitialized && player.isPlaying) {
                     pausedByFocusLoss = true
                     player.pause()
                 }
@@ -110,8 +121,6 @@ class PlayerService : MediaSessionService() {
                     player.play()
                 }
             }
-            // Transient losses (notification sounds, nav prompts) are ignored
-            // on purpose: the music keeps playing through them.
             else -> {}
         }
     }
@@ -220,7 +229,9 @@ class PlayerService : MediaSessionService() {
 
     override fun onTaskRemoved(rootIntent: Intent?) {
         // App swiped away or closed: keep playing. Only stop when idle.
-        if (!::player.isInitialized || !player.isPlaying) super.onTaskRemoved(rootIntent)
+        // Do not call super when playing, or some OEMs kill the service.
+        if (::player.isInitialized && player.isPlaying) return
+        super.onTaskRemoved(rootIntent)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -232,11 +243,14 @@ class PlayerService : MediaSessionService() {
                 // Swiping the notification away means done with music: stop it all.
                 ACTION_STOP -> {
                     player.pause()
+                    player.clearMediaItems()
                     stopSelf()
                 }
             }
         }
-        return super.onStartCommand(intent, flags, startId)
+        super.onStartCommand(intent, flags, startId)
+        // Never stop on its own: keep playing in other apps, screen off, swiped away.
+        return START_STICKY
     }
 
     private val notifProvider = object : MediaNotification.Provider {

@@ -62,13 +62,17 @@ class LibraryAdapter(
         val sub = TextView(ctx).apply {
             textSize = 12f
             setSingleLine(true)
+            ellipsize = android.text.TextUtils.TruncateAt.END
         }
         texts.addView(title)
         texts.addView(sub)
         val dur = TextView(ctx).apply {
-            textSize = 12f
+            textSize = 10f
             setPadding(8, 0, 8, 0)
             gravity = android.view.Gravity.END
+            maxLines = 2
+            ellipsize = android.text.TextUtils.TruncateAt.END
+            maxWidth = (150 * resources.displayMetrics.density).toInt()
         }
         val more = ImageButton(ctx).apply {
             setImageDrawable(ContextCompat.getDrawable(ctx, R.drawable.ic_more))

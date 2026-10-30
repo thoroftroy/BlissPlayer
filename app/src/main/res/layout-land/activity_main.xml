@@ -105,10 +105,26 @@
             android:orientation="horizontal"
             android:visibility="gone" />
 
-        <Button android:id="@+id/btnPlayAll" android:layout_width="match_parent" android:layout_height="wrap_content"
+        <LinearLayout
+            android:id="@+id/playRow"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
             android:layout_marginTop="6dp"
-            android:text="@string/play_all" android:background="@drawable/xp_start"
-            android:textColor="#FFFFFF" android:textStyle="bold" android:minHeight="44dp" />
+            android:orientation="horizontal">
+
+            <Button android:id="@+id/btnPlayAll" android:layout_width="0dp" android:layout_height="wrap_content"
+                android:layout_weight="3"
+                android:text="@string/play_all" android:background="@drawable/xp_start"
+                android:textColor="#FFFFFF" android:textStyle="bold" android:minHeight="44dp" />
+            <Button android:id="@+id/btnPlayShuffle" android:layout_width="0dp" android:layout_height="wrap_content"
+                android:layout_weight="1" android:layout_marginStart="6dp"
+                android:text="Mix" android:background="@drawable/xp_start"
+                android:textColor="#FFFFFF" android:textStyle="bold" android:minHeight="44dp" />
+            <Button android:id="@+id/btnSort" android:layout_width="0dp" android:layout_height="wrap_content"
+                android:layout_weight="1" android:layout_marginStart="6dp"
+                android:text="Sort" android:background="@drawable/xp_button"
+                android:textColor="#000000" android:minHeight="44dp" />
+        </LinearLayout>
 
         <TextView
             android:id="@+id/crumb"
@@ -245,11 +261,11 @@
             <Button android:id="@+id/npLoop" android:layout_width="0dp"
                 android:layout_height="wrap_content" android:layout_weight="1"
                 android:background="@drawable/xp_button" android:text="@string/loop_off"
-                android:textSize="12sp" android:minHeight="36dp" />
+                android:textSize="10sp" android:minHeight="28dp" />
             <Button android:id="@+id/npShuffle" android:layout_width="0dp"
                 android:layout_height="wrap_content" android:layout_weight="1"
                 android:background="@drawable/xp_button" android:text="@string/shuffle_off"
-                android:textSize="12sp" android:minHeight="36dp" />
+                android:textSize="10sp" android:minHeight="28dp" />
         </LinearLayout>
 
         <androidx.recyclerview.widget.RecyclerView

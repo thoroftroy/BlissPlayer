@@ -100,16 +100,26 @@
         android:orientation="horizontal"
         android:visibility="gone" />
 
-    <!-- Big friendly actions -->
+    <!-- Big friendly actions: Play split so last slice shuffles -->
     <LinearLayout
+        android:id="@+id/playRow"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_marginTop="6dp"
         android:orientation="horizontal">
 
-        <Button android:id="@+id/btnPlayAll" android:layout_width="match_parent" android:layout_height="wrap_content"
+        <Button android:id="@+id/btnPlayAll" android:layout_width="0dp" android:layout_height="wrap_content"
+            android:layout_weight="3"
             android:text="@string/play_all" android:background="@drawable/xp_start"
             android:textColor="#FFFFFF" android:textStyle="bold" android:minHeight="44dp" />
+        <Button android:id="@+id/btnPlayShuffle" android:layout_width="0dp" android:layout_height="wrap_content"
+            android:layout_weight="1" android:layout_marginStart="6dp"
+            android:text="Mix" android:background="@drawable/xp_start"
+            android:textColor="#FFFFFF" android:textStyle="bold" android:minHeight="44dp" />
+        <Button android:id="@+id/btnSort" android:layout_width="0dp" android:layout_height="wrap_content"
+            android:layout_weight="1" android:layout_marginStart="6dp"
+            android:text="Sort" android:background="@drawable/xp_button"
+            android:minHeight="44dp" />
     </LinearLayout>
 
     <TextView

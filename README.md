@@ -19,4 +19,4 @@ It plays the music on your phone, keeps every song at the same volume, and can p
 
 ## Install
 
-Copy `BlissPlayer-v0.5-debug.apk` to the Android phone and tap it (allow install from unknown sources when asked). Open the app, grant the music permission, tap Scan for music, then Play.
+Copy `BlissPlayer-v0.6-debug.apk` to the Android phone and tap it (allow install from unknown sources when asked). Open the app, grant the music permission, tap Scan for music, then Play.
