@@ -1,14 +1,17 @@
 package com.blissplayer.music
 
+import android.content.ContentValues
 import android.content.Context
 import android.os.Build
+import android.provider.MediaStore
 import java.io.PrintWriter
 import java.io.StringWriter
 
 /**
  * Last resort crash log. Writes the stack trace to internal storage and
  * lets the default handler kill the process. On the next launch the app
- * shows the log with a Copy button so it can be pasted to the developer.
+ * shows the log with a working Copy button and also saves a copy into the
+ * Download folder, so the log can always be found and sent on.
  */
 object CrashReporter {
     private const val FILE = "crash_last.txt"
@@ -43,5 +46,38 @@ object CrashReporter {
 
     fun clear(context: Context) {
         runCatching { context.deleteFile(FILE) }
+    }
+
+    /**
+     * Copy the saved crash into the Download folder.
+     * Returns the file name on success, null when it could not be saved.
+     */
+    fun saveToDownloads(context: Context): String? {
+        val log = read(context) ?: return null
+        return try {
+            val name = "BlissPlayer-crash.txt"
+            if (Build.VERSION.SDK_INT >= 29) {
+                val values = ContentValues().apply {
+                    put(MediaStore.Downloads.DISPLAY_NAME, name)
+                    put(MediaStore.Downloads.MIME_TYPE, "text/plain")
+                }
+                val uri = context.contentResolver.insert(
+                    MediaStore.Downloads.EXTERNAL_CONTENT_URI, values
+                ) ?: return null
+                context.contentResolver.openOutputStream(uri)?.use {
+                    it.write(log.toByteArray())
+                } ?: return null
+            } else {
+                @Suppress("DEPRECATION")
+                val dir = android.os.Environment.getExternalStoragePublicDirectory(
+                    android.os.Environment.DIRECTORY_DOWNLOADS
+                )
+                if (!dir.exists()) dir.mkdirs()
+                java.io.File(dir, name).writeText(log)
+            }
+            name
+        } catch (e: Exception) {
+            null
+        }
     }
 }

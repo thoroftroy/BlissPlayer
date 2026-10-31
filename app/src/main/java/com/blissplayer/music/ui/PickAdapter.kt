@@ -5,6 +5,7 @@ import android.widget.CheckBox
 import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.recyclerview.widget.RecyclerView
+import com.blissplayer.music.R
 
 /** Rows for the Add songs picker: headers plus checkable artists, albums, songs. */
 sealed interface PickRow {
@@ -34,7 +35,9 @@ class PickAdapter(
         return if (viewType == TYPE_HEADER) {
             val tv = TextView(ctx).apply {
                 textSize = 13f
-                typeface = android.graphics.Typeface.DEFAULT_BOLD
+                typeface = runCatching {
+                    androidx.core.content.res.ResourcesCompat.getFont(ctx, R.font.ptsans_700)
+                }.getOrNull() ?: android.graphics.Typeface.DEFAULT_BOLD
                 setPadding(20, 18, 20, 6)
             }
             object : RecyclerView.ViewHolder(tv) {}

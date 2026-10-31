@@ -26,10 +26,12 @@ class VolumeManager(
     companion object {
         const val KEY_MANUAL = "boost_manual"
         const val KEY_AUTO_DEVICE = "auto_device"
-        const val KEY_AUTOPLAY = "autoplay_on_connect"
         const val DEVICE_SPEAKER = "Phone speaker / wired"
         const val MIN = 0.01f
         const val MAX = 20.0f // 2000 percent. Not capped for quality, the warning text covers that.
+
+        /** Per-device autoplay key. Off unless the user turns it on for that output. */
+        fun autoplayKey(device: String) = "autoplay_dev_" + device.hashCode().toString()
     }
 
     var currentDevice: String = DEVICE_SPEAKER
@@ -117,8 +119,7 @@ class VolumeManager(
     }
 
     /** Every remembered output, speaker first, then Bluetooth, alphabetized. */
-    fun allDevices(): List<Pair<String, Double>> {
-        val out = mutableListOf<Pair<String, Double>>()
+    fun allDevices(): List<Pair<String, Double>> {        val out = mutableListOf<Pair<String, Double>>()
         runCatching {
             db.readableDatabase.rawQuery("SELECT device_name, gain_mult FROM boost", null)?.use { c ->
                 while (c.moveToNext()) out.add(c.getString(0) to c.getDouble(1))
@@ -137,5 +138,13 @@ class VolumeManager(
         if (device == DEVICE_SPEAKER) return
         runCatching { db.writableDatabase.delete("boost", "device_name=?", arrayOf(device)) }
         if (currentDevice == device) setDevice(DEVICE_SPEAKER, saveManual = false)
+    }
+
+    /** Autoplay on connect, stored per output. Off unless turned on. */
+    fun isAutoplay(device: String): Boolean =
+        prefs.getBoolean(autoplayKey(device), false)
+
+    fun setAutoplay(device: String, on: Boolean) {
+        prefs.edit().putBoolean(autoplayKey(device), on).apply()
     }
 }

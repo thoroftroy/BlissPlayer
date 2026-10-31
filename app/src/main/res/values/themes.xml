@@ -4,17 +4,43 @@
         <item name="android:windowBackground">@color/xp_face</item>
         <item name="android:textColor">@color/xp_text</item>
         <item name="android:textColorSecondary">@color/xp_text_dim</item>
+        <item name="android:fontFamily">@font/ptsans</item>
+        <item name="fontFamily">@font/ptsans</item>
+        <item name="android:buttonStyle">@style/XpButton</item>
+        <item name="android:buttonBarButtonStyle">@style/XpButton.Borderless</item>
     </style>
     <style name="Theme.BlissPlayer.Night" parent="Theme.AppCompat.NoActionBar">
         <item name="android:windowBackground">@color/xp_n_face</item>
         <item name="android:textColor">@color/xp_n_text</item>
         <item name="android:textColorSecondary">@color/xp_n_text_dim</item>
+        <item name="android:fontFamily">@font/ptsans</item>
+        <item name="fontFamily">@font/ptsans</item>
+        <item name="android:buttonStyle">@style/XpButton</item>
+        <item name="android:buttonBarButtonStyle">@style/XpButton.Borderless</item>
+    </style>
+
+    <!-- Every button in sentence case, like real XP. No shouty caps. -->
+    <style name="XpButton" parent="Widget.AppCompat.Button">
+        <item name="android:textAllCaps">false</item>
+        <item name="android:fontFamily">@font/ptsans</item>
+        <item name="fontFamily">@font/ptsans</item>
+    </style>
+
+    <style name="XpButton.Borderless" parent="Widget.AppCompat.Button.Borderless">
+        <item name="android:textAllCaps">false</item>
+        <item name="android:fontFamily">@font/ptsans</item>
+        <item name="fontFamily">@font/ptsans</item>
     </style>
 
     <style name="XpTitleText">
         <item name="android:textStyle">bold</item>
         <item name="android:textSize">15sp</item>
         <item name="android:textColor">@color/xp_title_text</item>
-        <item name="android:fontFamily">sans-serif</item>
+        <item name="android:fontFamily">@font/ptsans</item>
+        <item name="fontFamily">@font/ptsans</item>
+        <item name="android:shadowColor">#80000000</item>
+        <item name="android:shadowDx">1</item>
+        <item name="android:shadowDy">1</item>
+        <item name="android:shadowRadius">2</item>
     </style>
 </resources>

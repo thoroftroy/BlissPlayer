@@ -2,33 +2,27 @@ package com.blissplayer.music.data
 
 import android.content.ContentValues
 import android.content.Context
+import android.net.Uri
 import android.os.Build
 import android.provider.MediaStore
 import com.blissplayer.music.model.Song
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
 
 /**
- * Offline song analyzer + organizer.
+ * Song analyzer + organizer.
  *
- * No network lookup: Android has no built-in YouTube fingerprint API, and
- * uploading 1000+ FLACs for matching would be slow, battery-heavy, and
- * unreliable. Instead this does fast local heuristics:
+ * YouTube downloads arrive with messy names and no tags, so cleanup works
+ * in two layers. The local layer strips video noise: (Official Video),
+ * (Lyrics), [videoIds], M/V, VEVO, leading NA, and Artist - Title splits.
+ * The online layer asks Wikipedia (no key needed) for the canonical title,
+ * performer, and genre words. Online hits only apply when the lookup
+ * clearly matches; anything unsure lands in a confirm-first list.
+ * Without internet the analyzer says so and cleans names offline.
  *
- *  - Strips video noise from titles: Official Video, Official Audio, Lyrics,
- *    HD, 4K, MV, Visualizer, etc.
- *  - Splits "Artist - Title" filenames when tags are Unknown.
- *  - Guesses genre from title/artist keywords only when confident,
- *    otherwise leaves Uncategorized.
- *  - Confidence: High when only noise words are removed or an obvious
- *    Artist - Title split exists. Medium when the guess changes real words.
- *    Low guesses are never auto-applied; they are shown for confirmation.
- *
- * Organize copies nothing and deletes nothing. On Android 10+ it moves each
- * file's MediaStore RELATIVE_PATH into Music/BlissPlayer/Artist/Album so the
- * system file itself becomes organized. Only folders the user enabled are
- * touched. Playlists survive because they key on mediaId, which does not
- * change on move.
+ * Organize moves only enabled-folder songs into Music/BlissPlayer/Artist
+ * /Album through MediaStore. Playlists key on mediaId, so they survive.
  */
 object SongAnalyzer {
 
@@ -40,6 +34,13 @@ object SongAnalyzer {
         val newGenre: String,
         val confidence: String, // High / Check
         val reason: String
+    )
+
+    data class Cleaned(
+        val title: String,
+        val artist: String,
+        val reasons: List<String>,
+        val safe: Boolean
     )
 
     private val noise = listOf(
@@ -56,94 +57,303 @@ object SongAnalyzer {
         Regex("\\(.*music.*?video.*?\\)", RegexOption.IGNORE_CASE),
         Regex("\\bofficial\\s+(music\\s+)?video\\b", RegexOption.IGNORE_CASE),
         Regex("\\bofficial\\s+audio\\b", RegexOption.IGNORE_CASE),
-        Regex("\\b(4k|8k|hd|hq|4phd)\\b", RegexOption.IGNORE_CASE),
+        Regex("\\(\\s*(4k|8k|hd|hq)\\s*[^()]*\\)", RegexOption.IGNORE_CASE),
+        Regex("\\[\\s*(4k|8k|hd|hq)\\s*[^\\[\\]]*\\]", RegexOption.IGNORE_CASE),
         Regex("\\bm/?v\\b", RegexOption.IGNORE_CASE),
-        Regex("\\bletras?\\b", RegexOption.IGNORE_CASE)
+        Regex("\\bletras?\\b", RegexOption.IGNORE_CASE),
+        Regex("\\(\\s*vevo\\s*\\)", RegexOption.IGNORE_CASE),
+        Regex("\\bvevo\\b", RegexOption.IGNORE_CASE)
     )
 
-    fun propose(song: Song, fileName: String, currentGenre: String): Proposal? {
-        var title = song.title.trim()
-        var artist = song.artist.trim()
-        var album = song.album.trim()
-        val reasons = mutableListOf<String>()
-        var high = true
+    /** Bracket contents worth keeping: remix, live, acoustic, version, explicit. */
+    private val keepBracket = setOf(
+        "remix", "remixes", "live", "acoustic", "unplugged", "version",
+        "explicit", "clean", "remaster", "remastered", "cover", "demo",
+        "extended", "original", "radio", "edit", "mix", "part", "pt"
+    )
 
-        // 1) Filename split when tags are placeholders.
-        val base = fileName.substringAfterLast('/').substringBeforeLast('.').trim()
-        if ((artist.equals("Unknown artist", true) || artist.isBlank()) && " - " in base) {
-            val parts = base.split(" - ", limit = 2)
+    /** A trailing [xxxx] is a video id when it looks like one: no spaces, id-shaped. */
+    fun stripVideoId(title: String): Pair<String, Boolean> {
+        var t = title
+        var stripped = false
+        while (true) {
+            val m = Regex("\\s*\\[([^\\[\\]]+)\\]\\s*$").find(t) ?: break
+            val inner = m.groupValues[1].trim()
+            val words = inner.split(Regex("\\s+"))
+            val idLike = words.size == 1 && inner.length in 6..20 &&
+                inner.all { it.isLetterOrDigit() || it == '_' || it == '-' } &&
+                inner.lowercase() !in keepBracket
+            if (!idLike) break
+            t = t.removeRange(m.range).trim()
+            stripped = true
+        }
+        return t to stripped
+    }
+
+    /**
+     * Pure local cleanup of a messy YouTube-style name. Returns the cleaned
+     * title/artist plus what changed. Never touches the network.
+     */
+    fun cleanLocal(rawTitle: String, rawArtist: String, fileBase: String): Cleaned {
+        var title = rawTitle.trim()
+        var artist = rawArtist.trim()
+        val reasons = mutableListOf<String>()
+        var safe = true
+
+        // Leading junk artist markers from re-uploads: "NA - Real Artist - Title".
+        val naPrefix = Regex("^(?:na|n/a|unknown(?:\\s+artist)?)\\s+-\\s+", RegexOption.IGNORE_CASE)
+        if (naPrefix.containsMatchIn(title)) {
+            title = title.replace(naPrefix, "").trim()
+            reasons.add("dropped junk prefix")
+        }
+
+        val base = fileBase.trim()
+        val artistUnknown = artist.isBlank() || artist.equals("Unknown artist", true) ||
+            artist.equals("<unknown>", true)
+        if (artistUnknown && " - " in title) {
+            val parts = title.split(" - ", limit = 2)
             if (parts[0].isNotBlank() && parts[1].isNotBlank()) {
-                artist = parts[0].trim()
+                artist = parts[0].trim().removeSuffix(" - Topic").trim()
                 title = parts[1].trim()
-                reasons.add("split filename Artist - Title")
+                reasons.add("split Artist - Title")
             }
         } else if ((title.equals("Unknown title", true) || title.isBlank()) && base.isNotBlank()) {
             title = base
             reasons.add("used filename as title")
-            high = false
+            safe = false
         }
+        if (artistUnknown && artist.isBlank() && " - " in base && " - " !in title) {
+            val parts = base.split(" - ", limit = 2)
+            if (parts[0].isNotBlank() && parts[1].isNotBlank() &&
+                !parts[0].matches(Regex("^(na|n/a|unknown)$", RegexOption.IGNORE_CASE))
+            ) {
+                artist = parts[0].trim().removeSuffix(" - Topic").trim()
+                if (title.isBlank()) title = parts[1].trim()
+                reasons.add("split filename Artist - Title")
+            }
+        }
+        artist = artist.removeSuffix(" - Topic").trim()
 
-        // 2) Strip video noise.
-        var cleaned = title
+        var cleaned = title.replace("⧸", "/")
         noise.forEach { r -> cleaned = r.replace(cleaned, " ") }
-        cleaned = cleaned.replace(Regex("\\s{2,}"), " ").trim { it == ' ' || it == '-' || it == '_' || it == '.' }
+        val (noId, hadId) = stripVideoId(cleaned)
+        cleaned = noId
+        if (hadId) reasons.add("dropped video id")
+        cleaned = cleaned.replace(Regex("\\s{2,}"), " ")
+            .trim { it == ' ' || it == '-' || it == '_' || it == '.' || it == '(' || it == ')' }
             .replace(Regex("\\s+"), " ").trim()
         if (cleaned.isNotBlank() && cleaned != title) {
-            // If we only removed bracketed noise, confidence stays high.
-            val removedOnlyNoise = title.length - cleaned.length < 30
-            if (!removedOnlyNoise) high = false
+            // Everything removed came from known noise patterns, so long
+            // removals are fine. Only a stub of a title is a guess.
+            if (cleaned.length < 4) safe = false
             title = cleaned
-            reasons.add("removed video tags")
+            if ("removed video tags" !in reasons) reasons.add("removed video tags")
         }
+        return Cleaned(title, artist, reasons, safe)
+    }
 
-        // 3) Genre guess only on strong keywords.
-        var genre = currentGenre
-        if (genre.isBlank() || genre == "Uncategorized") {
-            val hay = "$title $artist".lowercase()
-            genre = when {
-                listOf("lofi", "lo-fi").any { it in hay } -> "Lo-Fi"
-                listOf("jazz", "swing", "bossa").any { it in hay } -> "Jazz"
-                listOf("rock", "metal", "punk").any { it in hay } -> "Rock"
-                listOf("hip hop", "hip-hop", "rap", "trap").any { it in hay } -> "Hip-Hop"
-                listOf("classical", "symphony", "sonata", "op.").any { it in hay } -> "Classical"
-                listOf("edm", "house", "techno", "trance", "dubstep").any { it in hay } -> "Electronic"
-                listOf("country", "bluegrass").any { it in hay } -> "Country"
-                listOf("gospel", "worship", "hymn").any { it in hay } -> "Gospel"
-                else -> genre
-            }
-            if (genre != currentGenre) {
-                reasons.add("keyword genre")
-                high = false
+    private val genreWords = listOf(
+        "k-pop" to "K-Pop", "j-pop" to "J-Pop",
+        "dance-pop" to "Dance-Pop", "hip-hop" to "Hip-Hop", "hip hop" to "Hip-Hop",
+        "r&b" to "R&B", "lo-fi" to "Lo-Fi", "lofi" to "Lo-Fi",
+        "rock" to "Rock", "metal" to "Metal", "punk" to "Punk",
+        "pop" to "Pop", "rap" to "Hip-Hop", "trap" to "Hip-Hop",
+        "country" to "Country", "jazz" to "Jazz", "blues" to "Blues",
+        "soul" to "Soul", "gospel" to "Gospel", "folk" to "Folk",
+        "classical" to "Classical", "electronic" to "Electronic",
+        "house" to "Electronic", "techno" to "Electronic", "edm" to "Electronic",
+        "reggaeton" to "Latin", "latin" to "Latin", "salsa" to "Latin",
+        "bossa" to "Jazz", "swing" to "Jazz", "bluegrass" to "Country",
+        "symphony" to "Classical", "worship" to "Gospel", "hymn" to "Gospel"
+    )
+
+    /** First known genre word found in Wikipedia categories, else null. */
+    fun genreFromCategories(categories: List<String>): String? {
+        for (c in categories) {
+            val low = c.lowercase()
+            for ((word, name) in genreWords) {
+                if (word in low) return name
             }
         }
+        return null
+    }
 
+    fun keywordGenre(title: String, artist: String, current: String): String {
+        if (current.isNotBlank() && current != "Uncategorized") return current
+        val hay = "$title $artist".lowercase()
+        for ((word, name) in genreWords) {
+            if (word in hay) return name
+        }
+        return current.ifBlank { "Uncategorized" }
+    }
+
+    fun propose(song: Song, fileName: String, currentGenre: String): Proposal? {
+        val base = fileName.substringAfterLast('/').substringBeforeLast('.').trim()
+        val cleaned = cleanLocal(song.title, song.artist, base)
+        if (cleaned.title.isBlank()) return null
+        var genre = keywordGenre(cleaned.title, cleaned.artist, currentGenre)
+        val reasons = cleaned.reasons.toMutableList()
+        var high = cleaned.safe
+        if (genre != currentGenre && genre != "Uncategorized") {
+            reasons.add("keyword genre")
+            high = false
+        }
         if (reasons.isEmpty()) return null
-        if (title.isBlank()) return null
         return Proposal(
-            song, title.ifBlank { song.title },
-            artist.ifBlank { song.artist },
-            album.ifBlank { song.album },
-            genre.ifBlank { "Uncategorized" },
-            if (high) "High" else "Check",
-            reasons.joinToString(", ")
+            song, cleaned.title.ifBlank { song.title },
+            cleaned.artist.ifBlank { song.artist },
+            song.album, genre.ifBlank { "Uncategorized" },
+            if (high) "High" else "Check", reasons.joinToString(", ")
         )
     }
 
+    /**
+     * Full pass: local cleanup for every song, then Wikipedia for the
+     * uncertain ones. Phases reported as "names" then "lookup" so the
+     * progress bar reads clearly.
+     */
     suspend fun analyze(
         songs: List<Song>,
         genreOf: (Long) -> String,
-        onProgress: (done: Int, total: Int) -> Unit
+        online: Boolean,
+        onProgress: (done: Int, total: Int, phase: String) -> Unit
     ): List<Proposal> = withContext(Dispatchers.Default) {
-        val out = mutableListOf<Proposal>()
+        // Phase 1: local rules, fast.
+        data class Mid(
+            val song: Song, var title: String, var artist: String,
+            val reasons: MutableList<String>, var high: Boolean,
+            var wikiGenre: String?
+        )
+        val mids = mutableListOf<Mid>()
         songs.forEachIndexed { i, s ->
-            val fn = s.filePath?.substringAfterLast('/')?.substringBeforeLast('.') ?: s.title
-            propose(s, fn, genreOf(s.mediaId))?.let { out.add(it) }
-            if (i % 25 == 0) onProgress(i + 1, songs.size)
+            val base = (s.filePath ?: "").substringAfterLast('/').substringBeforeLast('.')
+                .ifBlank { s.title }
+            val c = cleanLocal(s.title, s.artist, base)
+            if (c.title.isNotBlank() && c.reasons.isNotEmpty()) {
+                mids.add(Mid(s, c.title, c.artist, c.reasons.toMutableList(), c.safe, null))
+            }
+            if (i % 25 == 0) onProgress(i + 1, songs.size, "names")
+            if (!coroutineContext.isActive) return@withContext emptyList<Proposal>()
         }
-        onProgress(songs.size, songs.size)
-        // High-confidence first so bulk apply is safe.
-        out.sortedWith(compareBy({ it.confidence != "High" }, { it.song.title.lowercase() }))
+        onProgress(songs.size, songs.size, "names")
+
+        // Phase 2: Wikipedia confirmation + enrichment.
+        // One cheap probe first: without network there is no point burning
+        // minutes on per-song timeouts.
+        var offline = false
+        if (online && mids.isNotEmpty()) {
+            offline = try {
+                !WikiLookup.reachable()
+            } catch (e: Exception) {
+                if (e is kotlinx.coroutines.CancellationException) throw e
+                true
+            }
+            mids.forEachIndexed { i, m ->
+                if (!coroutineContext.isActive) return@withContext emptyList<Proposal>()
+                if (!offline) {
+                    val hit = try {
+                        WikiLookup.lookup(m.title, m.artist)
+                    } catch (e: Exception) {
+                        if (e is kotlinx.coroutines.CancellationException) throw e
+                        null
+                    }
+                    if (hit != null) {
+                        val g0 = genreOf(m.song.mediaId)
+                        val applied = applyWikiResult(m.title, m.artist, g0, hit)
+                        m.title = applied.title
+                        m.artist = applied.artist
+                        m.reasons.addAll(applied.reasons)
+                        m.high = m.high && applied.high
+                        m.wikiGenre = applied.genre
+                    }
+                }
+                onProgress(i + 1, mids.size, "lookup")
+            }
+        }
+        onProgress(songs.size, songs.size, "done")
+
+        val out = mids.mapNotNull { m ->
+            val g0 = genreOf(m.song.mediaId)
+            var genre = m.wikiGenre ?: keywordGenre(m.title, m.artist, g0)
+            if (genre != g0 && genre != "Uncategorized" &&
+                m.reasons.none { it.startsWith("genre") || it.startsWith("Wikipedia genre") }
+            ) {
+                m.reasons.add("keyword genre")
+                m.high = false
+            }
+            if (m.title.isBlank()) return@mapNotNull null
+            Proposal(
+                m.song, m.title, m.artist.ifBlank { m.song.artist },
+                m.song.album, genre.ifBlank { "Uncategorized" },
+                if (m.high) "High" else "Check", m.reasons.joinToString(", ")
+            )
+        }.sortedWith(compareBy({ it.confidence != "High" }, { it.song.title.lowercase() }))
+        if (offline) throw OfflineException(out)
+        out
     }
+
+    /** Thrown when Wikipedia is unreachable: carries the offline-only results. */
+    class OfflineException(val partial: List<Proposal>) : Exception("offline")
+
+    /**
+     * Pure fold of a Wikipedia hit into a candidate. Returns the updated
+     * title, artist, genre (null = keep current), reasons delta, and whether
+     * the result is confident. Unit tested on the JVM with real responses.
+     */
+    fun applyWikiResult(
+        localTitle: String, localArtist: String, currentGenre: String,
+        hit: WikiLookup.Hit
+    ): WikiApplied {
+        val reasons = mutableListOf<String>()
+        var title = localTitle
+        var artist = localArtist
+        var genre: String? = null
+        var high: Boolean
+
+        val canon = WikiLookup.canonicalTitle(hit.title)
+        val titleMatch = canon.isNotBlank() &&
+            WikiLookup.norm(canon) == WikiLookup.norm(localTitle)
+        val localUnknown = localArtist.isBlank() ||
+            localArtist.equals("Unknown artist", true) ||
+            localArtist.equals("<unknown>", true)
+        val snippetArtist = WikiLookup.snippetArtist(hit.snippet)
+        val artistMatch = snippetArtist != null && !localUnknown &&
+            WikiLookup.norm(snippetArtist) == WikiLookup.norm(localArtist)
+
+        if (titleMatch && (localUnknown || artistMatch)) {
+            // Clear match: take the canonical title and the performer.
+            title = canon
+            if (snippetArtist != null) artist = snippetArtist
+            reasons.add("Wikipedia: ${hit.title}")
+            high = true
+        } else if (titleMatch && snippetArtist != null && localUnknown) {
+            title = canon
+            artist = snippetArtist
+            reasons.add("Wikipedia: ${hit.title}")
+            high = true
+        } else if (titleMatch) {
+            // Title confirmed, performer differs: keep ours, flag review.
+            title = canon
+            reasons.add("Wikipedia title match (artist differs: $snippetArtist)")
+            high = false
+        } else {
+            // Best guess only: suggest, do not trust.
+            reasons.add("Wikipedia guess: ${hit.title}")
+            high = false
+            return WikiApplied(title, artist, null, reasons, high)
+        }
+        val g = genreFromCategories(hit.categories)
+        if (g != null && (currentGenre.isBlank() || currentGenre == "Uncategorized")) {
+            genre = g
+            reasons.add("Wikipedia genre")
+        }
+        return WikiApplied(title, artist, genre, reasons, high)
+    }
+
+    data class WikiApplied(
+        val title: String, val artist: String, val genre: String?,
+        val reasons: List<String>, val high: Boolean
+    )
 
     private fun sanitize(name: String): String {
         val s = name.trim().ifBlank { "Unknown" }
@@ -153,40 +363,67 @@ object SongAnalyzer {
         return cleaned.ifBlank { "Unknown" }
     }
 
+    data class OrganizeResult(
+        val moved: Int,
+        val skipped: Int,
+        val notes: List<String>,
+        /** Content URIs the system refused without an explicit write grant. */
+        val needsPermission: List<String>
+    )
+
     /**
      * Move files into Music/BlissPlayer/Artist/Album via MediaStore.
-     * Returns Pair(moved, skipped).
+     * Songs with no readable path are counted as skipped with a reason
+     * instead of vanishing silently.
      */
     suspend fun organize(
         context: Context,
         songs: List<Song>,
         onProgress: (done: Int, total: Int, name: String) -> Unit
-    ): Pair<Int, Int> = withContext(Dispatchers.IO) {
-        if (Build.VERSION.SDK_INT < 29) return@withContext 0 to songs.size
+    ): OrganizeResult = withContext(Dispatchers.IO) {
+        if (Build.VERSION.SDK_INT < 29) return@withContext OrganizeResult(
+            0, songs.size, listOf("Organizing needs Android 10 or newer."), emptyList()
+        )
         var moved = 0
         var skipped = 0
+        val notes = mutableListOf<String>()
+        val needsPermission = mutableListOf<String>()
         songs.forEachIndexed { i, s ->
             try {
-                val uri = android.net.Uri.parse(s.contentUri)
-                val artist = sanitize(s.artist)
-                val album = sanitize(s.album)
-                val rel = "Music/BlissPlayer/$artist/$album"
-                // Skip if already organized.
-                if ((s.filePath ?: "").contains("/BlissPlayer/")) {
+                val path = s.filePath
+                if (path.isNullOrBlank()) {
+                    skipped++
+                    if (notes.size < 5) notes.add("${s.title}: no readable file path, left alone.")
+                } else if (path.contains("/BlissPlayer/")) {
                     skipped++
                 } else {
+                    val uri = Uri.parse(s.contentUri)
+                    val artist = sanitize(s.artist)
+                    val album = sanitize(s.album)
+                    val rel = "Music/BlissPlayer/$artist/$album"
                     val values = ContentValues().apply {
                         put(MediaStore.Audio.Media.RELATIVE_PATH, rel)
                     }
                     val rows = context.contentResolver.update(uri, values, null, null)
-                    if (rows > 0) moved++ else skipped++
+                    if (rows > 0) moved++ else {
+                        skipped++
+                        if (notes.size < 5) notes.add("${s.title}: the system refused the move.")
+                    }
                 }
+            } catch (e: SecurityException) {
+                // System wants one tap per batch: collect and ask once at the end.
+                skipped++
+                needsPermission.add(s.contentUri)
             } catch (e: Exception) {
                 skipped++
+                if (notes.size < 5) notes.add("${s.title}: ${e.message ?: "move failed"}.")
             }
             if (i % 10 == 0) onProgress(i + 1, songs.size, s.title)
+            if (!coroutineContext.isActive) {
+                return@withContext OrganizeResult(moved, skipped, notes, needsPermission)
+            }
         }
         onProgress(songs.size, songs.size, "")
-        moved to skipped
+        OrganizeResult(moved, skipped, notes, needsPermission)
     }
 }

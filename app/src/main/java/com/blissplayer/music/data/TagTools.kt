@@ -38,13 +38,34 @@ object TagTools {
     }
 
     /**
+     * jaudiotagger picks its reader by file extension, so the cache copy
+     * must wear the song's real extension. A ".tmp" copy reads as nothing
+     * and every edit silently fails.
+     */
+    internal fun extFor(song: Song): String {        val fromPath = song.filePath?.substringAfterLast('.', "")?.lowercase()
+        if (!fromPath.isNullOrBlank() && fromPath.length <= 5 && fromPath.all { it.isLetterOrDigit() }) {
+            return fromPath
+        }
+        return when (song.mimeType?.lowercase()) {
+            "audio/mpeg", "audio/mp3" -> "mp3"
+            "audio/mp4", "audio/m4a", "audio/aac" -> "m4a"
+            "audio/flac", "audio/x-flac" -> "flac"
+            "audio/ogg", "audio/opus" -> "ogg"
+            "audio/wav", "audio/x-wav", "audio/vnd.wave" -> "wav"
+            else -> ""
+        }
+    }
+
+    /**
      * Read the embedded tag for prefilling the editor. Null when unreadable.
      * Song name, artist, album, genre, in that order.
      */
     suspend fun readTags(context: Context, song: Song): Array<String?> =
         withContext(Dispatchers.IO) {
             val uri = Uri.parse(song.contentUri)
-            val tmp = File(context.cacheDir, "tagread_${song.mediaId}.tmp")
+            val ext = extFor(song)
+            if (ext.isBlank()) return@withContext arrayOfNulls<String>(4)
+            val tmp = File(context.cacheDir, "tagread_${song.mediaId}.$ext")
             try {
                 context.contentResolver.openInputStream(uri)?.use { ins ->
                     tmp.outputStream().use { ins.copyTo(it) }
@@ -68,9 +89,13 @@ object TagTools {
     suspend fun writeTags(context: Context, song: Song, edit: Edit): WriteResult =
         withContext(Dispatchers.IO) {
             val uri = Uri.parse(song.contentUri)
+            val ext = extFor(song)
+            if (ext.isBlank()) {
+                return@withContext WriteResult.Failed("Unsupported audio format, cannot edit tags.")
+            }
             try {
                 // 1) Copy audio into cache so jaudiotagger gets a real File.
-                val tmp = File(context.cacheDir, "tag_${song.mediaId}.tmp")
+                val tmp = File(context.cacheDir, "tag_${song.mediaId}.$ext")
                 context.contentResolver.openInputStream(uri)?.use { ins ->
                     tmp.outputStream().use { ins.copyTo(it) }
                 } ?: return@withContext WriteResult.Failed("Could not open song for editing.")

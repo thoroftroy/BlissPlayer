@@ -69,7 +69,8 @@ object LoudnessScanner {
                     synchronized(rms) {
                         if (r == null || r <= 0.0) skipped++ else {
                             rms[s.mediaId] = r
-                            putCache(s.mediaId, r, s.modified)
+                            // A failed cache write must not fail the whole job.
+                            runCatching { putCache(s.mediaId, r, s.modified) }
                         }
                     }
                     if (r != null && r > 0.0) "fresh" else "skipped"
@@ -95,7 +96,7 @@ object LoudnessScanner {
         var lowered = 0
         rms.forEach { (id, r) ->
             val mult = (avg / r).coerceIn(0.25, 4.0) // 12 dB window either way
-            putGain(id, mult)
+            runCatching { putGain(id, mult) }
             if (mult > 1.03) raised++ else if (mult < 0.97) lowered++
         }
         Result(rms.size, reused, raised, lowered, skipped)

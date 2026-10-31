@@ -56,7 +56,9 @@ class LibraryAdapter(
         }
         val title = TextView(ctx).apply {
             textSize = 15f
-            typeface = Typeface.DEFAULT_BOLD
+            typeface = runCatching {
+                androidx.core.content.res.ResourcesCompat.getFont(ctx, R.font.ptsans_700)
+            }.getOrNull() ?: Typeface.DEFAULT_BOLD
             setSingleLine(true)
         }
         val sub = TextView(ctx).apply {

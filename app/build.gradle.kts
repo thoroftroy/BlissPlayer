@@ -11,8 +11,8 @@ android {
         applicationId = "com.blissplayer.music"
         minSdk = 29
         targetSdk = 35
-        versionCode = 12
-        versionName = "0.6.0"
+        versionCode = 13
+        versionName = "0.7.0"
     }
 
     buildTypes {
@@ -60,4 +60,8 @@ dependencies {
 
     // Tag read/write for edit-metadata (pure Java, no native deps).
     implementation("net.jthink:jaudiotagger:3.0.1")
+
+    // JVM unit tests for analyzer + shuffle math (run with testDebugUnitTest).
+    testImplementation("junit:junit:4.13.2")
+    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.8.1")
 }

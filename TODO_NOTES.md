@@ -105,5 +105,15 @@ make sure all the messages are in the todo notes, that should be the first thing
 ## Message 30 (v6 priority batch)
 Look in downloads music player for my app bliss player, Copy this message to the bottom of the TODO notes like the ohter messages, read and then look at the v6 checklist.Ive been using the app for a bit and we have some major important changes ot make. The new features priority isnt a specific checklist but they are the main features to work on, keep going until its coimplete and funcitonal with no glitches or errors, stable and feature complete. Once everyhting is perfectly done sleep the computer
 
+## Message 31 (v0.7 stability + feedback + analyzer overhaul)
+Im not sure what you did for the last several hours, you know you have an emulator and can test things right? I installed the update and its a broken, poorly formatted mess with no consistency, feedback, nothing. Its ugly and unintiative. Here are the main issues; when app crashes it should have an option to copy the log so I can send it to you
+Many more buttons have no feedback
+Boost by device lacks any options, it's supposed to be a list of the devices which have been connected which let me say play on connect and the boost level on a per device basis 
+Song analyzer never works or does anything, even when it says it finds songs it just does nothing
+Que should scroll so that the currently playing song is at the top not the bottom
+Keep playing in background button does nothing?
+Frequent app crashes
+App still lacks proper theming, it's got the color scheme of Windows XP but it lacks the fonts or the Styles or any of the theming really ; Basically reorganize the more section, make sure each button actualy has feedback or a menu or a toggle, make sure everyhting actually works. To be clear the song analyzer is basically going to be taking random songs downloaded from youtube and looking them up in youtube and wikipedia to get all the right info, it needs to be massivly better and more thourough and actually work. To test it yourself download a bunch of youtube songs using yt-dlp and test them in teh analyzer and organizer beacuse both fail and just dont work. Keep going until you actually finish everyhting htis time (we are on version v0.7 now) and actually fucking sleep this time, I dont want my computer running for hours doing nothing again beacuse oyu couldnt be bothered to sleep. Make sure to append this message to the Todonotes like always and actualyl refernec and check back with it to be sure it works. Actually theme everyhting this time btw, obvously the actual funcitoanlity is hte most important but its alsop important that it looks good, hsa feedback and such. Test everyhting thouroughly, make sure htey work even with edge cases. I wnat something actually stable and usable not another broken prototype. Also the 1 in x next sucks, it takes up too much space, the percentage was better, but maybe we need to allow the percentage to go into the decimles instead of capping at >1% or something idk but actually fucking do your work this time and stop being so fucking lazy
+
 
 
