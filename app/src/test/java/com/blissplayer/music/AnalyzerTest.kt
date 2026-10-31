@@ -198,8 +198,7 @@ class AnalyzerTest {
     }
 
     @Test
-    fun tagCacheKeepsRealExtension() {
-        val mp3 = song("x").copy(filePath = "/Music/a.mp3", mimeType = "audio/mpeg")
+    fun tagCacheKeepsRealExtension() {        val mp3 = song("x").copy(filePath = "/Music/a.mp3", mimeType = "audio/mpeg")
         assertEquals("mp3", com.blissplayer.music.data.TagTools.extFor(mp3))
         val flac = song("x").copy(filePath = "/Music/a.FLAC", mimeType = null)
         assertEquals("flac", com.blissplayer.music.data.TagTools.extFor(flac))
@@ -215,5 +214,243 @@ class AnalyzerTest {
         assertNotNull("no network or API changed shape", hit)
         assertEquals("Never Gonna Give You Up", WikiLookup.canonicalTitle(hit!!.title))
         assertEquals("Rick Astley", WikiLookup.snippetArtist(hit.snippet))
+    }
+
+    // ---- Obscure-download patterns (Message 32 batch) ----
+
+    @Test
+    fun turkishDiacriticsSurvive() {
+        val c = SongAnalyzer.cleanLocal(
+            "Barış Manço - Dağlar Dağlar (1970) [CKqxAiBZack]", "Unknown artist", ""
+        )
+        assertEquals("Barış Manço", c.artist)
+        assertEquals("Dağlar Dağlar", c.title)
+    }
+
+    @Test
+    fun japaneseCornerBracketsSplit() {
+        val c = SongAnalyzer.cleanLocal(
+            "山下達郎「SPARKLE」Music Video (2023) [pqobRu9aR3M]", "Unknown artist", ""
+        )
+        assertEquals("山下達郎", c.artist)
+        assertEquals("SPARKLE", c.title)
+    }
+
+    @Test
+    fun threeDashNameOffersBothReadings() {
+        val v = SongAnalyzer.splitVariants(
+            "Akhiyan Udeek Dian - Ustad Nusrat Fateh Ali Khan - OSA Official HD Video [YSMIDIt2Ku4]"
+        )
+        assertTrue(v.isNotEmpty())
+        // One reading must put the performer second.
+        assertTrue(v.any { (a, t) -> a.contains("Nusrat") && t.contains("Akhiyan") })
+    }
+
+    @Test
+    fun honorificArtistStillMatches() {
+        assertTrue(SongAnalyzer.artistMatches("Ustad Nusrat Fateh Ali Khan", "Nusrat Fateh Ali Khan"))
+        assertTrue(SongAnalyzer.artistMatches("PSY", "Psy"))
+        assertFalse(SongAnalyzer.artistMatches("Adele", "Rick Astley"))
+    }
+
+    @Test
+    fun wikiFoldAdoptsHonorificPerformer() {
+        val hit = WikiLookup.Hit(
+            9, "Akhiyan Udeek Dian",
+            "\"Akhiyan Udeek Dian\" is a song by Pakistani singer Nusrat Fateh Ali Khan.",
+            emptyList()
+        )
+        val a = SongAnalyzer.applyWikiResult(
+            "Akhiyan Udeek Dian", "Ustad Nusrat Fateh Ali Khan", "Uncategorized", hit
+        )
+        assertEquals("Akhiyan Udeek Dian", a.title)
+        assertEquals("Nusrat Fateh Ali Khan", a.artist)
+        assertTrue(a.high)
+    }
+
+    @Test
+    fun compilationPrefixStripped() {
+        val (a, hit) = SongAnalyzer.stripLeadingJunk("80s Soviet Synthpop.  NRG (New Russian Group)")
+        assertEquals("NRG (New Russian Group)", a)
+        assertTrue(hit)
+        val (b, hit2) = SongAnalyzer.stripLeadingJunk("80s Soviet Synthpop  Альянс")
+        assertTrue(hit2)
+        assertFalse("decade leaked: $b", Regex("^\\d{2,4}s?\\b").containsMatchIn(b))
+    }
+
+    @Test
+    fun chiptuneParentheticalStripped() {
+        val c = SongAnalyzer.cleanLocal(
+            "iamjackg - Fair and Square (LSDJ Chiptune) [L1WRoUwGthQ]", "Unknown artist", ""
+        )
+        assertEquals("iamjackg", c.artist)
+        assertEquals("Fair and Square", c.title)
+    }
+
+    @Test
+    fun yearAndCountryTailsTrimmed() {
+        val c = SongAnalyzer.cleanLocal(
+            "Альянс - На заре (At dawn) USSR, 1987 [H6wl-EyhXl0]", "Unknown artist", ""
+        )
+        assertFalse("year leaked: ${c.title}", Regex("(19|20)\\d{2}").containsMatchIn(c.title))
+        assertFalse("country leaked: ${c.title}", "USSR" in c.title)
+        assertTrue("core lost: ${c.title}", "На заре" in c.title)
+    }
+
+    @Test
+    fun wallOfTextIsNeverConfident() {
+        val c = SongAnalyzer.cleanLocal(
+            "70s-80s Japanese CITY POP Chill Mix [Playlist, DJ Mix] [IYb_myRNHHk]",
+            "Unknown artist", ""
+        )
+        // Either no proposal fuel or an unsafe one: never a confident fix.
+        assertFalse(c.safe && c.title.length > 80)
+    }
+
+    @Test
+    fun noArtistNoCrashOnBareNames() {
+        val c1 = SongAnalyzer.cleanLocal("Sea Shanty Collection [Oi7ZlNjATLQ]", "Unknown artist", "")
+        assertEquals("Sea Shanty Collection", c1.title)
+        val c2 = SongAnalyzer.cleanLocal(
+            "Nusrat Fateh Ali Khan Live In Concert London 1993 [GhsvTxmbbnk]", "Unknown artist", ""
+        )
+        assertTrue(c2.title.isNotBlank())
+        assertTrue(SongAnalyzer.splitVariants("No dashes here").isEmpty())
+    }
+
+    @Test
+    fun liveObscureLookupGangnam() {
+        val hit = runBlocking { WikiLookup.lookup("GANGNAM STYLE", "PSY") }
+        assertNotNull("network down?", hit)
+        val a = SongAnalyzer.applyWikiResult("GANGNAM STYLE", "PSY", "Uncategorized", hit!!)
+        assertTrue("should be confident or review, got: ${a.reasons}", a.high || a.reasons.isNotEmpty())
+    }
+
+    // ---- Side-channel + m4a patterns (Message 33 batch) ----
+
+    @Test
+    fun vevoPremiereStripped() {
+        val c = SongAnalyzer.cleanLocal(
+            "Lady Gaga & Beyoncé - Telephone (VEVO Premiere) [r8GXHS4s9K4]", "Unknown artist", ""
+        )
+        assertEquals("Lady Gaga & Beyoncé", c.artist)
+        assertEquals("Telephone", c.title)
+        assertFalse(c.versioned)
+    }
+
+    @Test
+    fun nightcoreMixIsReviewOnly() {
+        val c = SongAnalyzer.cleanLocal(
+            "Old School Classic Nightcore Mix ｜ Complete 2011 to 2021 Hottest Songs [xfjnN3sXYhk]",
+            "Unknown artist", ""
+        )
+        assertFalse("compilation must not be confident", c.safe)
+        assertTrue(c.versioned)
+    }
+
+    @Test
+    fun bassBoostedKeepsVersionWords() {
+        val c = SongAnalyzer.cleanLocal(
+            "The Weeknd - The Hills (HXV Blurred Remix) (Bass Boosted) [SRtAjiCeit4]",
+            "Unknown artist", ""
+        )
+        assertEquals("The Weeknd", c.artist)
+        assertTrue("version kept: ${c.title}", "Bass Boosted" in c.title)
+        assertTrue(c.versioned)
+        assertFalse(c.safe)
+    }
+
+    @Test
+    fun slowedTutorialOffersReversedReading() {
+        val base = "You and I (Harleys in Hawaii) - Katy Perry - Slowed + Reverbed - Attractive Playlist"
+        val v = SongAnalyzer.splitVariants(base)
+        assertTrue(v.any { (a, t) -> a == "Katy Perry" && "Harleys in Hawaii" in t })
+        val c = SongAnalyzer.cleanLocal("$base [ymjICcIMEFk]", "Unknown artist", "")
+        assertTrue(c.versioned)
+        assertFalse(c.safe)
+    }
+
+    @Test
+    fun emojiStrippedScriptsKept() {
+        assertEquals("Mix Best Songs", SongAnalyzer.stripEmoji("Mix 🎧 Best ⚡ Songs"))
+        assertEquals("山下達郎「SPARKLE」", SongAnalyzer.stripEmoji("山下達郎「SPARKLE」"))
+        assertEquals("Barış Manço", SongAnalyzer.stripEmoji("Barış Manço"))
+        assertEquals("Альянс", SongAnalyzer.stripEmoji("Альянс"))
+    }
+
+    @Test
+    fun spedUpCompilationIsReviewOnly() {
+        val c = SongAnalyzer.cleanLocal(
+            "Speed up tiktok songs - 2022 , 2023 x - Ari.luvvvs [AwLy-cMrtzo]", "Unknown artist", ""
+        )
+        assertTrue(c.versioned)
+        assertFalse(c.safe)
+    }
+
+    @Test
+    fun eightDeeMixIsReviewOnly() {
+        val c = SongAnalyzer.cleanLocal(
+            "8D Music Mix Best 8D Audio Songs HIT SONGS MIX [ruGUHgzK13c]", "Unknown artist", ""
+        )
+        assertFalse("8D mix must not be confident", c.safe)
+    }
+
+    @Test
+    fun fullwidthSeparatorSplits() {
+        val c = SongAnalyzer.cleanLocal("Artist X ｜ Song Y [abc1234]", "Unknown artist", "")
+        assertEquals("Artist X", c.artist)
+        assertEquals("Song Y", c.title)
+    }
+
+    @Test
+    fun m4aKeepsExtension() {
+        val m4a = song("x").copy(filePath = "/Music/a song.m4a", mimeType = "audio/mp4")
+        assertEquals("m4a", com.blissplayer.music.data.TagTools.extFor(m4a))
+    }
+
+    private fun ytSong(file: String): com.blissplayer.music.model.Song =
+        song(file.substringAfterLast('/').substringBeforeLast('.'), "Unknown artist").copy(
+            mediaId = file.hashCode().toLong(),
+            filePath = "/storage/emulated/0/Music/$file"
+        )
+
+    @Test
+    fun sideChannelBatchStaysSaneOffline() = runBlocking {
+        val files = listOf(
+            "Lady Gaga & Beyoncé - Telephone (VEVO Premiere) [r8GXHS4s9K4].m4a",
+            "The Weeknd - The Hills (HXV Blurred Remix) (Bass Boosted) [SRtAjiCeit4].m4a",
+            "Old School Classic Nightcore Mix ｜ Complete 2011 to 2021 Hottest Songs [xfjnN3sXYhk].m4a",
+            "Speed up tiktok songs - 2022 , 2023 x - Ari.luvvvs [AwLy-cMrtzo].m4a",
+            "You and I (Harleys in Hawaii) - Katy Perry ｜ Slowed + Reverbed ｜ Attractive Playlist [ymjICcIMEFk].m4a",
+            "8D Music Mix Best 8D Audio Songs HIT SONGS MIX [ruGUHgzK13c].m4a"
+        )
+        val songs = files.map { ytSong(it) }
+        val out = SongAnalyzer.analyze(songs, { "Uncategorized" }, false) { _, _, _ -> }
+        // Every messy file gets a proposal, none confident garbage.
+        assertEquals(files.size, out.size)
+        val gaga = out.first { it.song.filePath!!.contains("Telephone") }
+        assertEquals("Telephone", gaga.newTitle)
+        assertEquals("Lady Gaga & Beyoncé", gaga.newArtist)
+        val hills = out.first { it.song.filePath!!.contains("The Hills") }
+        assertEquals("Check", hills.confidence)
+        assertTrue("version kept: ${hills.newTitle}", "Bass Boosted" in hills.newTitle)
+        assertTrue(hills.reason.contains("modified version"))
+        // Compilations and version edits are never confident.
+        for (p in out) {
+            if (p.newArtist.contains("Mix", true) || p.newTitle.contains("Mix", true) ||
+                p.reason.contains("modified version") || p.reason.contains("compilation")
+            ) {
+                assertEquals("Check", p.confidence)
+            }
+        }
+    }
+
+    @Test
+    fun liveVevoLookup() {
+        val hit = runBlocking { WikiLookup.lookup("Telephone", "Lady Gaga") }
+        assertNotNull("network down?", hit)
+        val a = SongAnalyzer.applyWikiResult("Telephone", "Lady Gaga", "Uncategorized", hit!!)
+        assertEquals("Telephone", a.title)
+        assertTrue(a.high)
     }
 }

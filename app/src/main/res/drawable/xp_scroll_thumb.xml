@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Classic ridged scrollbar thumb in XP blue-gray. -->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item>
+        <shape android:shape="rectangle">
+            <solid android:color="#003C74" />
+            <corners android:radius="1dp" />
+        </shape>
+    </item>
+    <item android:left="1dp" android:right="1dp" android:top="1dp" android:bottom="1dp">
+        <shape android:shape="rectangle">
+            <gradient android:angle="0"
+                android:startColor="#FFFFFF"
+                android:centerColor="#9DB9D5"
+                android:endColor="#6A8AA8" />
+            <corners android:radius="1dp" />
+        </shape>
+    </item>
+    <item android:gravity="center" android:width="2dp"
+        android:top="3dp" android:bottom="3dp">
+        <shape android:shape="rectangle">
+            <solid android:color="#003C74" />
+        </shape>
+    </item>
+</layer-list>

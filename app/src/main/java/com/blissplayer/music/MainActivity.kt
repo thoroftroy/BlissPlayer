@@ -58,6 +58,7 @@ import com.blissplayer.music.playback.PlayerService
 import com.blissplayer.music.playback.SafeVolumeGuard
 import com.blissplayer.music.playback.VolumeManager
 import com.blissplayer.music.ui.LibraryAdapter
+import com.blissplayer.music.ui.marquee
 import com.blissplayer.music.ui.PickAdapter
 import com.blissplayer.music.ui.PickRow
 import com.blissplayer.music.ui.Row
@@ -395,6 +396,10 @@ class MainActivity : AppCompatActivity() {
         miniPlayPause = findViewById(R.id.miniPlayPause)
         miniProgress = findViewById(R.id.miniProgress)
         miniTime = findViewById(R.id.miniTime)
+        // Cut-off song lines scroll sideways on their own loop.
+        miniTitle.marquee()
+        miniSub.marquee()
+        crumb.marquee()
 
         // Keep the layout clear of the status bar and gesture bar.
         val root = findViewById<LinearLayout>(R.id.root)
@@ -478,6 +483,8 @@ class MainActivity : AppCompatActivity() {
         npPlay = findViewById(R.id.npPlay)
         npLoop = findViewById(R.id.npLoop)
         npBar?.dark = dark
+        npTitle?.marquee()
+        npArtist?.marquee()
         findViewById<ImageButton>(R.id.npPlay)?.setOnClickListener { togglePlay() }
         findViewById<ImageButton>(R.id.npPrev)?.setOnClickListener { skipPrev() }
         findViewById<ImageButton>(R.id.npNext)?.setOnClickListener { skipNext() }
@@ -1611,8 +1618,8 @@ class MainActivity : AppCompatActivity() {
         val item = p?.currentMediaItem
         val song = item?.mediaId?.toLongOrNull()?.let { byId[it] }
         miniTitle.text = song?.title ?: "Nothing playing"
-        miniSub.text = song?.let { "${it.artist} | Boost ${(vol.boost * 100).roundToInt()} percent" }
-            ?: "Tap Play to start"
+        // Just the song here. Boost already shows right above in the status strip.
+        miniSub.text = song?.artist ?: "Tap Play to start"
         miniPlayPause.setImageResource(if (p?.isPlaying == true) R.drawable.ic_pause else R.drawable.ic_play)
         npTitle?.text = song?.title ?: "Nothing playing"
         npArtist?.text = song?.let { "${it.artist} | ${it.album}" } ?: ""
@@ -2460,11 +2467,13 @@ class MainActivity : AppCompatActivity() {
             text = song?.title ?: "Now playing"
             textSize = 18f
             xpBold()
+            marquee()
         }
         box.addView(nowTitleView)
         nowArtistView = TextView(this).apply {
             text = song?.let { "${it.artist} | ${it.album}" } ?: ""
             textSize = 13f
+            marquee()
         }
         box.addView(nowArtistView)
         nowSegBar = SegmentSeekBar(this).apply {
@@ -2518,8 +2527,8 @@ class MainActivity : AppCompatActivity() {
             background = xpBtnBg()
             setTextColor(iconColor())
             textSize = 10f
-            minimumHeight = dp(28)
-            setPadding(dp(4), dp(2), dp(4), dp(2))
+            minimumHeight = dp(24)
+            setPadding(dp(4), dp(1), dp(4), dp(1))
             setOnClickListener { cycleRepeat() }
         }
         shuffleBtn = Button(this).apply {
@@ -2527,24 +2536,12 @@ class MainActivity : AppCompatActivity() {
             setTextColor(iconColor())
             text = getString(R.string.shuffle_off)
             textSize = 10f
-            minimumHeight = dp(28)
-            setPadding(dp(4), dp(2), dp(4), dp(2))
+            minimumHeight = dp(24)
+            setPadding(dp(4), dp(1), dp(4), dp(1))
             setOnClickListener { shuffleQueue() }
         }
-        // Small segment shortcut lives next to loop/shuffle so it is one tap away.
-        val segBtn = Button(this).apply {
-            background = xpBtnBg()
-            setTextColor(iconColor())
-            text = "Segments"
-            textSize = 10f
-            minimumHeight = dp(28)
-            setPadding(dp(4), dp(2), dp(4), dp(2))
-            setOnClickListener {
-                currentSong()?.let { segmentDialog(it) } ?: toast("Play something first.")
-            }
-        }
         updateLoopBtn()
-        listOf(loopBtn!!, shuffleBtn!!, segBtn).forEach {
+        listOf(loopBtn!!, shuffleBtn!!).forEach {
             it.layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
                 marginEnd = dp(4)
             }
@@ -2576,9 +2573,9 @@ class MainActivity : AppCompatActivity() {
         }
         val saveBtn = Button(this).apply {
             text = "Save queue"
-            textSize = 11f
-            minimumHeight = dp(32)
-            setPadding(dp(6), dp(2), dp(6), dp(2))
+            textSize = 10f
+            minimumHeight = dp(26)
+            setPadding(dp(6), dp(1), dp(6), dp(1))
             background = xpBtnBg()
             setTextColor(iconColor())
             layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { marginEnd = dp(6) }
@@ -2592,9 +2589,9 @@ class MainActivity : AppCompatActivity() {
         }
         val segEditBtn = Button(this).apply {
             text = "Segments"
-            textSize = 11f
-            minimumHeight = dp(32)
-            setPadding(dp(6), dp(2), dp(6), dp(2))
+            textSize = 10f
+            minimumHeight = dp(26)
+            setPadding(dp(6), dp(1), dp(6), dp(1))
             background = xpBtnBg()
             setTextColor(iconColor())
             layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { marginEnd = dp(6) }
@@ -2609,9 +2606,9 @@ class MainActivity : AppCompatActivity() {
         }
         val closeBtn = Button(this).apply {
             text = "Close"
-            textSize = 11f
-            minimumHeight = dp(32)
-            setPadding(dp(6), dp(2), dp(6), dp(2))
+            textSize = 10f
+            minimumHeight = dp(26)
+            setPadding(dp(6), dp(1), dp(6), dp(1))
             background = xpBtnBg()
             setTextColor(iconColor())
             layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
@@ -2727,6 +2724,7 @@ class MainActivity : AppCompatActivity() {
                     textSize = 12f
                     isChecked = checked
                     setTextColor(iconColor())
+                    buttonTintList = android.content.res.ColorStateList.valueOf(0xFF0058E6.toInt())
                     setOnCheckedChangeListener { _, on ->
                         val cur = prefs.getStringSet("folders", emptySet())!!.toMutableSet()
                         if (on) {

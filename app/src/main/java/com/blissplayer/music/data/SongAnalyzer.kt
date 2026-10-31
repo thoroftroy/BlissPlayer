@@ -40,7 +40,9 @@ object SongAnalyzer {
         val title: String,
         val artist: String,
         val reasons: List<String>,
-        val safe: Boolean
+        val safe: Boolean,
+        /** Modified re-upload (slowed, nightcore, 8D...): never Wikipedia-adopted. */
+        val versioned: Boolean = false
     )
 
     private val noise = listOf(
@@ -55,6 +57,7 @@ object SongAnalyzer {
         Regex("\\(.*visuali[sz]er.*?\\)", RegexOption.IGNORE_CASE),
         Regex("\\[.*?visuali[sz]er.*?\\]", RegexOption.IGNORE_CASE),
         Regex("\\(.*music.*?video.*?\\)", RegexOption.IGNORE_CASE),
+        Regex("\\bmusic\\s+video\\b", RegexOption.IGNORE_CASE),
         Regex("\\bofficial\\s+(music\\s+)?video\\b", RegexOption.IGNORE_CASE),
         Regex("\\bofficial\\s+audio\\b", RegexOption.IGNORE_CASE),
         Regex("\\(\\s*(4k|8k|hd|hq)\\s*[^()]*\\)", RegexOption.IGNORE_CASE),
@@ -62,8 +65,67 @@ object SongAnalyzer {
         Regex("\\bm/?v\\b", RegexOption.IGNORE_CASE),
         Regex("\\bletras?\\b", RegexOption.IGNORE_CASE),
         Regex("\\(\\s*vevo\\s*\\)", RegexOption.IGNORE_CASE),
-        Regex("\\bvevo\\b", RegexOption.IGNORE_CASE)
+        Regex("\\(\\s*vevo\\b[^()]*\\)", RegexOption.IGNORE_CASE),
+        Regex("\\bvevo\\b", RegexOption.IGNORE_CASE),
+        // Bare years and label junk in brackets: (1970), (USSR, 1989).
+        Regex("\\(\\s*(19|20)\\d{2}\\s*\\)"),
+        Regex("\\(\\s*(?:ussr|usa|u\\.s\\.|uk|england)\\b[^()]*\\)", RegexOption.IGNORE_CASE),
+        // Descriptive parentheticals, never the song itself.
+        Regex("\\(\\s*[^()]*\\b(chiptune|8-?bit|lo-?fi|demo|instrumental|karaoke)\\b[^()]*\\)", RegexOption.IGNORE_CASE)
     )
+
+    /** Trailing ", COUNTRY, YEAR" / ", YEAR" tails from compilation titles. */
+    private val tailJunk = listOf(
+        Regex(",\\s*(19|20)\\d{2}\\s*$"),
+        Regex("\\s+\\b(ussr|usa|u\\.s\\.|uk|england|france|germany|russia|ukraine|japan|spain|italy|brazil)\\s*$", RegexOption.IGNORE_CASE)
+    )
+
+    /** Leading compilation/decade junk before the real "Artist - Title". */
+    private val compWords = Regex("^(playlist|mix|collection|jukebox|top\\s+\\d+|best\\s+of|hits)\\b[\\s\\-.]+", RegexOption.IGNORE_CASE)
+    private val genrePrefix = Regex("^(soviet\\s+synthpop|city\\s+pop|sea\\s+shant(?:y|ies)|qawwali|chiptune|synthpop)\\b[\\s.]+", RegexOption.IGNORE_CASE)
+    private val decadeLead = Regex("^\\d{2,4}s?[\\s.]+", RegexOption.IGNORE_CASE)
+
+    /** Strip leading junk from an artist candidate. Returns cleaned + whether it changed. */
+    fun stripLeadingJunk(artist: String): Pair<String, Boolean> {
+        var a = artist.trim()
+        var hit = false
+        // "80s Soviet Synthpop.  Real Artist": decade lead means the tail is the name.
+        if (decadeLead.containsMatchIn(a)) {
+            val afterDot = a.substringAfterLast(".  ", "")
+            a = if (afterDot.isNotBlank() && afterDot != a) afterDot.trim()
+            else a.replace(decadeLead, "").trim()
+            hit = true
+        }
+        var guard = 0
+        while (guard++ < 3) {
+            val c = compWords.find(a)
+            val g = genrePrefix.find(a)
+            val m = c ?: g ?: break
+            a = a.removeRange(m.range).trim()
+            hit = true
+        }
+        return a to hit
+    }
+
+    /** Modified re-upload markers: slowed, nightcore, 8D, bass boosted... */
+    private val versionWords = Regex(
+        "\\b(nightcore|daycore|slowed(\\s*\\+\\s*reverb|\\s+reverb)?|reverbed|sped\\s*up|8d(\\s+audio)?|bass\\s*boost(ed)?|tiktok(\\s+(version|remix|song))?|antichipmunk)\\b",
+        RegexOption.IGNORE_CASE
+    )
+
+    /** Channel/compilation giveaways, matched as whole words only. */
+    private val compFlags = Regex(
+        "\\b(mix|mixes|collection|radio|playlist|playlists|hits|nightcore|daycore|slowed|reverb|reverbed|sped|boosted|8d|karaoke|tiktok|jukebox|medley|compilation|live|concert|interview|interviews|beats|study|hour|top)\\b",
+        RegexOption.IGNORE_CASE
+    )
+
+    /** Strip emoji/pictographs but keep every real script (CJK, Cyrillic, accents). */
+    fun stripEmoji(s: String): String =
+        s.filter { c ->
+            !(c in '\u2600'..'\u27BF' || c in '\u2B00'..'\u2BFF' ||
+                c in '\u2190'..'\u21FF' || c in '\uFE00'..'\uFE0F' || c == '\u200D' ||
+                c.isHighSurrogate() || c.isLowSurrogate())
+        }.replace(Regex("\\s{2,}"), " ").trim()
 
     /** Bracket contents worth keeping: remix, live, acoustic, version, explicit. */
     private val keepBracket = setOf(
@@ -73,8 +135,7 @@ object SongAnalyzer {
     )
 
     /** A trailing [xxxx] is a video id when it looks like one: no spaces, id-shaped. */
-    fun stripVideoId(title: String): Pair<String, Boolean> {
-        var t = title
+    fun stripVideoId(title: String): Pair<String, Boolean> {        var t = title
         var stripped = false
         while (true) {
             val m = Regex("\\s*\\[([^\\[\\]]+)\\]\\s*$").find(t) ?: break
@@ -90,12 +151,62 @@ object SongAnalyzer {
         return t to stripped
     }
 
+    /** Trailing junk segments like label names after the real title. */
+    private val junkSeg = Regex(
+        "(official|live|music\\s+video|video|audio|hd|hq|4k|lyrics?|visualizer|vevo|full\\s+album|playlist|dj\\s+mix|jukebox|topic|mv|interviews?|slowed|reverb|reverbed|sped|boosted|nightcore|daycore|8d|tiktok|bass)",
+        RegexOption.IGNORE_CASE
+    )
+
+    /**
+     * Split readings of a dashed name. YouTube uploaders write both
+     * "Artist - Title" and "Title - Artist", so with 2+ parts both orders
+     * are offered and Wikipedia picks the winner.
+     */
+    fun splitVariants(base: String): List<Pair<String, String>> {
+        val parts = base.split(" - ").map { it.trim() }.filter { it.isNotEmpty() }
+        if (parts.size < 2) return emptyList()
+        val core = parts.toMutableList()
+        while (core.size > 2 && junkSeg.containsMatchIn(core.last())) core.removeLast()
+        if (core.size == 2) {
+            val fwd = core[0] to core[1]
+            // Same two parts, swapped: the uploader may lead with the title.
+            val rev = core[1] to core[0]
+            return if (fwd == rev) listOf(fwd) else listOf(fwd, rev)
+        }
+        return listOf(
+            core[0] to core.drop(1).joinToString(" - "),
+            core.drop(1).dropLast(1).joinToString(" - ").ifBlank { core[1] } to core[0]
+        )
+    }
+
+    /** True for placeholder artists that carry no information. */
+    fun isUnknownArtist(artist: String): Boolean =
+        artist.isBlank() || artist.equals("Unknown artist", true) ||
+            artist.equals("<unknown>", true)
+
+    /** Performer names match when equal or when one side adds words like "Ustad". */
+    fun artistMatches(local: String, wiki: String): Boolean {
+        val l = WikiLookup.norm(local)
+        val w = WikiLookup.norm(wiki)
+        if (l.isBlank() || w.isBlank()) return false
+        if (l == w) return true
+        val lw = l.split(' ')
+        val ww = w.split(' ')
+        if (lw.size < ww.size) {
+            return ww.takeLast(lw.size) == lw || ww.take(lw.size) == lw
+        }
+        return lw.takeLast(ww.size) == ww || lw.take(ww.size) == ww
+    }
+
     /**
      * Pure local cleanup of a messy YouTube-style name. Returns the cleaned
      * title/artist plus what changed. Never touches the network.
      */
     fun cleanLocal(rawTitle: String, rawArtist: String, fileBase: String): Cleaned {
+        // Fullwidth separators act like dashes everywhere below.
         var title = rawTitle.trim()
+            .replace("＂", "\"").replace("＂", "\"")
+            .replace("｜", " - ").replace("│", " - ")
         var artist = rawArtist.trim()
         val reasons = mutableListOf<String>()
         var safe = true
@@ -134,11 +245,40 @@ object SongAnalyzer {
         }
         artist = artist.removeSuffix(" - Topic").trim()
 
+        // Japanese corner brackets: artist「title」rest.
+        if (artistUnknown || artist.isBlank()) {
+            val m = Regex("^(.*?)「([^」]{1,60})」").find(title)
+            if (m != null) {
+                val pre = m.groupValues[1].trim { it == ' ' || it == '-' || it == '_' || it == '.' }
+                val inner = m.groupValues[2].trim()
+                val rest = title.removeRange(m.range).trim()
+                if (pre.isNotBlank() && inner.isNotBlank()) {
+                    artist = pre
+                    title = if (rest.isBlank()) inner else "$inner $rest"
+                    reasons.add("split artist-title brackets")
+                }
+            }
+        }
+
+        // Compilation/decade junk leading the artist name.
+        val (strippedArtist, hadJunk) = stripLeadingJunk(artist)
+        if (hadJunk && strippedArtist.isNotBlank()) {
+            artist = strippedArtist
+            reasons.add("dropped compilation prefix")
+        }
+
         var cleaned = title.replace("⧸", "/")
         noise.forEach { r -> cleaned = r.replace(cleaned, " ") }
         val (noId, hadId) = stripVideoId(cleaned)
         cleaned = noId
         if (hadId) reasons.add("dropped video id")
+        for (t in tailJunk) {
+            val cut = t.replace(cleaned, "").trim()
+            if (cut != cleaned && cut.isNotBlank()) {
+                cleaned = cut
+                if ("trimmed tail" !in reasons) reasons.add("trimmed tail")
+            }
+        }
         cleaned = cleaned.replace(Regex("\\s{2,}"), " ")
             .trim { it == ' ' || it == '-' || it == '_' || it == '.' || it == '(' || it == ')' }
             .replace(Regex("\\s+"), " ").trim()
@@ -149,7 +289,38 @@ object SongAnalyzer {
             title = cleaned
             if ("removed video tags" !in reasons) reasons.add("removed video tags")
         }
-        return Cleaned(title, artist, reasons, safe)
+        // A wall of text with no known artist is a compilation or a video,
+        // never a confident fix.
+        if (title.length > 80 && (artist.isBlank() || artist.equals("Unknown artist", true) ||
+                artist.equals("<unknown>", true))
+        ) {
+            safe = false
+        }
+        // Emoji never belong in tags.
+        val deEmojid = stripEmoji(title)
+        val deArtist = stripEmoji(artist)
+        if (deEmojid != title || deArtist != artist) {
+            title = deEmojid.ifBlank { title }
+            artist = deArtist
+            if ("dropped emoji" !in reasons) reasons.add("dropped emoji")
+        }
+        // Modified re-uploads keep their version words and never get a
+        // Wikipedia identity: the original song is not this file.
+        val versioned = versionWords.containsMatchIn(title) || versionWords.containsMatchIn(artist)
+        if (versioned) {
+            safe = false
+            if ("modified version" !in reasons) reasons.add("modified version")
+        }
+        // Channel and compilation names are not artists.
+        if (!isUnknownArtist(artist) && compFlags.containsMatchIn(artist)) {
+            safe = false
+            if ("channel or compilation name" !in reasons) reasons.add("channel or compilation name")
+        }
+        if (isUnknownArtist(artist) && compFlags.containsMatchIn(title)) {
+            safe = false
+            if ("compilation or stream" !in reasons) reasons.add("compilation or stream")
+        }
+        return Cleaned(title, artist, reasons, safe, versioned)
     }
 
     private val genreWords = listOf(
@@ -221,8 +392,9 @@ object SongAnalyzer {
         // Phase 1: local rules, fast.
         data class Mid(
             val song: Song, var title: String, var artist: String,
+            var altTitle: String, var altArtist: String,
             val reasons: MutableList<String>, var high: Boolean,
-            var wikiGenre: String?
+            var wikiGenre: String?, val versioned: Boolean
         )
         val mids = mutableListOf<Mid>()
         songs.forEachIndexed { i, s ->
@@ -230,7 +402,20 @@ object SongAnalyzer {
                 .ifBlank { s.title }
             val c = cleanLocal(s.title, s.artist, base)
             if (c.title.isNotBlank() && c.reasons.isNotEmpty()) {
-                mids.add(Mid(s, c.title, c.artist, c.reasons.toMutableList(), c.safe, null))
+                // Swapped reading for "Title - Artist" uploaders: tried online
+                // when the primary reading is not confident.
+                var altT = ""
+                var altA = ""
+                if (c.artist.isBlank() || isUnknownArtist(c.artist) || "split Artist - Title" in c.reasons) {
+                    val variants = splitVariants(base.ifBlank { s.title })
+                    val primary = c.artist to c.title
+                    val swapped = variants.firstOrNull { it != primary }
+                    if (swapped != null) {
+                        altT = swapped.second
+                        altA = swapped.first
+                    }
+                }
+                mids.add(Mid(s, c.title, c.artist, altT, altA, c.reasons.toMutableList(), c.safe, null, c.versioned))
             }
             if (i % 25 == 0) onProgress(i + 1, songs.size, "names")
             if (!coroutineContext.isActive) return@withContext emptyList<Proposal>()
@@ -250,21 +435,44 @@ object SongAnalyzer {
             }
             mids.forEachIndexed { i, m ->
                 if (!coroutineContext.isActive) return@withContext emptyList<Proposal>()
-                if (!offline) {
-                    val hit = try {
-                        WikiLookup.lookup(m.title, m.artist)
-                    } catch (e: Exception) {
-                        if (e is kotlinx.coroutines.CancellationException) throw e
-                        null
+                // Modified re-uploads keep their version words: Wikipedia
+                // would only find the unmodified original, so skip it.
+                if (!offline && !m.versioned) {
+                    val g0 = genreOf(m.song.mediaId)
+                    // Primary reading first; when it is not confident, try the
+                    // swapped order ("Title - Artist" uploaders) before giving up.
+                    val tried = mutableListOf<Pair<String, String>>(m.title to m.artist)
+                    m.altArtist.takeIf { it.isNotBlank() }?.let { aa ->
+                        m.altTitle.takeIf { it.isNotBlank() }?.let { at ->
+                            if (at to aa != tried[0]) tried.add(at to aa)
+                        }
                     }
-                    if (hit != null) {
-                        val g0 = genreOf(m.song.mediaId)
-                        val applied = applyWikiResult(m.title, m.artist, g0, hit)
-                        m.title = applied.title
-                        m.artist = applied.artist
-                        m.reasons.addAll(applied.reasons)
-                        m.high = m.high && applied.high
-                        m.wikiGenre = applied.genre
+                    var settled = false
+                    for ((tt, aa) in tried) {
+                        if (!coroutineContext.isActive) return@withContext emptyList<Proposal>()
+                        val hit = try {
+                            WikiLookup.lookup(tt, aa)
+                        } catch (e: Exception) {
+                            if (e is kotlinx.coroutines.CancellationException) throw e
+                            null
+                        } ?: continue
+                        val applied = applyWikiResult(tt, aa, g0, hit)
+                        if (applied.high) {
+                            m.title = applied.title
+                            m.artist = applied.artist
+                            m.reasons.addAll(applied.reasons)
+                            m.wikiGenre = applied.genre
+                            settled = true
+                            break
+                        } else if (!settled) {
+                            // Keep the first answer as the review candidate.
+                            m.title = applied.title
+                            m.artist = applied.artist
+                            m.reasons.addAll(applied.reasons)
+                            m.high = false
+                            m.wikiGenre = applied.genre
+                            settled = true
+                        }
                     }
                 }
                 onProgress(i + 1, mids.size, "lookup")
@@ -313,12 +521,10 @@ object SongAnalyzer {
         val canon = WikiLookup.canonicalTitle(hit.title)
         val titleMatch = canon.isNotBlank() &&
             WikiLookup.norm(canon) == WikiLookup.norm(localTitle)
-        val localUnknown = localArtist.isBlank() ||
-            localArtist.equals("Unknown artist", true) ||
-            localArtist.equals("<unknown>", true)
+        val localUnknown = isUnknownArtist(localArtist)
         val snippetArtist = WikiLookup.snippetArtist(hit.snippet)
-        val artistMatch = snippetArtist != null && !localUnknown &&
-            WikiLookup.norm(snippetArtist) == WikiLookup.norm(localArtist)
+        val artistMatch = snippetArtist != null &&
+            (localUnknown || artistMatches(localArtist, snippetArtist))
 
         if (titleMatch && (localUnknown || artistMatch)) {
             // Clear match: take the canonical title and the performer.
@@ -326,15 +532,15 @@ object SongAnalyzer {
             if (snippetArtist != null) artist = snippetArtist
             reasons.add("Wikipedia: ${hit.title}")
             high = true
-        } else if (titleMatch && snippetArtist != null && localUnknown) {
-            title = canon
-            artist = snippetArtist
-            reasons.add("Wikipedia: ${hit.title}")
-            high = true
-        } else if (titleMatch) {
+        } else if (titleMatch && snippetArtist != null) {
             // Title confirmed, performer differs: keep ours, flag review.
             title = canon
             reasons.add("Wikipedia title match (artist differs: $snippetArtist)")
+            high = false
+        } else if (titleMatch) {
+            // Title confirmed but no performer found: keep everything, review.
+            title = canon
+            reasons.add("Wikipedia title match")
             high = false
         } else {
             // Best guess only: suggest, do not trust.

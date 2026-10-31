@@ -60,11 +60,11 @@ class LibraryAdapter(
                 androidx.core.content.res.ResourcesCompat.getFont(ctx, R.font.ptsans_700)
             }.getOrNull() ?: Typeface.DEFAULT_BOLD
             setSingleLine(true)
+            marquee()
         }
         val sub = TextView(ctx).apply {
             textSize = 12f
-            setSingleLine(true)
-            ellipsize = android.text.TextUtils.TruncateAt.END
+            marquee()
         }
         texts.addView(title)
         texts.addView(sub)
@@ -128,13 +128,22 @@ class LibraryAdapter(
         h.sub.setTextColor(if (selected) 0xFFFFFFFF.toInt() else sc)
         h.dur.setTextColor(if (selected) 0xFFFFFFFF.toInt() else sc)
         h.more.setColorFilter(if (selected) 0xFFFFFFFF.toInt() else tc)
-        h.box.setBackgroundColor(
-            when {
-                selected -> if (dark) 0xFF1E4FA3.toInt() else 0xFF316AC5.toInt()
-                dark -> if (pos % 2 == 0) 0xFF23262B.toInt() else 0xFF2E333A.toInt()
-                else -> if (pos % 2 == 0) 0xFFECE9D8.toInt() else 0xFFFFFFFF.toInt()
-            }
-        )
+        h.box.setBackgroundResource(0)
+        // Playing row: XP blue with the classic dotted focus frame.
+        // Idle rows keep the striped face.
+        if (selected) {
+            h.box.setBackgroundResource(
+                if (dark) R.drawable.xp_row_selected_dark else R.drawable.xp_row_selected
+            )
+        } else {
+            h.box.setBackgroundColor(
+                if (dark) {
+                    if (pos % 2 == 0) 0xFF23262B.toInt() else 0xFF2E333A.toInt()
+                } else {
+                    if (pos % 2 == 0) 0xFFECE9D8.toInt() else 0xFFFFFFFF.toInt()
+                }
+            )
+        }
         h.box.setOnClickListener { onTap(row) }
         h.box.setOnLongClickListener { onMenu(row); true }
         h.more.setOnClickListener { onMenu(row) }
