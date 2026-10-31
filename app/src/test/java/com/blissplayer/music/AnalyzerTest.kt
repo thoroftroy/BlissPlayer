@@ -5,6 +5,7 @@ import com.blissplayer.music.data.WikiLookup
 import com.blissplayer.music.model.Song
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.*
+import org.junit.Ignore
 import org.junit.Test
 
 /**
@@ -14,12 +15,27 @@ import org.junit.Test
 class AnalyzerTest {
 
     private fun song(title: String, artist: String = "Unknown artist"): Song =
+        song(title, artist, title)
+
+    private fun song(title: String, artist: String, base: String): Song =
         Song(
-            mediaId = title.hashCode().toLong(), contentUri = "content://x/$title",
-            filePath = "/storage/emulated/0/Music/$title.mp3",
+            mediaId = (title + artist).hashCode().toLong(), contentUri = "content://x/$title",
+            filePath = "/storage/emulated/0/Music/$base.mp3",
             title = title, artist = artist, album = "Unknown album",
             durationMs = 200000, sizeBytes = 1000, mimeType = "audio/mpeg", modified = 1
         )
+
+    /** Live API calls can be throttled: retry a few times before failing. */
+    private fun liveLookup(title: String, artist: String): WikiLookup.Hit? {
+        repeat(3) {
+            try {
+                runBlocking { WikiLookup.lookup(title, artist) }?.let { return it }
+            } catch (e: Exception) {
+            }
+            Thread.sleep(3000)
+        }
+        return null
+    }
 
     @Test
     fun officialVideoAnd4kStripped() {
@@ -208,9 +224,10 @@ class AnalyzerTest {
         assertEquals("", com.blissplayer.music.data.TagTools.extFor(none))
     }
 
+    @Ignore("needs network")
     @Test
     fun liveWikipediaLookup() {        // Hits the real API. Loose asserts: proves reachability + shapes.
-        val hit = runBlocking { WikiLookup.lookup("Never Gonna Give You Up", "Rick Astley") }
+        val hit = liveLookup("Never Gonna Give You Up", "Rick Astley")
         assertNotNull("no network or API changed shape", hit)
         assertEquals("Never Gonna Give You Up", WikiLookup.canonicalTitle(hit!!.title))
         assertEquals("Rick Astley", WikiLookup.snippetArtist(hit.snippet))
@@ -318,9 +335,10 @@ class AnalyzerTest {
         assertTrue(SongAnalyzer.splitVariants("No dashes here").isEmpty())
     }
 
+    @Ignore("needs network")
     @Test
     fun liveObscureLookupGangnam() {
-        val hit = runBlocking { WikiLookup.lookup("GANGNAM STYLE", "PSY") }
+        val hit = liveLookup("GANGNAM STYLE", "PSY")
         assertNotNull("network down?", hit)
         val a = SongAnalyzer.applyWikiResult("GANGNAM STYLE", "PSY", "Uncategorized", hit!!)
         assertTrue("should be confident or review, got: ${a.reasons}", a.high || a.reasons.isNotEmpty())
@@ -425,12 +443,13 @@ class AnalyzerTest {
             "8D Music Mix Best 8D Audio Songs HIT SONGS MIX [ruGUHgzK13c].m4a"
         )
         val songs = files.map { ytSong(it) }
-        val out = SongAnalyzer.analyze(songs, { "Uncategorized" }, false) { _, _, _ -> }
+        val out = SongAnalyzer.analyze(songs, { "Uncategorized" }, { "Unknown album" }, false) { _, _, _ -> }
         // Every messy file gets a proposal, none confident garbage.
         assertEquals(files.size, out.size)
         val gaga = out.first { it.song.filePath!!.contains("Telephone") }
         assertEquals("Telephone", gaga.newTitle)
         assertEquals("Lady Gaga & Beyoncé", gaga.newArtist)
+        assertEquals("Lady Gaga & Beyoncé Best Hits", gaga.newAlbum)
         val hills = out.first { it.song.filePath!!.contains("The Hills") }
         assertEquals("Check", hills.confidence)
         assertTrue("version kept: ${hills.newTitle}", "Bass Boosted" in hills.newTitle)
@@ -445,12 +464,61 @@ class AnalyzerTest {
         }
     }
 
+    @Ignore("needs network")
     @Test
     fun liveVevoLookup() {
-        val hit = runBlocking { WikiLookup.lookup("Telephone", "Lady Gaga") }
+        val hit = liveLookup("Telephone", "Lady Gaga")
         assertNotNull("network down?", hit)
         val a = SongAnalyzer.applyWikiResult("Telephone", "Lady Gaga", "Uncategorized", hit!!)
         assertEquals("Telephone", a.title)
         assertTrue(a.high)
+    }
+
+    @Ignore("needs network")
+    @Test
+    fun liveAlbumLookup() {
+        // "Hello" page -> album "25"; NGGU page -> its album.
+        val hello = liveLookup("Hello", "Adele")
+        assertNotNull("network down?", hello)
+        assertEquals("25", WikiLookup.albumOf(hello!!.pageId))
+        val nggu = liveLookup("Never Gonna Give You Up", "Rick Astley")
+        assertNotNull("network down?", nggu)
+        assertEquals("Whenever You Need Somebody", WikiLookup.albumOf(nggu!!.pageId))
+        assertNull(WikiLookup.albumOf(-1))
+    }
+
+    @Test
+    fun albumParseShapes() {
+        assertEquals("25", WikiLookup.parseAlbum("| album = [[25 (Adele album)|25]]"))
+        assertEquals("Whenever You Need Somebody", WikiLookup.parseAlbum("|album=[[Whenever You Need Somebody]]"))
+        assertEquals("Abbey Road", WikiLookup.parseAlbum("| album = ''[[Abbey Road]]''"))
+        assertNull(WikiLookup.parseAlbum("no infobox here"))
+        assertNull(WikiLookup.parseAlbum("| album = "))
+    }
+
+    @Test
+    fun placeholderAlbumsDetected() {
+        assertTrue(SongAnalyzer.isPlaceholderAlbum("Music", "/storage/emulated/0/Music/song.mp3"))
+        assertTrue(SongAnalyzer.isPlaceholderAlbum("Unknown album", "/x/y.mp3"))
+        assertTrue(SongAnalyzer.isPlaceholderAlbum("", "/x/y.mp3"))
+        assertTrue(SongAnalyzer.isPlaceholderAlbum("<unknown>", "/x/y.mp3"))
+        assertFalse(SongAnalyzer.isPlaceholderAlbum("Golden Oldies Collection", "/m/Disc1/s.mp3"))
+        assertFalse(SongAnalyzer.isPlaceholderAlbum("25", "/m/Adele/s.mp3"))
+    }
+
+    @Test
+    fun artistsSplitForBrowsing() {
+        assertEquals(listOf("Lady Gaga", "Beyoncé"), SongAnalyzer.splitArtists("Lady Gaga & Beyoncé"))
+        assertEquals(listOf("Simon", "Garfunkel"), SongAnalyzer.splitArtists("Simon & Garfunkel"))
+        assertEquals(listOf("A", "B"), SongAnalyzer.splitArtists("A feat. B"))
+        assertEquals(listOf("A", "B"), SongAnalyzer.splitArtists("A ft B"))
+        assertEquals(listOf("A", "B"), SongAnalyzer.splitArtists("A with B"))
+        assertEquals(listOf("A", "B"), SongAnalyzer.splitArtists("A X B"))
+        assertEquals(listOf("A", "B"), SongAnalyzer.splitArtists("A vs B"))
+        assertEquals(listOf("Adele"), SongAnalyzer.splitArtists("Adele"))
+        assertEquals(listOf("R&B"), SongAnalyzer.splitArtists("R&B"))
+        assertEquals(listOf("Radiohead"), SongAnalyzer.splitArtists("Radiohead"))
+        assertEquals(listOf("Peter, Paul", "Mary"), SongAnalyzer.splitArtists("Peter, Paul and Mary"))
+        assertEquals(emptyList<String>(), SongAnalyzer.splitArtists("  "))
     }
 }

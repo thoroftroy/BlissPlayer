@@ -12,7 +12,7 @@ import android.database.sqlite.SQLiteOpenHelper
  *  playlists(id, name) + playlist_songs(playlist_id, media_id, position)
  *  boost(device_name PRIMARY KEY, gain_mult)  , per-device amp memory (car vs headphones)
  */
-class BlissDb(context: Context) : SQLiteOpenHelper(context, "bliss.db", null, 7) {
+class BlissDb(context: Context) : SQLiteOpenHelper(context, "bliss.db", null, 8) {
 
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL("CREATE TABLE gains(media_id INTEGER PRIMARY KEY, gain_mult REAL NOT NULL)")
@@ -27,6 +27,7 @@ class BlissDb(context: Context) : SQLiteOpenHelper(context, "bliss.db", null, 7)
         db.execSQL("CREATE TABLE segments(id INTEGER PRIMARY KEY AUTOINCREMENT, media_id INTEGER NOT NULL, start_ms INTEGER NOT NULL, end_ms INTEGER NOT NULL, label TEXT NOT NULL DEFAULT '')")
         db.execSQL("CREATE INDEX idx_seg ON segments(media_id)")
         db.execSQL("CREATE TABLE song_genre(media_id INTEGER PRIMARY KEY, genre TEXT NOT NULL)")
+        db.execSQL("CREATE TABLE song_album(media_id INTEGER PRIMARY KEY, album TEXT NOT NULL)")
     }
 
     override fun onUpgrade(db: SQLiteDatabase, old: Int, new: Int) {
@@ -45,6 +46,9 @@ class BlissDb(context: Context) : SQLiteOpenHelper(context, "bliss.db", null, 7)
         if (old < 7) {
             db.execSQL("ALTER TABLE playlists ADD COLUMN position INTEGER NOT NULL DEFAULT 0")
             db.execSQL("UPDATE playlists SET position = (SELECT COUNT(*) FROM playlists p2 WHERE p2.name < playlists.name OR (p2.name = playlists.name AND p2.id < playlists.id))")
+        }
+        if (old < 8) {
+            db.execSQL("CREATE TABLE IF NOT EXISTS song_album(media_id INTEGER PRIMARY KEY, album TEXT NOT NULL)")
         }
     }
 
@@ -283,6 +287,38 @@ class BlissDb(context: Context) : SQLiteOpenHelper(context, "bliss.db", null, 7)
     fun allGenres(): Map<Long, String> {
         val m = mutableMapOf<Long, String>()
         readableDatabase.rawQuery("SELECT media_id, genre FROM song_genre", null)?.use { c ->
+            while (c.moveToNext()) m[c.getLong(0)] = c.getString(1)
+        }
+        return m
+    }
+
+    // ---- display album per song. Folder names like "Music" are never real
+    // albums: an override here beats the file tag for browsing only.
+    fun getAlbum(mediaId: Long): String? {
+        readableDatabase.rawQuery("SELECT album FROM song_album WHERE media_id=?", arrayOf(mediaId.toString()))?.use { c ->
+            if (c.moveToFirst()) return c.getString(0)?.takeIf { it.isNotBlank() }
+        }
+        return null
+    }
+
+    fun setAlbum(mediaId: Long, album: String) {
+        if (album.isBlank()) {
+            writableDatabase.delete("song_album", "media_id=?", arrayOf(mediaId.toString()))
+            return
+        }
+        writableDatabase.insertWithOnConflict(
+            "song_album", null,
+            ContentValues().apply {
+                put("media_id", mediaId)
+                put("album", album)
+            },
+            SQLiteDatabase.CONFLICT_REPLACE
+        )
+    }
+
+    fun allAlbums(): Map<Long, String> {
+        val m = mutableMapOf<Long, String>()
+        readableDatabase.rawQuery("SELECT media_id, album FROM song_album", null)?.use { c ->
             while (c.moveToNext()) m[c.getLong(0)] = c.getString(1)
         }
         return m

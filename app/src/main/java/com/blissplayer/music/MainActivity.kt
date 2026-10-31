@@ -139,6 +139,24 @@ class MainActivity : AppCompatActivity() {
     )
     private var searchIndex: List<SearchIdx> = emptyList()
     private var genreMap: Map<Long, String> = emptyMap()
+    private var albumMap: Map<Long, String> = emptyMap()
+
+    /** Display album: override wins, file tag otherwise. */
+    private fun effAlbum(s: Song): String =
+        albumMap[s.mediaId] ?: s.album
+
+    /** Play counts credited to every artist name on the song. */
+    private fun creditArtists(counts: Map<Long, Int>): Map<String, Int> {
+        val m = mutableMapOf<String, Int>()
+        for (s in songs) {
+            val c = counts[s.mediaId] ?: 0
+            if (c <= 0) continue
+            for (a in com.blissplayer.music.data.SongAnalyzer.splitArtists(s.artist).ifEmpty { listOf("Unknown artist") }) {
+                m[a] = (m[a] ?: 0) + c
+            }
+        }
+        return m
+    }
     private var searchJob: Job? = null
     private var scanJob: Job? = null
 
@@ -306,7 +324,7 @@ class MainActivity : AppCompatActivity() {
         val p = svc?.player ?: return
         val song = p.currentMediaItem?.mediaId?.toLongOrNull()?.let { byId[it] }
         nowTitleView?.text = song?.title ?: "Now playing"
-        nowArtistView?.text = song?.let { "${it.artist} | ${it.album}" } ?: ""
+        nowArtistView?.text = song?.let { "${it.artist} | ${effAlbum(it)}" } ?: ""
         val segs = song?.let { db.segmentsFor(it.mediaId) } ?: emptyList()
         nowSegBar?.let { bar ->
             bar.segments = segs
@@ -722,6 +740,19 @@ class MainActivity : AppCompatActivity() {
                     fp == null || folders.any { f -> fp.startsWith(f) }
                 }
                 val genres = db.allGenres()
+                var albums = db.allAlbums()
+                // Folder names are not albums: seed an honest override once
+                // so "Music" never poses as a record.
+                var seeded = false
+                for (s in filtered) {
+                    if (!albums.containsKey(s.mediaId) &&
+                        com.blissplayer.music.data.SongAnalyzer.isPlaceholderAlbum(s.album, s.filePath)
+                    ) {
+                        db.setAlbum(s.mediaId, "Unknown album")
+                        seeded = true
+                    }
+                }
+                if (seeded) albums = db.allAlbums()
                 val counts = db.playCounts()
                 val totals = db.totalPlays()
                 launch(Dispatchers.Main) {
@@ -729,13 +760,14 @@ class MainActivity : AppCompatActivity() {
                     byId.clear()
                     filtered.forEach { byId[it.mediaId] = it }
                     genreMap = genres
+                    albumMap = albums
                     cachedCounts = counts
                     cachedTotals = totals
                     searchIndex = filtered.map { s ->
                         val g = genreMap[s.mediaId] ?: "Uncategorized"
                         val t = norm(s.title)
                         val a = norm(s.artist)
-                        val al = norm(s.album)
+                        val al = norm(albums[s.mediaId] ?: s.album)
                         val gn = norm(g)
                         val fn = norm(s.filePath?.substringAfterLast('/')?.substringBeforeLast('.') ?: "")
                         val all = "$t $a $al $gn $fn"
@@ -1142,18 +1174,23 @@ class MainActivity : AppCompatActivity() {
             prefs.getBoolean("show_chance", false)
         adapter.showStats = wantStats
         adapter.statLines = if (wantStats) statLines() else emptyMap()
+        adapter.albumLines = songs.associate { it.mediaId to effAlbum(it) }
         val sortKey = currentSortKey()
         when {
             drillArtist != null -> {
                 val a = drillArtist!!
-                val inA = applySort(songs.filter { it.artist == a }, sortKey)
+                // Multi-artist songs appear under every credited name.
+                val inA = applySort(
+                    songs.filter { a in com.blissplayer.music.data.SongAnalyzer.splitArtists(it.artist) },
+                    sortKey
+                )
                 crumb.text = "$a (${inA.size}) | tap here to go back"
                 adapter.submit(inA.map { Row.SongRow(it) })
             }
             drillAlbum != null -> {
-                // Albums come from embedded metadata, never from folder names.
+                // Albums come from tags and overrides, never from folder names.
                 val a = drillAlbum!!
-                val inA = songs.filter { it.album == a }.sortedBy { it.title.lowercase() }
+                val inA = songs.filter { effAlbum(it) == a }.sortedBy { it.title.lowercase() }
                 crumb.text = "$a (${inA.size}) | tap here to go back"
                 adapter.numbered = true
                 adapter.submit(inA.map { Row.SongRow(it) })
@@ -1175,8 +1212,16 @@ class MainActivity : AppCompatActivity() {
                 adapter.submit(applySort(songs, sortKey).map { Row.SongRow(it) })
             }
             tab == 1 -> {
-                // Artists alphabetized by default; count and play sorts available.
-                val groups = songs.groupBy { it.artist }
+                // Artists alphabetized by default; multi-artist songs list
+                // under every credited name.
+                val groups = mutableMapOf<String, MutableList<Song>>()
+                for (s in songs) {
+                    val names = com.blissplayer.music.data.SongAnalyzer.splitArtists(s.artist)
+                        .ifEmpty { listOf("Unknown artist") }
+                    for (a in names) {
+                        groups.getOrPut(a) { mutableListOf() }.add(s)
+                    }
+                }
                 val totals = cachedTotals
                 fun artistPlays(name: String): Int = groups[name]?.sumOf { totals[it.mediaId] ?: 0 } ?: 0
                 val sortedKeys = when (sortKey) {
@@ -1192,7 +1237,7 @@ class MainActivity : AppCompatActivity() {
                 adapter.submit(sortedKeys.map { k -> Row.Group("ar:$k", k, "${groups[k]?.size ?: 0} songs") })
             }
             tab == 2 -> {
-                val groups = songs.groupBy { it.album }
+                val groups = songs.groupBy { effAlbum(it) }
                 val sortedKeys = when (sortKey) {
                     "ZA" -> groups.keys.sortedWith(String.CASE_INSENSITIVE_ORDER).reversed()
                     "Artist" -> groups.keys.sortedBy { (groups[it]?.firstOrNull()?.artist ?: "").lowercase() }
@@ -1261,18 +1306,15 @@ class MainActivity : AppCompatActivity() {
         val counts = cachedCounts
         val totals = cachedTotals
         val artistCounts: Map<String, Int> = if (smart && artistPenalty) {
-            val m = mutableMapOf<String, Int>()
-            for (s in songs) {
-                val c = counts[s.mediaId] ?: 0
-                if (c > 0) m[s.artist] = (m[s.artist] ?: 0) + c
-            }
-            m
+            creditArtists(counts)
         } else emptyMap()
         fun wOf(id: Long, artist: String): Double {
             var w = if (!smart) 1.0
             else 1.0 / Math.pow((1 + (counts[id] ?: 0)).toDouble(), strength)
             if (smart && artistPenalty) {
-                val ac = artistCounts[artist] ?: 0
+                val ac = com.blissplayer.music.data.SongAnalyzer.splitArtists(artist)
+                    .ifEmpty { listOf("Unknown artist") }
+                    .sumOf { artistCounts[it] ?: 0 }
                 if (ac > 0) w /= Math.pow((1 + ac).toDouble(), strength * 0.5)
             }
             return w.coerceAtLeast(1e-12)
@@ -1493,17 +1535,14 @@ class MainActivity : AppCompatActivity() {
         val counts = cachedCounts
         val artistPenalty = prefs.getBoolean("shuffle_artist", false)
         val artistCounts: Map<String, Int> = if (artistPenalty) {
-            val m = mutableMapOf<String, Int>()
-            for (s in songs) {
-                val c = counts[s.mediaId] ?: 0
-                if (c > 0) m[s.artist] = (m[s.artist] ?: 0) + c
-            }
-            m
+            creditArtists(counts)
         } else emptyMap()
         val weights = list.associate { s ->
             var w = 1.0 / Math.pow((1 + (counts[s.mediaId] ?: 0)).toDouble(), strength)
             if (artistPenalty) {
-                val ac = artistCounts[s.artist] ?: 0
+                val ac = com.blissplayer.music.data.SongAnalyzer.splitArtists(s.artist)
+                    .ifEmpty { listOf("Unknown artist") }
+                    .sumOf { artistCounts[it] ?: 0 }
                 if (ac > 0) w /= Math.pow((1 + ac).toDouble(), strength * 0.5)
             }
             s.mediaId to w.coerceAtLeast(1e-9)
@@ -1622,7 +1661,7 @@ class MainActivity : AppCompatActivity() {
         miniSub.text = song?.artist ?: "Tap Play to start"
         miniPlayPause.setImageResource(if (p?.isPlaying == true) R.drawable.ic_pause else R.drawable.ic_play)
         npTitle?.text = song?.title ?: "Nothing playing"
-        npArtist?.text = song?.let { "${it.artist} | ${it.album}" } ?: ""
+        npArtist?.text = song?.let { "${it.artist} | ${effAlbum(it)}" } ?: ""
         npPlay?.setImageResource(if (p?.isPlaying == true) R.drawable.ic_pause else R.drawable.ic_play)
         adapter.highlightId = song?.mediaId
         if (tab != 5) adapter.notifyDataSetChanged()
@@ -1719,7 +1758,7 @@ class MainActivity : AppCompatActivity() {
                 6 -> AlertDialog.Builder(this)
                     .setCustomTitle(xpTitle(song.title))
                     .setMessage(
-                        "Artist: ${song.artist}\nAlbum: ${song.album}\nGenre: ${db.getGenre(song.mediaId)}\n" +
+                        "Artist: ${song.artist}\nAlbum: ${effAlbum(song)}\nGenre: ${db.getGenre(song.mediaId)}\n" +
                             "Length: ${fmt(song.durationMs)}\nSize: ${song.sizeBytes / 1024} KB\n" +
                             (song.filePath ?: "")
                     )
@@ -1745,7 +1784,7 @@ class MainActivity : AppCompatActivity() {
         }
         val eTitle = field("Title", fileTags[0] ?: song.title)
         val eArtist = field("Artist", fileTags[1] ?: song.artist)
-        val eAlbum = field("Album", fileTags[2] ?: song.album)
+        val eAlbum = field("Album", fileTags[2] ?: effAlbum(song))
         val eGenre = field("Genre", fileTags[3] ?: db.getGenre(song.mediaId))
         box.addView(TextView(this).apply {
             text = "Whatever you type here is what BlissPlayer and most other players will show. Empty genre means Uncategorized."
@@ -1766,6 +1805,7 @@ class MainActivity : AppCompatActivity() {
                     when (val r = TagTools.writeTags(this@MainActivity, song, edit)) {
                         is TagTools.WriteResult.Ok -> {
                             db.setGenre(song.mediaId, edit.genre ?: "Uncategorized")
+                            db.setAlbum(song.mediaId, edit.album.ifBlank { song.album })
                             toast("Details saved.")
                             scan()
                         }
@@ -1786,6 +1826,7 @@ class MainActivity : AppCompatActivity() {
             when (val r = TagTools.writeTags(this@MainActivity, song, edit)) {
                 is TagTools.WriteResult.Ok -> {
                     db.setGenre(song.mediaId, edit.genre ?: "Uncategorized")
+                    db.setAlbum(song.mediaId, edit.album.ifBlank { song.album })
                     toast("Details saved.")
                     scan()
                 }
@@ -2214,17 +2255,18 @@ class MainActivity : AppCompatActivity() {
 
         fun buildRows(q: String): List<PickRow> {
             val out = mutableListOf<PickRow>()
-            val artists = songs.map { it.artist }.distinct()
+            val artists = songs.flatMap { com.blissplayer.music.data.SongAnalyzer.splitArtists(it.artist) }
+                .distinct()
                 .sortedWith(String.CASE_INSENSITIVE_ORDER)
                 .filter { q.isBlank() || it.contains(q, ignoreCase = true) }
             if (artists.isNotEmpty()) {
                 out.add(PickRow.Header("Artists"))
                 artists.forEach { a ->
-                    val n = songs.count { it.artist == a }
+                    val n = songs.count { a in com.blissplayer.music.data.SongAnalyzer.splitArtists(it.artist) }
                     out.add(PickRow.Item("a:$a", a, "$n songs"))
                 }
             }
-            val albums = songs.map { it.album }.distinct()
+            val albums = songs.map { effAlbum(it) }.distinct()
                 .sortedWith(String.CASE_INSENSITIVE_ORDER)
                 .filter { q.isBlank() || it.contains(q, ignoreCase = true) }
             if (albums.isNotEmpty()) {
@@ -2264,8 +2306,8 @@ class MainActivity : AppCompatActivity() {
                 val ids = mutableListOf<Long>()
                 checked.forEach { key ->
                     when {
-                        key.startsWith("a:") -> ids.addAll(songs.filter { it.artist == key.removePrefix("a:") }.map { it.mediaId })
-                        key.startsWith("b:") -> ids.addAll(songs.filter { it.album == key.removePrefix("b:") }.map { it.mediaId })
+                        key.startsWith("a:") -> ids.addAll(songs.filter { key.removePrefix("a:") in com.blissplayer.music.data.SongAnalyzer.splitArtists(it.artist) }.map { it.mediaId })
+                        key.startsWith("b:") -> ids.addAll(songs.filter { effAlbum(it) == key.removePrefix("b:") }.map { it.mediaId })
                         key.startsWith("s:") -> key.removePrefix("s:").toLongOrNull()?.let { ids.add(it) }
                     }
                 }
@@ -2349,7 +2391,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun artistMenu(artist: String) {
-        val inA = songs.filter { it.artist == artist }
+        val inA = songs.filter { artist in com.blissplayer.music.data.SongAnalyzer.splitArtists(it.artist) }
         xpMenuDialog(artist, listOf("Play all", "Add all to queue", "Add all to playlist")) { which ->
                 when (which) {
                     0 -> playQueue(inA, 0)
@@ -2366,7 +2408,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun albumMenu(album: String) {
-        val inA = songs.filter { it.album == album }
+        val inA = songs.filter { effAlbum(it) == album }
         xpMenuDialog(album, listOf("Play album", "Add all to queue", "Add all to playlist")) { which ->
                 when (which) {
                     0 -> playQueue(inA, 0)
@@ -2526,7 +2568,7 @@ class MainActivity : AppCompatActivity() {
         loopBtn = Button(this).apply {
             background = xpBtnBg()
             setTextColor(iconColor())
-            textSize = 10f
+            textSize = 12f
             minimumHeight = dp(24)
             setPadding(dp(4), dp(1), dp(4), dp(1))
             setOnClickListener { cycleRepeat() }
@@ -2535,7 +2577,7 @@ class MainActivity : AppCompatActivity() {
             background = xpBtnBg()
             setTextColor(iconColor())
             text = getString(R.string.shuffle_off)
-            textSize = 10f
+            textSize = 12f
             minimumHeight = dp(24)
             setPadding(dp(4), dp(1), dp(4), dp(1))
             setOnClickListener { shuffleQueue() }
@@ -2573,8 +2615,8 @@ class MainActivity : AppCompatActivity() {
         }
         val saveBtn = Button(this).apply {
             text = "Save queue"
-            textSize = 10f
-            minimumHeight = dp(26)
+            textSize = 11f
+            minimumHeight = dp(24)
             setPadding(dp(6), dp(1), dp(6), dp(1))
             background = xpBtnBg()
             setTextColor(iconColor())
@@ -2589,8 +2631,8 @@ class MainActivity : AppCompatActivity() {
         }
         val segEditBtn = Button(this).apply {
             text = "Segments"
-            textSize = 10f
-            minimumHeight = dp(26)
+            textSize = 11f
+            minimumHeight = dp(24)
             setPadding(dp(6), dp(1), dp(6), dp(1))
             background = xpBtnBg()
             setTextColor(iconColor())
@@ -2606,8 +2648,8 @@ class MainActivity : AppCompatActivity() {
         }
         val closeBtn = Button(this).apply {
             text = "Close"
-            textSize = 10f
-            minimumHeight = dp(26)
+            textSize = 11f
+            minimumHeight = dp(24)
             setPadding(dp(6), dp(1), dp(6), dp(1))
             background = xpBtnBg()
             setTextColor(iconColor())
@@ -2655,9 +2697,12 @@ class MainActivity : AppCompatActivity() {
     private fun refreshQueueList() {
         val p = svc?.player
         val cur = p?.currentMediaItem?.mediaId?.toLongOrNull()
+        val albums = songs.associate { it.mediaId to effAlbum(it) }
         queueAdapter?.highlightId = cur
+        queueAdapter?.albumLines = albums
         queueAdapter?.submit(queue.map { Row.SongRow(it) })
         landQueueAdapter?.highlightId = cur
+        landQueueAdapter?.albumLines = albums
         landQueueAdapter?.submit(queue.map { Row.SongRow(it) })
         scrollQueueToCurrent()
     }
@@ -3133,8 +3178,9 @@ class MainActivity : AppCompatActivity() {
             } ?: "None yet"
             val byArtist = mutableMapOf<String, Int>()
             totals.forEach { (id, c) ->
-                val a = byId[id]?.artist ?: return@forEach
-                byArtist[a] = (byArtist[a] ?: 0) + c
+                val names = byId[id]?.let { com.blissplayer.music.data.SongAnalyzer.splitArtists(it.artist) }
+                    .orEmpty().ifEmpty { listOf("Unknown artist") }
+                names.forEach { a -> byArtist[a] = (byArtist[a] ?: 0) + c }
             }
             val topArtist = byArtist.maxByOrNull { it.value }
             val topArtistTxt = topArtist?.let { "${it.key} (${it.value} plays)" } ?: "None yet"
@@ -3485,7 +3531,9 @@ class MainActivity : AppCompatActivity() {
             try {
                 val proposals = try {
                     com.blissplayer.music.data.SongAnalyzer.analyze(
-                        inScope, { db.getGenre(it) }, online,
+                        inScope, { db.getGenre(it) },
+                        { id -> db.getAlbum(id) ?: byId[id]?.album ?: "Unknown album" },
+                        online,
                         onProgress = { done, total, phase ->
                             bar.max = total.coerceAtLeast(1)
                             bar.progress = done
@@ -3609,6 +3657,7 @@ class MainActivity : AppCompatActivity() {
                     when (val r = com.blissplayer.music.data.TagTools.writeTags(this@MainActivity, p.song, edit)) {
                         is com.blissplayer.music.data.TagTools.WriteResult.Ok -> {
                             db.setGenre(p.song.mediaId, p.newGenre)
+                            db.setAlbum(p.song.mediaId, p.newAlbum)
                             done++
                         }
                         is com.blissplayer.music.data.TagTools.WriteResult.NeedsPermission -> {

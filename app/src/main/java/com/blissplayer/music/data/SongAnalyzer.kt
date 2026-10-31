@@ -184,6 +184,39 @@ object SongAnalyzer {
         artist.isBlank() || artist.equals("Unknown artist", true) ||
             artist.equals("<unknown>", true)
 
+    /**
+     * True when the album is not a real album: blank, an unknown marker, or
+     * just the folder the file sits in ("Music" is a folder, not an album).
+     */
+    fun isPlaceholderAlbum(album: String, filePath: String?): Boolean {
+        val a = album.trim()
+        if (a.isBlank() || a.equals("Unknown album", true) || a.equals("<unknown>", true)) return true
+        val parent = filePath?.substringBeforeLast('/', "")?.substringAfterLast('/') ?: ""
+        return parent.isNotBlank() && a.equals(parent, ignoreCase = true)
+    }
+
+    /** Label words: a "performer" that is really a record company. */
+    private val labelWords = Regex(
+        "\\b(records?|recordings?|music|entertainment|worldwide|official|vevo|tv|media|network|studios?|films?|presents?|publishing)\\b",
+        RegexOption.IGNORE_CASE
+    )
+
+    /** Compare names ignoring case, spaces, dots and underscores. */
+    fun normNoSpace(s: String): String =
+        WikiLookup.norm(s).replace(" ", "").replace(".", "").replace("_", "")
+
+    /**
+     * One song, several artists: "A & B" browses under both A and B.
+     * Commas never split ("Earth, Wind & Fire" stays whole).
+     */    fun splitArtists(displayArtist: String): List<String> {
+        val s = displayArtist.trim()
+        if (s.isBlank()) return emptyList()
+        val parts = s.split(
+            Regex("\\s+(?:&|and|feat\\.?|ft\\.?|featuring|with|x|vs\\.?|versus)\\s+|\\s*;\\s*", RegexOption.IGNORE_CASE)
+        ).map { it.trim() }.filter { it.isNotEmpty() }
+        return (if (parts.isEmpty()) listOf(s) else parts).distinct()
+    }
+
     /** Performer names match when equal or when one side adds words like "Ustad". */
     fun artistMatches(local: String, wiki: String): Boolean {
         val l = WikiLookup.norm(local)
@@ -243,7 +276,29 @@ object SongAnalyzer {
                 reasons.add("split filename Artist - Title")
             }
         }
-        artist = artist.removeSuffix(" - Topic").trim()
+        val topicCut = Regex("\\s+-\\s+topic\\s*$", RegexOption.IGNORE_CASE)
+        val noTopic = topicCut.replace(artist, "").trim()
+        if (noTopic != artist.trim() && noTopic.isNotBlank()) {
+            artist = noTopic
+            if ("dropped Topic suffix" !in reasons) reasons.add("dropped Topic suffix")
+        }
+
+        // Track numbers and quote dots uploaders prepend: "01 - X", "1. X", "...X".
+        val trackNo = Regex("^\\d{1,3}\\s*[.\\-]\\s+").find(title)
+        if (trackNo != null && title.removeRange(trackNo.range).isNotBlank()) {
+            title = title.removeRange(trackNo.range).trim()
+            if ("dropped track number" !in reasons) reasons.add("dropped track number")
+        }
+        title = Regex("^(?:…+|(?:\\.\\s*){2,})").replace(title, "").trim()
+        // Underscores standing in for spaces and separators.
+        if ("_" in title) {
+            val us = title.replace(Regex("\\s_+\\s+"), " - ").trim('_', ' ', '-')
+                .let { if (" " !in it) it.replace('_', ' ') else it }
+            if (us != title && us.isNotBlank()) {
+                title = us
+                if ("underscores to separators" !in reasons) reasons.add("underscores to separators")
+            }
+        }
 
         // Japanese corner brackets: artist「title」rest.
         if (artistUnknown || artist.isBlank()) {
@@ -256,6 +311,56 @@ object SongAnalyzer {
                     artist = pre
                     title = if (rest.isBlank()) inner else "$inner $rest"
                     reasons.add("split artist-title brackets")
+                }
+            }
+        }
+
+        // Channel-name artists: "AkonVEVO" -> "Akon", "tenaciousDVEVO" -> "Tenacious D".
+        val vevoCut = Regex("(\\s*-\\s*)?\\bvevo\\b\\s*$", RegexOption.IGNORE_CASE)
+        val deVevo = vevoCut.replace(artist, "").trim()
+        if (deVevo != artist && deVevo.isNotBlank()) {
+            var fixed = deVevo.replace(Regex("([a-z])([A-Z])"), "$1 $2").trim()
+            if (fixed.isNotEmpty() && fixed[0].isLowerCase()) {
+                fixed = fixed.replaceFirstChar { it.uppercase() }
+            }
+            if (fixed.isNotBlank()) {
+                if (fixed != deVevo) {
+                    // Case was reshaped: plausible, but let review confirm.
+                    artist = fixed
+                    safe = false
+                    if ("cleaned channel name" !in reasons) reasons.add("cleaned channel name")
+                } else {
+                    artist = fixed
+                    if ("dropped VEVO suffix" !in reasons) reasons.add("dropped VEVO suffix")
+                }
+            }
+        }
+
+        // Label-as-artist: the real performer hides in a dashed title.
+        // Single-token uploaders get the same treatment as a review reading.
+        if (" - " in title) {
+            val labelHit = labelWords.containsMatchIn(artist)
+            val singleToken = !isUnknownArtist(artist) && " " !in artist.trim() && "-" !in artist
+            if (labelHit) {
+                val parts = title.split(" - ", limit = 2)
+                if (parts[0].isNotBlank() && parts[1].isNotBlank() &&
+                    WikiLookup.norm(parts[0]) != WikiLookup.norm(artist)
+                ) {
+                    artist = parts[0].trim()
+                    title = parts[1].trim()
+                    if ("moved artist from title" !in reasons) reasons.add("moved artist from title")
+                }
+            }
+        }
+
+        // "Akon - Lonely" with artist Akon: the prefix is duplication, drop it.
+        if (" - " in title && !isUnknownArtist(artist)) {
+            val head = title.substringBefore(" - ").trim()
+            if (head.isNotBlank() && normNoSpace(head) == normNoSpace(artist)) {
+                val rest = title.substringAfter(" - ").trim()
+                if (rest.isNotBlank()) {
+                    title = rest
+                    if ("removed artist prefix" !in reasons) reasons.add("removed artist prefix")
                 }
             }
         }
@@ -386,6 +491,7 @@ object SongAnalyzer {
     suspend fun analyze(
         songs: List<Song>,
         genreOf: (Long) -> String,
+        albumOf: (Long) -> String,
         online: Boolean,
         onProgress: (done: Int, total: Int, phase: String) -> Unit
     ): List<Proposal> = withContext(Dispatchers.Default) {
@@ -394,7 +500,7 @@ object SongAnalyzer {
             val song: Song, var title: String, var artist: String,
             var altTitle: String, var altArtist: String,
             val reasons: MutableList<String>, var high: Boolean,
-            var wikiGenre: String?, val versioned: Boolean
+            var wikiGenre: String?, var wikiAlbum: String?, val versioned: Boolean
         )
         val mids = mutableListOf<Mid>()
         songs.forEachIndexed { i, s ->
@@ -415,7 +521,7 @@ object SongAnalyzer {
                         altA = swapped.first
                     }
                 }
-                mids.add(Mid(s, c.title, c.artist, altT, altA, c.reasons.toMutableList(), c.safe, null, c.versioned))
+                mids.add(Mid(s, c.title, c.artist, altT, altA, c.reasons.toMutableList(), c.safe, null, null, c.versioned))
             }
             if (i % 25 == 0) onProgress(i + 1, songs.size, "names")
             if (!coroutineContext.isActive) return@withContext emptyList<Proposal>()
@@ -462,6 +568,14 @@ object SongAnalyzer {
                             m.artist = applied.artist
                             m.reasons.addAll(applied.reasons)
                             m.wikiGenre = applied.genre
+                            // Real album from the song page, when it has one.
+                            m.wikiAlbum = try {
+                                WikiLookup.albumOf(hit.pageId)
+                            } catch (e: Exception) {
+                                if (e is kotlinx.coroutines.CancellationException) throw e
+                                null
+                            }
+                            if (m.wikiAlbum != null) m.reasons.add("Wikipedia album")
                             settled = true
                             break
                         } else if (!settled) {
@@ -489,10 +603,27 @@ object SongAnalyzer {
                 m.reasons.add("keyword genre")
                 m.high = false
             }
+            // Album: real one from Wikipedia, else "<Artist> Best Hits" so
+            // artists never lump together under a folder name like "Music".
+            val effAlbum0 = albumOf(m.song.mediaId)
+            var album = m.wikiAlbum
+            if (album == null && isPlaceholderAlbum(effAlbum0, m.song.filePath)) {
+                val who = m.artist.takeIf { !isUnknownArtist(it) }
+                    ?: m.song.artist.takeIf { !isUnknownArtist(it) }
+                if (who != null) {
+                    album = "$who Best Hits"
+                    m.reasons.add("Best Hits album")
+                } else {
+                    album = "Unknown album"
+                }
+            }
             if (m.title.isBlank()) return@mapNotNull null
+            if (m.wikiAlbum != null && "Wikipedia album" !in m.reasons) {
+                m.reasons.add("Wikipedia album")
+            }
             Proposal(
                 m.song, m.title, m.artist.ifBlank { m.song.artist },
-                m.song.album, genre.ifBlank { "Uncategorized" },
+                album ?: effAlbum0, genre.ifBlank { "Uncategorized" },
                 if (m.high) "High" else "Check", m.reasons.joinToString(", ")
             )
         }.sortedWith(compareBy({ it.confidence != "High" }, { it.song.title.lowercase() }))

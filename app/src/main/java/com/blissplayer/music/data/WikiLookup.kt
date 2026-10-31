@@ -39,7 +39,60 @@ object WikiLookup {
         }
     }
 
-    suspend fun lookup(title: String, artist: String): Hit? {        val q = listOf(title, artist).filter { it.isNotBlank() }.joinToString(" ")
+    /**
+     * The album a song belongs to, from the song page infobox (section 0).
+     * Returns null when the page has no readable album field.
+     */
+    fun albumOf(pageId: Long): String? {
+        return try {
+            val url = "$API?action=query&prop=revisions&rvprop=content&rvslots=main" +
+                "&rvsection=0&pageids=$pageId&format=json"
+            val body = get(url, 9000) ?: return null
+            parseAlbum(body)
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    /** First "| album = ..." line in wikitext, cleaned of links and markup. */
+    fun parseAlbum(body: String): String? {
+        // API responses wrap section-0 wikitext in a JSON string; unwrap it.
+        // Bare wikitext (tests) is used as-is.
+        val text = extractContent(body) ?: body
+        val m = Regex("(?im)^\\s*\\|\\s*album\\s*=\\s*(.+)$").find(text) ?: return null
+        var v = m.groupValues[1].trim()
+        if (v.isBlank()) return null
+        // Italic markup and HTML comments out.
+        v = v.replace("''", "").trim()
+        v = Regex("<!--.*?-->").replace(v, "").trim()
+        // [[Target (disambiguation)|Display]] -> Display; [[Target]] -> Target.
+        val link = Regex("\\[\\[([^\\]|]+)(?:\\|([^\\]]+))?\\]\\]").find(v)
+        v = if (link != null) {
+            val shown = link.groupValues[2]
+            if (shown.isNotBlank()) shown else link.groupValues[1]
+        } else {
+            v.replace("\"", "").trim()
+        }.trim()
+        // Strip "(artist album)" style disambiguation, keep the real name.
+        v = Regex("\\s*\\([^()]*\\b(album|song|single)\\b[^()]*\\)\\s*$", RegexOption.IGNORE_CASE)
+            .replace(v, "").trim()
+        if (v.isBlank() || v.length > 80) return null
+        return v
+    }
+
+    /** Pull the revisions content string out of an API response, unescaped. */
+    fun extractContent(body: String): String? {
+        for (key in listOf("\"content\":\"", "\"*\":\"")) {
+            val k = body.indexOf(key)
+            if (k < 0) continue
+            val q = quoted(body, k + key.length - 1) ?: continue
+            return unescape(q.first)
+        }
+        return null
+    }
+
+    suspend fun lookup(title: String, artist: String): Hit? {
+        val q = listOf(title, artist).filter { it.isNotBlank() }.joinToString(" ")
         if (q.isBlank()) return null
         return try {
             val searchUrl = "$API?action=query&list=search&srsearch=" +
@@ -227,7 +280,7 @@ object WikiLookup {
         return hits.first()
     }
 
-    /** Strip tag soup from snippets so "Rick Astley" can be compared. */    fun plainSnippet(snippet: String): String =
+    /** Strip tag soup from snippets so names can be compared. */    fun plainSnippet(snippet: String): String =
         snippet.replace(Regex("<[^>]*>"), " ")
             .replace("&quot;", "\"")
             .replace("&#039;", "'")
@@ -255,7 +308,7 @@ object WikiLookup {
         return name
     }
 
-    /** "Hello (Adele song)" -> "Hello". Only strips song-disambiguation brackets. */
+    /** "Title (Artist song)" -> "Title". Only strips song-disambiguation brackets. */
     fun canonicalTitle(pageTitle: String): String {
         var t = pageTitle.trim()
         while (true) {

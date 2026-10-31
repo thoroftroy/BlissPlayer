@@ -25,6 +25,8 @@ class LibraryAdapter(
     /** Extra small stats line under the duration, keyed by mediaId. */
     var showStats: Boolean = false,
     var statLines: Map<Long, String> = emptyMap(),
+    /** Display album per song (overrides folder-name albums), keyed by mediaId. */
+    var albumLines: Map<Long, String> = emptyMap(),
     /** When true, song rows show track numbers (playlist order). */
     var numbered: Boolean = false,
     val onTap: (Row) -> Unit = {},
@@ -100,7 +102,7 @@ class LibraryAdapter(
         when (row) {
             is Row.SongRow -> {
                 h.title.text = if (numbered) "${pos + 1}. ${row.song.title}" else row.song.title
-                h.sub.text = "${row.song.artist} | ${row.song.album}"
+                h.sub.text = "${row.song.artist} | ${albumLines[row.song.mediaId] ?: row.song.album}"
                 val base = fmt(row.song.durationMs)
                 if (showStats) {
                     h.dur.setSingleLine(false)
