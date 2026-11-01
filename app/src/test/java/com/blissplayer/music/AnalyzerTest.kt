@@ -449,7 +449,7 @@ class AnalyzerTest {
         val gaga = out.first { it.song.filePath!!.contains("Telephone") }
         assertEquals("Telephone", gaga.newTitle)
         assertEquals("Lady Gaga & Beyoncé", gaga.newArtist)
-        assertEquals("Lady Gaga & Beyoncé Best Hits", gaga.newAlbum)
+        assertEquals("Unknown album", gaga.newAlbum) // never invent an album
         val hills = out.first { it.song.filePath!!.contains("The Hills") }
         assertEquals("Check", hills.confidence)
         assertTrue("version kept: ${hills.newTitle}", "Bass Boosted" in hills.newTitle)

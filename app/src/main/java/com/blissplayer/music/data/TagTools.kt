@@ -5,11 +5,15 @@ import android.content.ContentValues
 import android.content.Context
 import android.content.IntentSender
 import android.net.Uri
+import android.media.MediaScannerConnection
 import android.os.Build
 import android.provider.MediaStore
 import com.blissplayer.music.model.Song
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withTimeoutOrNull
+import kotlin.coroutines.resume
 import org.jaudiotagger.audio.AudioFileIO
 import org.jaudiotagger.tag.FieldKey
 import java.io.File
@@ -65,7 +69,7 @@ object TagTools {
             val uri = Uri.parse(song.contentUri)
             val ext = extFor(song)
             if (ext.isBlank()) return@withContext arrayOfNulls<String>(4)
-            val tmp = File(context.cacheDir, "tagread_${song.mediaId}.$ext")
+            val tmp = File.createTempFile("tagread_${song.mediaId}_", ".$ext", context.cacheDir)
             try {
                 context.contentResolver.openInputStream(uri)?.use { ins ->
                     tmp.outputStream().use { ins.copyTo(it) }
@@ -80,6 +84,7 @@ object TagTools {
                     runCatching { tag.getFirst(FieldKey.GENRE) }.getOrNull()?.takeIf { it.isNotBlank() }
                 )
             } catch (e: Exception) {
+                if (e is kotlinx.coroutines.CancellationException) throw e
                 arrayOfNulls(4)
             } finally {
                 tmp.delete()
@@ -93,14 +98,23 @@ object TagTools {
             if (ext.isBlank()) {
                 return@withContext WriteResult.Failed("Unsupported audio format, cannot edit tags.")
             }
+            var original: File? = null
+            var tmp: File? = null
+            var keepRecoveryCopy = false
             try {
-                // 1) Copy audio into cache so jaudiotagger gets a real File.
-                val tmp = File(context.cacheDir, "tag_${song.mediaId}.$ext")
+                // Ask for access before doing expensive work, without truncating the song.
+                context.contentResolver.openFileDescriptor(uri, "rw")?.close()
+                    ?: return@withContext WriteResult.Failed("Could not open song for writing.")
+                val backup = File.createTempFile("original_${song.mediaId}_", ".bak", context.cacheDir)
+                original = backup
+                val edited = File.createTempFile("tag_${song.mediaId}_", ".$ext", context.cacheDir)
+                tmp = edited
                 context.contentResolver.openInputStream(uri)?.use { ins ->
-                    tmp.outputStream().use { ins.copyTo(it) }
+                    backup.outputStream().use { ins.copyTo(it) }
                 } ?: return@withContext WriteResult.Failed("Could not open song for editing.")
+                backup.copyTo(edited, overwrite = true)
                 try {
-                    val audio = AudioFileIO.read(tmp)
+                    val audio = AudioFileIO.read(edited)
                     val tag = audio.tagOrCreateAndSetDefault
                     tag.setField(FieldKey.TITLE, edit.title)
                     tag.setField(FieldKey.ARTIST, edit.artist)
@@ -109,25 +123,33 @@ object TagTools {
                     edit.year?.takeIf { it.isNotBlank() }?.let { tag.setField(FieldKey.YEAR, it) }
                     edit.track?.takeIf { it.isNotBlank() }?.let { tag.setField(FieldKey.TRACK, it) }
                     audio.commit()
+                    val verified = AudioFileIO.read(edited).tag
+                    check(verified != null && verified.getFirst(FieldKey.TITLE) == edit.title &&
+                        verified.getFirst(FieldKey.ARTIST) == edit.artist &&
+                        verified.getFirst(FieldKey.ALBUM) == edit.album) { "Saved tags did not match the requested changes." }
                 } catch (e: Exception) {
-                    tmp.delete()
                     return@withContext WriteResult.Failed("Tag format not writable: ${e.message}")
                 }
                 // 2) Write bytes back into MediaStore.
+                var writeStarted = false
                 try {
-                    context.contentResolver.openOutputStream(uri, "w")?.use { outs ->
-                        tmp.inputStream().use { it.copyTo(outs) }
+                    context.contentResolver.openOutputStream(uri, "rwt")?.use { outs ->
+                        writeStarted = true
+                        edited.inputStream().use { it.copyTo(outs) }
                     } ?: return@withContext WriteResult.Failed("System refused the write.")
-                } catch (e: RecoverableSecurityException) {
-                    tmp.delete()
-                    val sender = if (Build.VERSION.SDK_INT >= 30) {
-                        MediaStore.createWriteRequest(
-                            context.contentResolver, listOf(uri)
-                        ).intentSender
-                    } else return@withContext WriteResult.Failed("Permission denied.")
-                    return@withContext WriteResult.NeedsPermission(sender)
-                } finally {
-                    tmp.delete()
+                } catch (e: Exception) {
+                    if (writeStarted) {
+                        // Keep the untouched original until a complete write succeeds.
+                        val restored = runCatching {
+                            checkNotNull(context.contentResolver.openOutputStream(uri, "rwt")).use { out ->
+                                backup.inputStream().use { it.copyTo(out) }
+                            }
+                        }.isSuccess
+                        keepRecoveryCopy = !restored
+                        if (!restored) return@withContext WriteResult.Failed(
+                            "Write failed. Original retained privately at ${backup.absolutePath}: ${e.message}")
+                    }
+                    throw e
                 }
                 // 3) Refresh MediaStore columns so lists update instantly.
                 runCatching {
@@ -141,9 +163,31 @@ object TagTools {
                         null, null
                     )
                 }
+                // A tag write alone does not refresh Android's cached library metadata.
+                song.filePath?.let { path ->
+                    withTimeoutOrNull(5000) {
+                        suspendCancellableCoroutine<Unit> { cont ->
+                            MediaScannerConnection.scanFile(context, arrayOf(path), null) { _, _ ->
+                                if (cont.isActive) cont.resume(Unit)
+                            }
+                        }
+                    }
+                }
                 WriteResult.Ok
+            } catch (e: SecurityException) {
+                val sender = runCatching {
+                    if (Build.VERSION.SDK_INT >= 30) MediaStore.createWriteRequest(
+                        context.contentResolver, listOf(uri)).intentSender
+                    else (e as? RecoverableSecurityException)?.userAction?.actionIntent?.intentSender
+                }.getOrNull()
+                if (sender != null) WriteResult.NeedsPermission(sender)
+                else WriteResult.Failed("Android denied write access. Allow access to this song and retry: ${e.message}")
             } catch (e: Exception) {
+                if (e is kotlinx.coroutines.CancellationException) throw e
                 WriteResult.Failed(e.message ?: "Unknown error")
+            } finally {
+                tmp?.delete()
+                if (!keepRecoveryCopy) original?.delete()
             }
         }
 

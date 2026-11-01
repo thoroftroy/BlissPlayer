@@ -108,6 +108,6 @@ object MusicScanner {
             "BlissScan",
             "rows=$rowsSeen kept=${out.size} nullPath=$nullPath badExt=$skippedExt sysSkip=$skippedSys"
         )
-        return out.sortedBy { it.title.lowercase() }
+        return out.sortedBy { it.sortTitle }
     }
 }

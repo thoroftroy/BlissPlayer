@@ -130,3 +130,40 @@ When you shrunk the loop, shufflke, save que, segments and close buttons you shr
 ## Message 34 (bulk test)
 Located in my downloads folder is a folder called Ymusic, it is from my phone and contains all of the music i have downloaded from youtube (using the ymusic app). Check it with the analyzer and get it working until all of htem are catagorized and functiaonl (maybe not all of htem but most of them, some of the songs i actually made myself so they wont work with it). Also be sure you are catagorizing the genreas with the analyzer. You should be able to get at least 80-90% of them pretty easily into artisits and with better names. 
 
+## Message 36 (0.8.0 stability and output routing)
+Version 0.8.0
+If the app crashed last time then every single time I open the app it shows me the crash log even if it hasn't crashed in days
+App crashes pretty frequently
+Organization fails with no explanation as to why
+Song analyzer crashes the app after fixing names even though nothing was actually fixed
+Song analyzer should remove quotations in songs, many songs have random quotations around the name of the song or the name of the artist making the song appear first in an a to z view even though the song is called like the hearse song and it shouldn't be the first song
+Creation of a Bluetooth device preset should be automatic when you connect to a new device and should automatically change boost to match what you have it's set to at that moment. Connecting to my car made no indication that it was doing anything I had to manually set the boost and the device to the name of the Bluetooth device but I am unsure how well it's going to work
+Your theming is very lazy all you're doing is adding little borders to things for for changing font sizes I want an actual theme a full total overhaul to make it look retro not just change the border style of one element
+Add options in the more section for changing different frequencies of the song as in like bass boosting or boosting the treble and what not so that I can mix live however I want. By default it should just be default but it should let me just like bass boost every single song with a slider for how much and what not with warnings on what is safe and what we'll lose quality but let me do a lot more than I probably should be able to
+Song still randomly pause and then don't start back up until I open the app again if I'm using a different app this is very bad you need to test against this and ensure it never happens. Background play was restricted but it never gave me a prompt until I checked the settings to allow it to play all the time it should give that prompt when the app starts if it doesn't already have it and let the user choose that setting immediately instead of having to go looking for it because who's going to think to go looking for something that obvious
+This is the crash log that keeps repeating every time I open my app
+BlissPlayer 0.6.0 API 37 Google Pixel 10 Pro
+Thread: main
+android.view.ViewRootImpl$CalledFromWrongThreadException: Only the original thread that created a view hierarchy can touch its views. Expected: main Calling: DefaultDispatcher-worker-1
+at com.blissplayer.music.MainActivity$runOrganize$1$1.invoke(MainActivity.kt:3413)
+at com.blissplayer.music.data.SongAnalyzer$organize$2.invokeSuspend(SongAnalyzer.kt:187)
+Just tested the auto changing from device because I turned off my car and my wired normal connection and my car connection are both configured and it just stayed on the Bluetooth connection or at least thought it was still on the Bluetooth connection even though it wasn't connected to any Bluetooth and was playing out of my speakers and so the boost didn't change. Find a way to emulate this and actually test it yourself
+Crash log gets saved to downloads without any prompt to the user, this is bad don't save files without asking. It is currently saving every time I open the program ; look in downloads for how its being done, genreally just fix and improve it, keep your work breif ill do more testing with a cheaper model in a bit but i wnat you to fix everyhting and get it nice and stable first
+
+### 0.8.0 checklist
+- [x] Consume crash alerts once; keep the last report private; export only through a user-chosen file.
+- [x] Main-thread progress, lifecycle cancellation, honest analyzer results and write-permission handling.
+- [x] Remove surrounding quotes without damaging apostrophes; natural A-Z sorting.
+- [x] Organizer failure details, correct album/path handling and permission retry.
+- [x] Service-owned output detection, automatic presets, disconnect fallback and regression tests.
+- [x] Startup background restriction prompt; background playback and interruption tests.
+- [x] Flat-by-default live frequency mixer with headroom and loudness warnings.
+- [x] Cohesive retro library, controls, settings and dialogs in both themes.
+- [x] Build 0.8.0 APK; run unit and emulator regression tests; record remaining hardware limitations. Final rebuilt patch follows Message 37.
+
+## Message 37 (patch versions and stability)
+Remember to incriment the 0.8.x  by 1 every time you build the app btw, is it stable?
+
+- [x] Automatically increment 0.8.x and Android version code for every APK build invocation; next build is 0.8.1. Do not increment for lint/JVM tests alone.
+- Stability evidence so far: 54 JVM checks passed (4 network tests skipped), 6 Android API 35 emulator regressions passed. Real-car radio handoffs and long-duration API 37 handset playback remain unverified.
+- Manual emulator check: shell-owned M4As triggered the real Android "modify audio files" consent. After Allow, Alpha, The Hearse Song and Zulu had their title/artist quotes and Topic suffix removed in actual MediaStore/file tags, then all three organized successfully without losing their IDs or disappearing from the scoped library. Light/dark library and Control Panel screens were inspected.

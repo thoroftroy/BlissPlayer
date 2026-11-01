@@ -6,7 +6,6 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Intent
-import android.media.AudioManager
 import android.media.audiofx.LoudnessEnhancer
 import android.os.Build
 import android.os.Handler
@@ -28,6 +27,12 @@ import com.blissplayer.music.MainActivity
 import com.blissplayer.music.R
 import com.blissplayer.music.data.BlissDb
 import com.blissplayer.music.model.Seg
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlin.math.log10
 
 /**
@@ -41,8 +46,7 @@ import kotlin.math.log10
  *  - framework LoudnessEnhancer on the player's audio session handles boost (above 100%)
  * Both are public APIs, so this works on any device without custom DSP code.
  *
- * Audio focus is handled by hand: passing notification sounds never pause the
- * music, only a real permanent loss (like a phone call) pauses it.
+ * Media3 owns audio focus, including transient loss/resume while the UI is gone.
  */
 @OptIn(androidx.media3.common.util.UnstableApi::class)
 class PlayerService : MediaSessionService() {
@@ -60,8 +64,26 @@ class PlayerService : MediaSessionService() {
         private set
     private var session: MediaSession? = null
     private var enhancer: LoudnessEnhancer? = null
-    private var audioManager: AudioManager? = null
-    private var pausedByFocusLoss = false
+    lateinit var volumeManager: VolumeManager
+        private set
+    lateinit var tone: ToneControl
+        private set
+    var lastPlaybackError: String? = null
+        private set
+    private val failedItems = mutableSetOf<String>()
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    private var lastResumeSave = 0L
+    private var lastDevice: String? = null
+    private val volumeListener: () -> Unit = {
+        boost = volumeManager.boost
+        if (::player.isInitialized) applyGainFor(player.currentMediaItem)
+        val device = volumeManager.currentDevice
+        if (lastDevice != null && lastDevice != device) {
+            android.widget.Toast.makeText(this,
+                "$device: ${(boost * 100).toInt()}% boost", android.widget.Toast.LENGTH_SHORT).show()
+        }
+        lastDevice = device
+    }
 
     /** mediaId -> baked normalize multiplier from the Equalize scan. */
     @Volatile var normGains: Map<Long, Double> = emptyMap()
@@ -82,6 +104,13 @@ class PlayerService : MediaSessionService() {
         override fun run() {
             if (::player.isInitialized && player.isPlaying) {
                 postNotif()
+                // Also detects a selected speaker route while Bluetooth stays connected.
+                volumeManager.refreshRoute()
+                val now = android.os.SystemClock.elapsedRealtime()
+                if (now - lastResumeSave > 15000) {
+                    savePlaybackState()
+                    lastResumeSave = now
+                }
                 notifTickHandler.postDelayed(this, 1000)
             }
         }
@@ -96,47 +125,38 @@ class PlayerService : MediaSessionService() {
         }
     }
 
-    private val focusListener = AudioManager.OnAudioFocusChangeListener { change ->
-        val mode = getSharedPreferences("bliss", MODE_PRIVATE).getString("focus_mode", "CallsOnly") ?: "CallsOnly"
-        if (mode == "Off") return@OnAudioFocusChangeListener
-        when (change) {
-            AudioManager.AUDIOFOCUS_LOSS -> {
-                if (::player.isInitialized && player.isPlaying) {
-                    pausedByFocusLoss = true
-                    player.pause()
-                }
-            }
-            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT,
-            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> {
-                // CallsOnly (default): passing sounds and nav prompts never pause.
-                // All: any transient loss pauses until focus returns.
-                if (mode == "All" && ::player.isInitialized && player.isPlaying) {
-                    pausedByFocusLoss = true
-                    player.pause()
-                }
-            }
-            AudioManager.AUDIOFOCUS_GAIN -> {
-                if (pausedByFocusLoss && ::player.isInitialized) {
-                    pausedByFocusLoss = false
-                    player.play()
-                }
-            }
-            else -> {}
-        }
-    }
-
     private val listener = object : Player.Listener {
         override fun onMediaItemTransition(item: MediaItem?, reason: Int) {
             applyGainFor(item)
+            savePlaybackState()
+        }
+
+        override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
+            if (playWhenReady && player.playerError == null) {
+                lastPlaybackError = null
+                failedItems.clear()
+            }
+            savePlaybackState()
         }
 
         override fun onPlayerError(error: PlaybackException) {
-            // Corrupt or missing file: skip it instead of stalling the queue.
-            if (::player.isInitialized && player.mediaItemCount > 1) {
-                player.seekToNextMediaItem()
-                player.prepare()
-                player.play()
-            }
+            val resume = player.playWhenReady
+            failedItems.add(player.currentMediaItem?.mediaId.orEmpty())
+            lastPlaybackError = "Cannot play ${player.currentMediaItem?.mediaMetadata?.title ?: "song"}: ${error.errorCodeName}"
+            getSharedPreferences("bliss", MODE_PRIVATE).edit()
+                .putString("last_playback_error", lastPlaybackError).apply()
+            // Bound recovery: do not spin forever over an all-broken/repeating queue.
+            val next = (1 until player.mediaItemCount).map { (player.currentMediaItemIndex + it) % player.mediaItemCount }
+                .firstOrNull { player.getMediaItemAt(it).mediaId !in failedItems }
+            if (next != null) {
+                val failedId = player.currentMediaItem?.mediaId
+                notifTickHandler.post {
+                    if (next >= player.mediaItemCount || player.currentMediaItem?.mediaId != failedId) return@post
+                    player.seekTo(next, 0)
+                    player.prepare()
+                    player.playWhenReady = resume
+                }
+            } else player.pause()
         }
 
         override fun onAudioSessionIdChanged(audioSessionId: Int) {
@@ -146,6 +166,9 @@ class PlayerService : MediaSessionService() {
                 enhancer = runCatching {
                     LoudnessEnhancer(audioSessionId).apply { enabled = true }
                 }.getOrNull()
+                tone.attach(audioSessionId)
+            } else {
+                tone.release()
             }
             applyGainFor(player.currentMediaItem)
         }
@@ -164,6 +187,7 @@ class PlayerService : MediaSessionService() {
     override fun onCreate() {
         super.onCreate()
         db = BlissDb(this)
+        tone = ToneControl(getSharedPreferences("bliss", MODE_PRIVATE))
         normGains = db.allGains()
         refreshSegments()
 
@@ -173,20 +197,23 @@ class PlayerService : MediaSessionService() {
                     .setUsage(C.USAGE_MEDIA)
                     .setContentType(C.AUDIO_CONTENT_TYPE_MUSIC)
                     .build(),
-                false // focus is handled by hand below, so passing sounds never pause music
+                true // standard transient pause/duck/resume, independent of the Activity
             )
             .setWakeMode(C.WAKE_MODE_LOCAL) // CPU stays up for gapless local playback
             .setHandleAudioBecomingNoisy(true) // pause on headphone unplug
             .build()
         player.addListener(listener)
 
-        audioManager = getSystemService(AudioManager::class.java)
-        runCatching {
-            @Suppress("DEPRECATION")
-            audioManager?.requestAudioFocus(
-                focusListener, AudioManager.STREAM_MUSIC, AudioManager.AUDIOFOCUS_GAIN
-            )
+        configureAudioFocus()
+        volumeManager = (application as com.blissplayer.music.BlissApplication).volumeManager
+        volumeManager.addListener(volumeListener)
+        volumeManager.onDeviceConnected = { device ->
+            if (volumeManager.isAutoplay(device)) {
+                if (player.mediaItemCount > 0) startPlayback() else restoreSavedSession(play = true)
+            }
         }
+        volumeManager.start()
+        volumeListener()
 
         val intent = Intent(this, MainActivity::class.java)
         val pi = PendingIntent.getActivity(this, 0, intent, PendingIntent.FLAG_IMMUTABLE)
@@ -194,6 +221,66 @@ class PlayerService : MediaSessionService() {
             .setSessionActivity(pi)
             .build()
         setMediaNotificationProvider(notifProvider)
+    }
+
+    fun configureAudioFocus() {
+        player.setAudioAttributes(player.audioAttributes,
+            getSharedPreferences("bliss", MODE_PRIVATE).getString("focus_mode", "CallsOnly") != "Off")
+    }
+
+    /** Android 15+ requires foreground status before a background focus request. */
+    private fun startPlayback() {
+        if (player.mediaItemCount == 0) return
+        runCatching { startForeground(NOTIF_ID, buildNotification()) }.onFailure {
+            lastPlaybackError = "Android blocked background playback: ${it.message}"
+            getSharedPreferences("bliss", MODE_PRIVATE).edit()
+                .putString("last_playback_error", lastPlaybackError).apply()
+        }
+        player.play()
+    }
+
+    private fun savePlaybackState() {
+        if (!::player.isInitialized) return
+        val prefs = getSharedPreferences("bliss", MODE_PRIVATE)
+        if (player.mediaItemCount == 0) {
+            prefs.edit().putBoolean("resume_playing", false).apply()
+            return
+        }
+        prefs.edit()
+            .putString("resume_queue", (0 until player.mediaItemCount).joinToString(",") { player.getMediaItemAt(it).mediaId })
+            .putInt("resume_index", player.currentMediaItemIndex.coerceAtLeast(0))
+            .putLong("resume_pos", player.currentPosition.coerceAtLeast(0))
+            .putInt("resume_repeat", player.repeatMode)
+            .putBoolean("resume_playing", player.playWhenReady && player.playbackState != Player.STATE_ENDED)
+            .apply()
+    }
+
+    private fun restoreSavedSession(play: Boolean) {
+        scope.launch {
+            val prefs = getSharedPreferences("bliss", MODE_PRIVATE)
+            val ids = prefs.getString("resume_queue", "").orEmpty().split(',').mapNotNull { it.toLongOrNull() }
+            if (ids.isEmpty()) return@launch
+            val savedIndex = prefs.getInt("resume_index", 0).coerceIn(0, ids.lastIndex)
+            val position = prefs.getLong("resume_pos", 0).coerceAtLeast(0)
+            try {
+                val library = withContext(Dispatchers.IO) { com.blissplayer.music.data.MusicScanner.scanAll(this@PlayerService) }
+                    .associateBy { it.mediaId }
+                if (player.mediaItemCount != 0) return@launch
+                val found = ids.mapNotNull { library[it] }
+                if (found.isEmpty()) return@launch
+                val index = found.indexOfFirst { it.mediaId == ids[savedIndex] }.coerceAtLeast(0)
+                val items = found.map { song -> MediaItem.Builder().setMediaId(song.mediaId.toString())
+                    .setUri(song.contentUri).setMediaMetadata(androidx.media3.common.MediaMetadata.Builder()
+                        .setTitle(song.title).setArtist(song.artist).setAlbumTitle(song.album).build()).build() }
+                player.setMediaItems(items, index, position)
+                player.repeatMode = prefs.getInt("resume_repeat", Player.REPEAT_MODE_OFF).coerceIn(0, 2)
+                player.prepare()
+                if (play) startPlayback() else player.pause()
+            } catch (e: Exception) {
+                if (e is kotlinx.coroutines.CancellationException) throw e
+                lastPlaybackError = "Could not restore playback: ${e.message}"
+            }
+        }
     }
 
     /** Jump over any skip segment the play head lands in. Chained zones resolve in order. */
@@ -230,14 +317,18 @@ class PlayerService : MediaSessionService() {
     override fun onTaskRemoved(rootIntent: Intent?) {
         // App swiped away or closed: keep playing. Only stop when idle.
         // Do not call super when playing, or some OEMs kill the service.
-        if (::player.isInitialized && player.isPlaying) return
+        if (::player.isInitialized && player.playWhenReady && player.mediaItemCount > 0 &&
+            player.playbackState != Player.STATE_ENDED) return
         super.onTaskRemoved(rootIntent)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (intent == null && getSharedPreferences("bliss", MODE_PRIVATE).getBoolean("resume_playing", false)) {
+            restoreSavedSession(play = true)
+        }
         if (::player.isInitialized) {
             when (intent?.action) {
-                ACTION_TOGGLE -> if (player.isPlaying) player.pause() else player.play()
+                ACTION_TOGGLE -> if (player.playWhenReady) player.pause() else startPlayback()
                 ACTION_NEXT -> player.seekToNextMediaItem()
                 ACTION_PREV -> player.seekToPreviousMediaItem()
                 // Swiping the notification away means done with music: stop it all.
@@ -356,7 +447,9 @@ class PlayerService : MediaSessionService() {
     }
 
     /** XP artwork for the notification: blue gradient, app icon, name strip. */
-    private fun notifArt(): android.graphics.Bitmap {
+    private fun notifArt(): android.graphics.Bitmap = cachedNotifArt
+
+    private val cachedNotifArt: android.graphics.Bitmap by lazy {
         val size = 512
         val bmp = android.graphics.Bitmap.createBitmap(size, size, android.graphics.Bitmap.Config.ARGB_8888)
         val c = android.graphics.Canvas(bmp)
@@ -386,7 +479,7 @@ class PlayerService : MediaSessionService() {
             color = 0xFFFFFFFF.toInt()
         }
         c.drawRect(5f, 5f, (size - 5).toFloat(), (size - 5).toFloat(), frame)
-        return bmp
+        bmp
     }
 
     private fun fmt(ms: Long): String {
@@ -407,18 +500,21 @@ class PlayerService : MediaSessionService() {
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? = session
 
     override fun onDestroy() {
+        savePlaybackState()
+        scope.cancel()
         notifTickHandler.removeCallbacksAndMessages(null)
         segTickHandler.removeCallbacksAndMessages(null)
-        runCatching {
-            @Suppress("DEPRECATION")
-            audioManager?.abandonAudioFocus(focusListener)
-        }
+        volumeManager.removeListener(volumeListener)
+        volumeManager.onDeviceConnected = null
+        volumeManager.stop()
+        tone.release()
         session?.release()
         if (::player.isInitialized) {
             player.removeListener(listener)
             player.release()
         }
         runCatching { enhancer?.release() }
+        db.close()
         super.onDestroy()
     }
 
@@ -426,13 +522,13 @@ class PlayerService : MediaSessionService() {
     fun applyGainFor(item: MediaItem?) {
         val id = item?.mediaId?.toLongOrNull()
         val norm = if (id != null) (normGains[id] ?: 1.0).toFloat() else 1.0f
-        val total = (norm * boost).coerceIn(0.01f, 20.0f)
+        val total = (norm * boost * tone.gain()).coerceIn(0.0001f, 80.0f)
         // Stage 1: ExoPlayer volume does everything up to unity.
         player.volume = total.coerceIn(0.0f, 1.0f)
         // Stage 2: enhancer adds the rest as dB above unity. The phone clamps to its own max.
         val enh = enhancer
         if (enh != null && total > 1.0f) {
-            val mb = (20f * log10(total) * 100).toInt().coerceIn(0, 3000)
+            val mb = (20f * log10(total) * 100).toInt().coerceIn(0, 4000)
             runCatching { enh.setTargetGain(mb) }
         } else if (enh != null) {
             runCatching { enh.setTargetGain(0) }

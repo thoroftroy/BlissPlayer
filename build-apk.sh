@@ -9,6 +9,9 @@ if [ ! -f gradlew ]; then
   gradle wrapper --gradle-version 8.7 >/dev/null
 fi
 ./gradlew :app:assembleDebug --console=plain
+version="$(sed -n 's/^versionName=//p' app/version.properties)"
+apk="BlissPlayer-v${version}-debug.apk"
+cp app/build/outputs/apk/debug/app-debug.apk "$apk"
 echo ""
-echo "APK -> app/build/outputs/apk/debug/app-debug.apk"
-ls -la app/build/outputs/apk/debug/app-debug.apk
+echo "APK -> $apk"
+ls -la "$apk"

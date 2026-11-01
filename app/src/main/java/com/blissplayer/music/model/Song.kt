@@ -14,5 +14,9 @@ data class Song(
     /** MediaStore DATE_MODIFIED (seconds). Used to skip re-measuring in Equalize. */
     val modified: Long = 0L
 ) {
-    val sortTitle: String get() = title.lowercase()
+    val sortTitle: String get() = SongNames.sortKey(title)
+
+    fun isInFolders(folders: Set<String>): Boolean = folders.isEmpty() || filePath?.let { path ->
+        folders.any { folder -> path == folder.trimEnd('/') || path.startsWith(folder.trimEnd('/') + "/") }
+    } == true
 }

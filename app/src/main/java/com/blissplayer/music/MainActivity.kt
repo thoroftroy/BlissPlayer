@@ -39,6 +39,7 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
+import androidx.lifecycle.lifecycleScope
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.Player
@@ -53,6 +54,7 @@ import com.blissplayer.music.data.MusicScanner
 import com.blissplayer.music.data.TagTools
 import com.blissplayer.music.model.Seg
 import com.blissplayer.music.model.Song
+import com.blissplayer.music.model.SongNames
 import com.blissplayer.music.playback.LoudnessScanner
 import com.blissplayer.music.playback.PlayerService
 import com.blissplayer.music.playback.SafeVolumeGuard
@@ -63,10 +65,10 @@ import com.blissplayer.music.ui.PickAdapter
 import com.blissplayer.music.ui.PickRow
 import com.blissplayer.music.ui.Row
 import com.blissplayer.music.ui.SegmentSeekBar
-import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.util.Locale
 import kotlin.math.roundToInt
 import kotlin.random.Random
@@ -88,7 +90,7 @@ class MainActivity : AppCompatActivity() {
 
     /** Reload count caches in the background, then refresh visible stats. */
     private fun refreshCountCache() {
-        CoroutineScope(Dispatchers.IO).launch {
+        lifecycleScope.launch(Dispatchers.IO) {
             try {
                 val c = db.playCounts()
                 val t = db.totalPlays()
@@ -191,21 +193,55 @@ class MainActivity : AppCompatActivity() {
 
     private var svc: PlayerService? = null
     private lateinit var vol: VolumeManager
+    private var lastUiDevice: String? = null
+    private val volumeUiListener: () -> Unit = {
+        updateBoostViews()
+        if (lastUiDevice != vol.currentDevice && tab == 5) buildMorePane()
+        lastUiDevice = vol.currentDevice
+    }
     private lateinit var guard: SafeVolumeGuard
     private val ticker = Handler(Looper.getMainLooper())
 
     private var pendingRetry: (() -> Unit)? = null
     private var eqJob: Job? = null
+    private var permissionRequestInFlight = false
 
     private val permLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
-    ) { scan() }
+    ) {
+        permissionRequestInFlight = false
+        scan()
+        if (::vol.isInitialized) vol.refreshRoute()
+        maybePromptBackgroundPlay()
+    }
 
     private val senderLauncher = registerForActivityResult(
         ActivityResultContracts.StartIntentSenderForResult()
     ) { r ->
-        if (r.resultCode == RESULT_OK) pendingRetry?.invoke()
+        val retry = pendingRetry
         pendingRetry = null
+        if (r.resultCode == RESULT_OK) {
+            if (retry != null) retry.invoke() else toast("Access granted. Run the operation again to continue.")
+        } else toast("Permission was not granted. No further files were changed.")
+    }
+
+    private var crashExportText: String? = null
+    private val crashExportLauncher = registerForActivityResult(
+        ActivityResultContracts.CreateDocument("text/plain")
+    ) { uri ->
+        val log = crashExportText ?: CrashReporter.read(this)
+        crashExportText = null
+        if (uri != null && log != null) lifecycleScope.launch {
+            try {
+                withContext(Dispatchers.IO) {
+                    checkNotNull(contentResolver.openOutputStream(uri, "wt")).use { it.write(log.toByteArray()) }
+                }
+                toast("Crash log saved to the file you chose.")
+            } catch (e: Exception) {
+                if (e is kotlinx.coroutines.CancellationException) throw e
+                toast("Could not save crash log: ${e.message}")
+            }
+        }
     }
 
     private val folderLauncher = registerForActivityResult(
@@ -291,7 +327,7 @@ class MainActivity : AppCompatActivity() {
             val cur = queue.firstOrNull()
             if (cur != null) {
                 val rest = queue.drop(1)
-                CoroutineScope(Dispatchers.Main).launch {
+                lifecycleScope.launch {
                     replaceTail(smartOrder(rest))
                     refreshQueueList()
                 }
@@ -303,7 +339,7 @@ class MainActivity : AppCompatActivity() {
             if (reason == Player.MEDIA_ITEM_TRANSITION_REASON_SEEK) {
                 prefs.edit().putLong("stats_skips", prefs.getLong("stats_skips", 0) + 1).apply()
             }
-            CoroutineScope(Dispatchers.IO).launch {
+            lifecycleScope.launch(Dispatchers.IO) {
                 try {
                     db.bumpPlay(id)
                     // Once every song in the library has played at least once,
@@ -347,7 +383,8 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         CrashReporter.install(this)
         applyRotation()
-        val lastCrash = CrashReporter.read(this)
+        val lastCrash = CrashReporter.takePending(this)
+        crashExportText = savedInstanceState?.getString("crashExportText")
         setContentView(R.layout.activity_main)
         db = BlissDb(this)
         // Reimport any JSON playlists missing from the DB (reinstall safety).
@@ -525,30 +562,8 @@ class MainActivity : AppCompatActivity() {
             attachQueueTouch(qv) { landQueueAdapter }
         }
 
-        vol = VolumeManager(this, db, prefs) { b ->
-            svc?.let {
-                it.boost = b
-                it.applyGainFor(it.player.currentMediaItem)
-            }
-            updateBoostViews()
-        }
-        vol.onDeviceConnected = { device ->
-            updateBoostViews()
-            if (tab == 5) buildMorePane()
-            // Per-device autoplay: resume where it left off with that device's boost.
-            if (vol.isAutoplay(device)) {
-                val p = svc?.player
-                if (p != null && queue.isNotEmpty() && !p.isPlaying) {
-                    p.play()
-                    toast("Connected to $device. Playing.")
-                } else if (p != null && queue.isEmpty()) {
-                    // Nothing queued: restore the saved session and play it.
-                    restoreResume()
-                    if (queue.isNotEmpty()) svc?.player?.play()
-                }
-            }
-        }
-        vol.start()
+        vol = (application as BlissApplication).volumeManager
+        vol.addListener(volumeUiListener)
         guard = SafeVolumeGuard(this, prefs) { svc?.player?.isPlaying == true }
         guard.onFightingSystem = {
             runOnUiThread {
@@ -580,12 +595,14 @@ class MainActivity : AppCompatActivity() {
         ensurePermissions()
         ticker.post(progressTick)
         buildMorePane()
-        lastCrash?.let { showCrashDialog(it) }
+        if (lastCrash != null) showCrashDialog(lastCrash)
+        else if (hasAudioPermission()) maybePromptBackgroundPlay()
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
         super.onSaveInstanceState(outState)
         outState.putLongArray("queue", queue.map { it.mediaId }.toLongArray())
+        outState.putString("crashExportText", crashExportText)
         outState.putLong("counted", lastCountedId)
         outState.putString("searchQuery", searchQuery)
         outState.putString("filterArtist", filterArtist)
@@ -612,8 +629,9 @@ class MainActivity : AppCompatActivity() {
         ticker.removeCallbacksAndMessages(null)
         saveResume()
         persistListenTime()
+        svc?.player?.removeListener(playerListener)
+        vol.removeListener(volumeUiListener)
         runCatching { unbindService(conn) }
-        vol.stop()
         guard.stop()
         eqJob?.cancel()
         analyzerJob?.cancel()
@@ -634,9 +652,6 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun showCrashDialog(log: String) {
-        // Keep a copy in Downloads first, so the log survives even if
-        // copying fails or this dialog is dismissed by accident.
-        val saved = CrashReporter.saveToDownloads(this)
         val tv = TextView(this).apply {
             text = log
             textSize = 11f
@@ -649,28 +664,27 @@ class MainActivity : AppCompatActivity() {
                 LinearLayout.LayoutParams.MATCH_PARENT, dp(300)
             )
         }
-        val where = if (saved != null)
-            "A copy was also saved in Downloads as $saved."
-        else "Saving to Downloads failed on this phone, so copy the text below."
         AlertDialog.Builder(this)
-            .setCustomTitle(xpTitle("The app crashed last time"))
-            .setMessage("Tap Copy, then paste it in chat so it can be fixed. $where")
+            .setCustomTitle(xpTitle("Previous crash report"))
+            .setMessage("Kept privately in the app. Copy it or choose where to export it. This alert will not repeat; the report stays available in More.")
             .setView(sv)
             .setPositiveButton("Copy") { _, _ ->
                 if (copyText("crash", log)) {
                     toast("Copied. Now paste it in chat.")
-                    CrashReporter.clear(this)
                 } else {
-                    toast("Copy failed. Send the saved file instead.")
+                    toast("Copy failed. Use Export to choose a file instead.")
                 }
             }
-            .setNeutralButton("Save to file") { _, _ ->
-                val name = CrashReporter.saveToDownloads(this)
-                if (name != null) toast("Saved in Downloads as $name.")
-                else toast("Could not save the file.")
-            }
-            .setNegativeButton("Close") { _, _ -> CrashReporter.clear(this) }
+            .setNeutralButton("Export") { _, _ -> exportCrash(log) }
+            .setNegativeButton("Close", null)
+            .setOnDismissListener { maybePromptBackgroundPlay() }
             .show()
+    }
+
+    private fun exportCrash(log: String) {
+        crashExportText = log
+        runCatching { crashExportLauncher.launch("BlissPlayer-crash.txt") }
+            .onFailure { toast("No file picker is available. Nothing was saved.") }
     }
 
     // ---------- permissions / scan ----------
@@ -689,7 +703,10 @@ class MainActivity : AppCompatActivity() {
         if (Build.VERSION.SDK_INT >= 31 &&
             checkSelfPermission("android.permission.BLUETOOTH_CONNECT") != PackageManager.PERMISSION_GRANTED
         ) need.add("android.permission.BLUETOOTH_CONNECT")
-        if (need.isEmpty()) scan() else permLauncher.launch(need.toTypedArray())
+        if (need.isEmpty()) scan() else {
+            permissionRequestInFlight = true
+            permLauncher.launch(need.toTypedArray())
+        }
     }
 
     private fun hasAudioPermission(): Boolean =
@@ -704,9 +721,37 @@ class MainActivity : AppCompatActivity() {
 
     private fun isBackgroundAllowed(): Boolean = try {
         val pm = getSystemService(Context.POWER_SERVICE) as android.os.PowerManager
-        pm.isIgnoringBatteryOptimizations(packageName)
+        val am = getSystemService(android.app.ActivityManager::class.java)
+        pm.isIgnoringBatteryOptimizations(packageName) && !am.isBackgroundRestricted
     } catch (e: Exception) {
         false
+    }
+
+    private var backgroundPromptShown = false
+
+    private fun maybePromptBackgroundPlay() {
+        if (isFinishing || isDestroyed || permissionRequestInFlight || backgroundPromptShown || isBackgroundAllowed()) return
+        if (prefs.getBoolean("background_prompt_declined", false)) return
+        backgroundPromptShown = true
+        AlertDialog.Builder(this)
+            .setCustomTitle(xpTitle("Allow background playback?"))
+            .setMessage("Android is limiting BlissPlayer in the background. Music may stop with the screen off or in another app. Choose Allow, then select Unrestricted or allow battery optimization exemption in Android settings. You can change this later in More.")
+            .setPositiveButton("Open settings") { _, _ -> openBackgroundSettings() }
+            .setNegativeButton("Not now") { _, _ ->
+                prefs.edit().putBoolean("background_prompt_declined", true).apply()
+            }
+            .show()
+    }
+
+    private fun openBackgroundSettings() {
+        val am = getSystemService(android.app.ActivityManager::class.java)
+        val request = if (am.isBackgroundRestricted) Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+            Uri.parse("package:$packageName")) else Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+            Uri.parse("package:$packageName"))
+        runCatching { startActivity(request) }.onFailure {
+            runCatching { startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)) }
+                .onFailure { toast("Open Android app settings, BlissPlayer, Battery, then Unrestricted.") }
+        }
     }
 
     override fun onResume() {
@@ -714,6 +759,7 @@ class MainActivity : AppCompatActivity() {
         // Coming back from system settings: refresh states like the
         // background-play button so they show the truth.
         if (tab == 5 && ::moreBox.isInitialized) buildMorePane()
+        if (::vol.isInitialized) vol.refreshRoute()
     }
 
     private fun scan(fromTap: Boolean = false) {
@@ -728,7 +774,7 @@ class MainActivity : AppCompatActivity() {
         // One scan at a time: rapid taps cancel the stale run instead of
         // racing it on the shared song list.
         scanJob?.cancel()
-        scanJob = CoroutineScope(Dispatchers.IO).launch {
+        scanJob = lifecycleScope.launch(Dispatchers.IO) {
             try {
                 val all = MusicScanner.scanAll(this@MainActivity)
                 val folders = prefs.getStringSet("folders", emptySet())!!
@@ -737,7 +783,7 @@ class MainActivity : AppCompatActivity() {
                 val filtered = if (folders.isEmpty()) all
                 else all.filter { s ->
                     val fp = s.filePath
-                    fp == null || folders.any { f -> fp.startsWith(f) }
+                    fp == null || s.isInFolders(folders)
                 }
                 val genres = db.allGenres()
                 var albums = db.allAlbums()
@@ -919,10 +965,12 @@ class MainActivity : AppCompatActivity() {
 
     private fun updateTabs() {
         tabIds.forEachIndexed { i, id ->
-            findViewById<Button>(id).setBackgroundResource(
-                if (i == tab) (if (dark) R.drawable.xp_button_pressed_dark else R.drawable.xp_button_pressed)
-                else (if (dark) R.drawable.xp_button_dark else R.drawable.xp_button)
-            )
+            findViewById<Button>(id).apply {
+                setBackgroundResource(R.drawable.xp_tab)
+                isSelected = i == tab
+                setPadding(dp(2), dp(7), dp(2), dp(7))
+                minimumWidth = 0
+            }
         }
     }
 
@@ -1021,7 +1069,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun refreshResults() {
         searchJob?.cancel()
-        searchJob = CoroutineScope(Dispatchers.Main).launch {
+        searchJob = lifecycleScope.launch {
             kotlinx.coroutines.delay(150)
             val res = kotlinx.coroutines.withContext(Dispatchers.Default) { computeResults() }
             if (tab != 5 && isSearchActive()) {
@@ -1190,7 +1238,7 @@ class MainActivity : AppCompatActivity() {
             drillAlbum != null -> {
                 // Albums come from tags and overrides, never from folder names.
                 val a = drillAlbum!!
-                val inA = songs.filter { effAlbum(it) == a }.sortedBy { it.title.lowercase() }
+                val inA = songs.filter { effAlbum(it) == a }.sortedBy { it.sortTitle }
                 crumb.text = "$a (${inA.size}) | tap here to go back"
                 adapter.numbered = true
                 adapter.submit(inA.map { Row.SongRow(it) })
@@ -1346,9 +1394,9 @@ class MainActivity : AppCompatActivity() {
     /** Sort songs for display and contextual play. Albums use metadata, never folders. */
     private fun applySort(list: List<Song>, key: String): List<Song> {
         return when (key) {
-            "ZA" -> list.sortedByDescending { it.title.lowercase() }
-            "Artist" -> list.sortedWith(compareBy({ it.artist.lowercase() }, { it.album.lowercase() }, { it.title.lowercase() }))
-            "Album" -> list.sortedWith(compareBy({ it.album.lowercase() }, { it.title.lowercase() }))
+            "ZA" -> list.sortedByDescending { it.sortTitle }
+            "Artist" -> list.sortedWith(compareBy({ SongNames.sortKey(it.artist) }, { SongNames.sortKey(it.album) }, { it.sortTitle }))
+            "Album" -> list.sortedWith(compareBy({ SongNames.sortKey(it.album) }, { it.sortTitle }))
             "Longest" -> list.sortedByDescending { it.durationMs }
             "Shortest" -> list.sortedBy { it.durationMs }
             "MostPlayed" -> {
@@ -1359,7 +1407,7 @@ class MainActivity : AppCompatActivity() {
                 val t = cachedTotals
                 list.sortedBy { t[it.mediaId] ?: 0 }
             }
-            else -> list.sortedBy { it.title.lowercase() }
+            else -> list.sortedBy { it.sortTitle }
         }
     }
 
@@ -1750,7 +1798,7 @@ class MainActivity : AppCompatActivity() {
                 }
                 2 -> addToPlaylistDialog(listOf(song.mediaId))
                 3 -> segmentDialog(song)
-                4 -> CoroutineScope(Dispatchers.Main).launch {
+                4 -> lifecycleScope.launch {
                     val tags = TagTools.readTags(this@MainActivity, song)
                     tagEditorDialog(song, tags)
                 }
@@ -1801,7 +1849,7 @@ class MainActivity : AppCompatActivity() {
                     eGenre.text.toString().ifBlank { "Uncategorized" },
                     null, null
                 )
-                CoroutineScope(Dispatchers.Main).launch {
+                lifecycleScope.launch {
                     when (val r = TagTools.writeTags(this@MainActivity, song, edit)) {
                         is TagTools.WriteResult.Ok -> {
                             db.setGenre(song.mediaId, edit.genre ?: "Uncategorized")
@@ -1822,7 +1870,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun tagEditorSaveRetry(song: Song, edit: TagTools.Edit) {
-        CoroutineScope(Dispatchers.Main).launch {
+        lifecycleScope.launch {
             when (val r = TagTools.writeTags(this@MainActivity, song, edit)) {
                 is TagTools.WriteResult.Ok -> {
                     db.setGenre(song.mediaId, edit.genre ?: "Uncategorized")
@@ -2154,7 +2202,7 @@ class MainActivity : AppCompatActivity() {
             .setCustomTitle(xpTitle("Delete this song?"))
             .setMessage("This removes it from the app and deletes the file from your phone. This cannot be undone.")
             .setPositiveButton("Delete") { _, _ ->
-                CoroutineScope(Dispatchers.Main).launch {
+                lifecycleScope.launch {
                     when (val r = TagTools.delete(this@MainActivity, song)) {
                         is TagTools.WriteResult.Ok -> {
                             toast("Deleted.")
@@ -2175,7 +2223,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun deleteRetry(song: Song) {
-        CoroutineScope(Dispatchers.Main).launch {
+        lifecycleScope.launch {
             when (val r = TagTools.delete(this@MainActivity, song)) {
                 is TagTools.WriteResult.Ok -> {
                     toast("Deleted.")
@@ -2200,7 +2248,7 @@ class MainActivity : AppCompatActivity() {
 
     /** Mirror playlists to JSON files in the app working dir. Best effort, never blocks UI. */
     private fun syncPlaylists() {
-        CoroutineScope(Dispatchers.IO).launch {
+        lifecycleScope.launch(Dispatchers.IO) {
             com.blissplayer.music.data.PlaylistJson.exportAll(this@MainActivity, db)
         }
     }
@@ -2738,7 +2786,99 @@ class MainActivity : AppCompatActivity() {
     private var shuffleSeek: SeekBar? = null
     private var shuffleStrengthLabel: TextView? = null
 
+    private fun mixerDialog() {
+        val service = svc ?: return toast("Playback is still starting. Try again in a moment.")
+        val tone = service.tone
+        val bands = tone.bands()
+        if (bands.isEmpty()) {
+            AlertDialog.Builder(this).setCustomTitle(xpTitle("Frequency mixer"))
+                .setMessage(tone.problem ?: "Play a song first so Android can open its audio session, then open the mixer again.")
+                .setPositiveButton("OK", null).show()
+            return
+        }
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(12), dp(8), dp(12), dp(8))
+        }
+        val toggle = xpBtn("")
+        val headroom = xpBtn("")
+        val warning = TextView(this).apply {
+            text = "Positive gain can clip or distort. Headroom lowers the overall level to make room for boosted frequencies; it is not a limiter or a hearing-safety guarantee. Start with low phone volume. Turning headroom off and adding preamp can get very loud."
+            textSize = 12f
+            setTextColor(if (dark) 0xFFFFCC88.toInt() else 0xFF8B3000.toInt())
+        }
+        fun refresh() {
+            toggle.text = "Mixer: ${if (tone.enabled) "On" else "Bypassed (original sound)"}"
+            headroom.text = "Automatic headroom: ${if (tone.headroom) "On" else "Off (clipping risk)"}"
+            service.applyGainFor(service.player.currentMediaItem)
+        }
+        toggle.setOnClickListener { tone.setEnabled(!tone.enabled); refresh() }
+        headroom.setOnClickListener { tone.setHeadroom(!tone.headroom); refresh() }
+        box.addView(toggle)
+        box.addView(warning)
+        bands.forEach { band ->
+            val label = TextView(this).apply { textSize = 13f; setTextColor(iconColor()) }
+            val frequency = if (band.hz >= 1000) "${"%.1f".format(band.hz / 1000f)} kHz" else "${band.hz} Hz"
+            fun labelLevel(value: Int) { label.text = "$frequency   ${"%+.1f".format(value / 100f)} dB" }
+            labelLevel(band.level)
+            box.addView(label)
+            box.addView(SeekBar(this).apply {
+                max = (band.max - band.min) / 50
+                progress = (band.level - band.min) / 50
+                progressDrawable = xpProgress()
+                thumb = xpThumb()
+                contentDescription = "Frequency $frequency"
+                setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                    override fun onProgressChanged(s: SeekBar?, value: Int, user: Boolean) {
+                        if (!user) return
+                        val level = band.min + value * 50
+                        tone.setBand(band.index, level)
+                        tone.setEnabled(true)
+                        labelLevel(tone.bands().firstOrNull { it.index == band.index }?.level ?: level)
+                        refresh()
+                    }
+                    override fun onStartTrackingTouch(s: SeekBar?) {}
+                    override fun onStopTrackingTouch(s: SeekBar?) {
+                        tone.problem?.let { toast(it) }
+                    }
+                })
+            })
+        }
+        val preampLabel = TextView(this).apply { text = "Preamp: ${tone.preampDb} dB"; textSize = 13f; setTextColor(iconColor()) }
+        box.addView(preampLabel)
+        box.addView(SeekBar(this).apply {
+            max = 36
+            progress = tone.preampDb + 24
+            progressDrawable = xpProgress()
+            thumb = xpThumb()
+            contentDescription = "Preamp"
+            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(s: SeekBar?, value: Int, user: Boolean) {
+                    if (!user) return
+                    tone.setPreamp(value - 24)
+                    tone.setEnabled(true)
+                    preampLabel.text = "Preamp: ${tone.preampDb} dB"
+                    refresh()
+                }
+                override fun onStartTrackingTouch(s: SeekBar?) {}
+                override fun onStopTrackingTouch(s: SeekBar?) {}
+            })
+        })
+        box.addView(headroom)
+        refresh()
+        val dialog = AlertDialog.Builder(this).setCustomTitle(xpTitle("Live frequency mixer"))
+            .setView(ScrollView(this).apply { addView(box) })
+            .setPositiveButton("Close", null)
+            .setNeutralButton("Reset to flat") { _, _ ->
+                tone.reset()
+                service.applyGainFor(service.player.currentMediaItem)
+                mixerDialog()
+            }.create()
+        dialog.show()
+    }
+
     private fun buildMorePane() {
+        val scrollPosition = morePane.scrollY
         moreBox.removeAllViews()
         moreBox.addView(section("Your music"))
         moreBox.addView(xpBtn("Scan for music").apply {
@@ -2835,18 +2975,19 @@ class MainActivity : AppCompatActivity() {
             }
         })
         // Music focus: calls, all interruptions, or never.
-        val focusMode = prefs.getString("focus_mode", "CallsOnly") ?: "CallsOnly"
-        moreBox.addView(xpBtn("Pause for: $focusMode").apply {
+        val respectFocus = prefs.getString("focus_mode", "CallsOnly") != "Off"
+        moreBox.addView(xpBtn("Audio interruptions: ${if (respectFocus) "Automatic" else "Ignore"}").apply {
             setOnClickListener {
-                xpMenuDialog("Pause the music when", listOf("CallsOnly: calls only", "All: calls and other media", "Off: never pause")) { which ->
-                    val v = listOf("CallsOnly", "All", "Off")[which]
+                xpMenuDialog("Audio interruptions", listOf("Automatic (recommended)", "Ignore focus requests (experimental)")) { which ->
+                    val v = if (which == 0) "CallsOnly" else "Off"
                     prefs.edit().putString("focus_mode", v).apply()
+                    svc?.configureAudioFocus()
                     buildMorePane()
                 }
             }
         })
         moreBox.addView(TextView(this).apply {
-            text = "Calls only keeps music through notification sounds. All also pauses for videos and voice notes. Off never pauses on its own."
+            text = "Automatic ducks short notification sounds and resumes after temporary interruptions, including calls. Starting other media can pause playback. Ignore may play over other apps; Android can still enforce interruptions."
             textSize = 12f
         })
         val bgAllowed = isBackgroundAllowed()
@@ -2856,31 +2997,11 @@ class MainActivity : AppCompatActivity() {
                     toast("Background play is already allowed.")
                     return@setOnClickListener
                 }
-                // Direct exemption ask (needs the manifest permission).
-                // Falls back to the system list when the ask is refused.
-                val asked = runCatching {
-                    startActivity(
-                        Intent(
-                            Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
-                            Uri.parse("package:$packageName")
-                        )
-                    )
-                    true
-                }.getOrDefault(false)
-                if (!asked) {
-                    val opened = runCatching {
-                        startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
-                        true
-                    }.getOrDefault(false)
-                    if (opened) toast("Find BlissPlayer in the list and set it to Unrestricted.")
-                    else toast("Open battery settings and set BlissPlayer to Unrestricted.")
-                } else {
-                    toast("Answer Allow so music keeps playing with the screen off.")
-                }
+                openBackgroundSettings()
             }
         })
         moreBox.addView(TextView(this).apply {
-            text = "If music stops after a few minutes in other apps, tap above and allow it. BlissPlayer never pauses on its own."
+            text = "Allow unrestricted battery use for screen-off playback. Calls, disconnected headphones and other apps taking audio focus can still pause music."
             textSize = 12f
         })
 
@@ -2908,7 +3029,7 @@ class MainActivity : AppCompatActivity() {
         }
         moreBox.addView(boostSeek)
         moreBox.addView(TextView(this).apply {
-            text = "Presets. Add as many as you want, with names. Tap one to use it, hold one to edit or delete it. Tap the percent above to type an exact number. Past 150 percent the quality drops, past 500 expect distortion, and nothing is capped, so be careful. The phone hardware sets the final ceiling."
+            text = "Tap a preset to use it, hold to edit or delete. Tap the percent to enter 1 to 2000%. Boost can clip or distort at any setting above 100%, depending on the recording. Loud sound can damage hearing and speakers; start low. Phone hardware sets the final ceiling."
             textSize = 12f
             xpBold()
         })
@@ -2925,6 +3046,8 @@ class MainActivity : AppCompatActivity() {
             setOnClickListener {
                 val now = !prefs.getBoolean(VolumeManager.KEY_AUTO_DEVICE, true)
                 prefs.edit().putBoolean(VolumeManager.KEY_AUTO_DEVICE, now).apply()
+                vol.refreshRoute()
+                if (now) vol.setBoost(db.getBoost(vol.currentDevice, 1.0).toFloat())
                 updateDeviceToggle()
             }
         }
@@ -2941,6 +3064,13 @@ class MainActivity : AppCompatActivity() {
             text = "Tap a device to set its boost and autoplay. When it connects, that boost comes back, and autoplay starts the music where it left off."
             textSize = 12f
         })
+
+        moreBox.addView(section("Live sound mixer"))
+        moreBox.addView(TextView(this).apply {
+            text = "Bass, midrange, treble and preamp for every song. Flat and bypassed by default; changes are live and never rewrite files."
+            textSize = 12f
+        })
+        moreBox.addView(xpBtn("Open frequency mixer").apply { setOnClickListener { mixerDialog() } })
 
         moreBox.addView(section("Phone volume guard"))
         moreBox.addView(TextView(this).apply {
@@ -3136,7 +3266,7 @@ class MainActivity : AppCompatActivity() {
 
         moreBox.addView(section("Song analyzer"))
         moreBox.addView(TextView(this).apply {
-            text = "Cleans video junk from names, then checks each song against an online music index for the right title, artist, and genre. Confident fixes apply at once, the rest ask first. Only enabled folders are touched. Playlists keep working. " +
+            text = "Cleans video junk and quotation wrappers, then checks an online index for title, artist and genre. Review the suggestions and choose Apply. Android may ask for write access. Only enabled folders are touched; filenames and playlists are kept. " +
                 if (prefs.getBoolean("analyzer_online", true)) "Online lookup is on."
                 else "Online lookup is off, names only."
             textSize = 12f
@@ -3229,18 +3359,85 @@ class MainActivity : AppCompatActivity() {
                     toast("No crash recorded. If it crashes, this button copies the log.")
                 } else if (copyText("crash", log)) {
                     toast("Crash log copied. Paste it in chat.")
-                } else {
-                    val name = CrashReporter.saveToDownloads(this@MainActivity)
-                    if (name != null) toast("Copy failed. Saved in Downloads as $name.")
-                    else toast("Copy failed and saving failed too.")
-                }
+                } else toast("Copy failed. Use Export and choose where to save it.")
             }
         })
+        moreBox.addView(xpBtn("Export last crash log").apply {
+            setOnClickListener {
+                CrashReporter.read(this@MainActivity)?.let { exportCrash(it) } ?: toast("No crash recorded.")
+            }
+        })
+        prefs.getString("last_playback_error", null)?.let { error ->
+            moreBox.addView(TextView(this).apply { text = "Last playback problem: $error"; textSize = 12f })
+        }
         moreBox.addView(TextView(this).apply {
             text = "If the app ever closes on its own, come back here to copy what happened."
             textSize = 12f
         })
         paintMore()
+        groupControlPanels()
+        morePane.post { morePane.scrollTo(0, scrollPosition) }
+    }
+
+    /** Property windows rather than a single endless, unstyled settings sheet. */
+    private fun groupControlPanels() {
+        val children = (0 until moreBox.childCount).map { moreBox.getChildAt(it) }
+        moreBox.removeAllViews()
+        moreBox.addView(TextView(this).apply {
+            text = "Control Panel"
+            textSize = 21f
+            xpBold()
+            setTextColor(iconColor())
+            setPadding(dp(8), dp(10), dp(8), dp(2))
+        })
+        moreBox.addView(TextView(this).apply {
+            text = "Playback, sound and library settings. Select a panel to open it."
+            textSize = 12f
+            setTextColor(iconColor())
+            setPadding(dp(8), 0, dp(8), dp(8))
+        })
+        var body: LinearLayout? = null
+        val expanded = prefs.getStringSet("more_panels", setOf("Playback controls", "Boost"))!!.toMutableSet()
+        children.forEach { child ->
+            val heading = child.getTag(R.id.tabMore) as? String
+            if (heading?.startsWith("section:") == true && child is TextView) {
+                val name = heading.removePrefix("section:")
+                val panel = LinearLayout(this).apply {
+                    orientation = LinearLayout.VERTICAL
+                    background = xpBtnPanel()
+                    setPadding(dp(3), dp(3), dp(3), dp(3))
+                    layoutParams = LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(8) }
+                }
+                val contents = LinearLayout(this).apply {
+                    orientation = LinearLayout.VERTICAL
+                    setPadding(dp(8), dp(8), dp(8), dp(8))
+                    visibility = if (name in expanded) View.VISIBLE else View.GONE
+                }
+                child.layoutParams = LinearLayout.LayoutParams(-1, -2)
+                child.minimumHeight = dp(44)
+                child.gravity = android.view.Gravity.CENTER_VERTICAL
+                fun label() { child.text = "[${if (contents.visibility == View.VISIBLE) "-" else "+"}]  $name" }
+                label()
+                child.isFocusable = true
+                child.setOnClickListener {
+                    val open = contents.visibility != View.VISIBLE
+                    contents.visibility = if (open) View.VISIBLE else View.GONE
+                    if (open) expanded.add(name) else expanded.remove(name)
+                    prefs.edit().putStringSet("more_panels", expanded.toSet()).apply()
+                    label()
+                }
+                panel.addView(child)
+                panel.addView(contents)
+                moreBox.addView(panel)
+                body = contents
+            } else {
+                if (child is Button) child.layoutParams = LinearLayout.LayoutParams(-1, -2).apply {
+                    topMargin = dp(4); bottomMargin = dp(4)
+                }
+                else if (child is TextView) child.setPadding(0, dp(4), 0, dp(4))
+                body?.addView(child)
+            }
+        }
     }
 
     /** Recolor plain labels in More after a theme switch (section bars keep white). */
@@ -3380,8 +3577,8 @@ class MainActivity : AppCompatActivity() {
                 // Tap opens that device's options: use, boost, autoplay, forget.
                 setOnClickListener { deviceDialog(name, pct) }
                 setOnLongClickListener {
-                    vol.setDevice(name, saveManual = true)
-                    toast("Now using $name at ${(vol.boost * 100).roundToInt()} percent.")
+                    vol.useDevicePreset(name)
+                    toast("Applied $name's boost to ${vol.currentDevice}.")
                     buildMorePane()
                     true
                 }
@@ -3394,7 +3591,7 @@ class MainActivity : AppCompatActivity() {
     private fun deviceDialog(name: String, curPct: Int) {
         val auto = vol.isAutoplay(name)
         val items = listOf(
-            "Use this output",
+            "Apply this boost to the current output",
             "Set boost ($curPct percent)",
             "Autoplay on connect: ${if (auto) "On" else "Off"}",
             "Forget this device"
@@ -3402,8 +3599,8 @@ class MainActivity : AppCompatActivity() {
         xpMenuDialog(name, items) { which ->
             when (which) {
                 0 -> {
-                    vol.setDevice(name, saveManual = true)
-                    toast("Now using $name at ${(vol.boost * 100).roundToInt()} percent.")
+                    vol.useDevicePreset(name)
+                    toast("Applied $name's boost to ${vol.currentDevice}.")
                     buildMorePane()
                 }
                 1 -> deviceBoostDialog(name, curPct)
@@ -3416,6 +3613,10 @@ class MainActivity : AppCompatActivity() {
                     buildMorePane()
                 }
                 3 -> {
+                    if (name == vol.currentDevice || name == VolumeManager.DEVICE_SPEAKER) {
+                        toast("The active output and speaker fallback cannot be forgotten.")
+                        return@xpMenuDialog
+                    }
                     vol.forgetDevice(name)
                     toast("Forgot $name.")
                     buildMorePane()
@@ -3479,8 +3680,7 @@ class MainActivity : AppCompatActivity() {
         val folders = prefs.getStringSet("folders", emptySet())!!
         val inScope = if (folders.isEmpty()) songs
         else songs.filter { s ->
-            val fp = s.filePath
-            fp == null || folders.any { f -> fp.startsWith(f) }
+            s.isInFolders(folders)
         }
         if (inScope.isEmpty()) {
             toast("No songs in the enabled folders.")
@@ -3491,7 +3691,7 @@ class MainActivity : AppCompatActivity() {
             .setCustomTitle(xpTitle("Analyze ${inScope.size} songs?"))
             .setMessage(
                 "Cleans video junk from names, then checks each song against an online music index for the right title, artist, and genre. " +
-                    "Confident fixes apply at once, the rest ask first. Only enabled folders are touched. Playlists keep working."
+                    "Review the suggestions, then choose Apply. Android may ask for write access. Only enabled folders are touched; filenames and playlists are kept."
             )
             .setPositiveButton(if (online) "Analyze (online)" else "Analyze (offline)") { _, _ -> runAnalyze(inScope, online) }
             .setNeutralButton("Online lookup: ${if (online) "On" else "Off"}") { _, _ ->
@@ -3505,6 +3705,8 @@ class MainActivity : AppCompatActivity() {
     private var analyzerJob: Job? = null
 
     private fun runAnalyze(inScope: List<Song>, online: Boolean) {
+        val genreSnapshot = genreMap.toMap()
+        val albumSnapshot = inScope.associate { it.mediaId to effAlbum(it) }
         val bar = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
             max = inScope.size.coerceAtLeast(1)
             progressDrawable = xpProgress()
@@ -3527,12 +3729,12 @@ class MainActivity : AppCompatActivity() {
             .setCancelable(false)
             .show()
         analyzerJob?.cancel()
-        analyzerJob = CoroutineScope(Dispatchers.Main).launch {
+        analyzerJob = lifecycleScope.launch {
             try {
                 val proposals = try {
                     com.blissplayer.music.data.SongAnalyzer.analyze(
-                        inScope, { db.getGenre(it) },
-                        { id -> db.getAlbum(id) ?: byId[id]?.album ?: "Unknown album" },
+                        inScope, { genreSnapshot[it] ?: "Uncategorized" },
+                        { id -> albumSnapshot[id] ?: "Unknown album" },
                         online,
                         onProgress = { done, total, phase ->
                             bar.max = total.coerceAtLeast(1)
@@ -3554,7 +3756,8 @@ class MainActivity : AppCompatActivity() {
                 if (proposals.isEmpty()) {
                     AlertDialog.Builder(this@MainActivity)
                         .setCustomTitle(xpTitle("Analyzer"))
-                        .setMessage("Everything already looks clean. No changes suggested.")
+                        .setMessage(if (online) "No verified metadata changes were found. Some songs may not be in the online index. Nothing was changed."
+                            else "No name-cleanup changes were found. Nothing was changed.")
                         .setPositiveButton("OK", null)
                         .show()
                     return@launch
@@ -3565,11 +3768,17 @@ class MainActivity : AppCompatActivity() {
                 if (e is kotlinx.coroutines.CancellationException) throw e
                 runCatching { dlg?.dismiss() }
                 toast("Analyzer stopped early: ${e.message ?: "unknown problem"}.")
+            } finally {
+                runCatching { dlg?.dismiss() }
             }
         }
     }
 
     private fun showProposals(proposals: List<com.blissplayer.music.data.SongAnalyzer.Proposal>) {
+        if (proposals.isEmpty()) {
+            toast("No metadata changes were found. No files were changed.")
+            return
+        }
         val high = proposals.filter { it.confidence == "High" }
         val check = proposals.filter { it.confidence != "High" }
         val msg = StringBuilder()
@@ -3583,8 +3792,7 @@ class MainActivity : AppCompatActivity() {
             .setCustomTitle(xpTitle("Apply analyzer?"))
             .setMessage(msg.toString())
             .setPositiveButton(if (check.isEmpty()) "Apply all" else "Apply confident (${high.size})") { _, _ ->
-                applyProposals(high)
-                if (check.isNotEmpty()) showConfirmList(check)
+                applyProposals(high, after = { if (check.isNotEmpty()) showConfirmList(check) })
             }
             .setNeutralButton(if (check.isEmpty()) null else "Review all") { _, _ -> showConfirmList(proposals) }
             .setNegativeButton("Cancel", null)
@@ -3592,8 +3800,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun showConfirmList(list: List<com.blissplayer.music.data.SongAnalyzer.Proposal>) {
-        val names = list.map { "${it.song.title}\n  -> ${it.newTitle} (${it.newArtist})" }
-        // Simple review: tap entries one by one via a scrollable menu.
+        val selected = mutableSetOf<Int>()
         val box = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(8), dp(8), dp(8), dp(8))
@@ -3604,29 +3811,34 @@ class MainActivity : AppCompatActivity() {
                 LinearLayout.LayoutParams.MATCH_PARENT, dp(380)
             )
         }
-        lateinit var dlg: AlertDialog
         list.forEachIndexed { i, p ->
-            box.addView(xpBtn("Apply: ${p.newTitle}").apply {
-                setOnClickListener {
-                    CoroutineScope(Dispatchers.Main).launch {
-                        applyProposals(listOf(p))
-                        text = "Done: ${p.newTitle}"
-                        isEnabled = false
-                    }
-                }
+            box.addView(android.widget.CheckBox(this).apply {
+                text = "${p.song.title}\nTo: ${p.newTitle}\nArtist: ${p.newArtist}\nAlbum: ${p.newAlbum}\nGenre: ${p.newGenre}\n${p.reason}"
+                textSize = 13f
+                setTextColor(iconColor())
+                setOnCheckedChangeListener { _, checked -> if (checked) selected.add(i) else selected.remove(i) }
             })
         }
-        dlg = AlertDialog.Builder(this)
+        AlertDialog.Builder(this)
             .setCustomTitle(xpTitle("Confirm each fix"))
             .setView(sv)
-            .setPositiveButton("Apply all ${list.size}") { _, _ -> applyProposals(list) }
+            .setPositiveButton("Apply selected") { _, _ ->
+                if (selected.isEmpty()) toast("No songs selected. Nothing changed.")
+                else applyProposals(list.filterIndexed { i, _ -> i in selected })
+            }
             .setNegativeButton("Close", null)
-            .create()
-        dlg.show()
+            .show()
     }
 
-    private fun applyProposals(list: List<com.blissplayer.music.data.SongAnalyzer.Proposal>) {
-        if (list.isEmpty()) return
+    private fun applyProposals(
+        list: List<com.blissplayer.music.data.SongAnalyzer.Proposal>,
+        previousDone: Int = 0,
+        previousErrors: List<String> = emptyList(),
+        after: (() -> Unit)? = null,
+        permissionAttempts: Set<String> = emptySet()
+    ) {
+        if (list.isEmpty()) { after?.invoke(); return }
+        if (analyzerJob?.isActive == true) { toast("Another library operation is still running."); return }
         val bar = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
             max = list.size.coerceAtLeast(1)
             progressDrawable = xpProgress()
@@ -3643,10 +3855,10 @@ class MainActivity : AppCompatActivity() {
             .setView(box)
             .setCancelable(false)
             .show()
-        CoroutineScope(Dispatchers.Main).launch {
-            var done = 0
-            var failed = 0
-            var firstError = ""
+        analyzerJob = lifecycleScope.launch {
+            var done = previousDone
+            val errors = previousErrors.toMutableList()
+            try {
             for ((i, p) in list.withIndex()) {
                 bar.progress = i
                 label.text = "Saving ($i of ${list.size}): ${p.newTitle}"
@@ -3661,32 +3873,52 @@ class MainActivity : AppCompatActivity() {
                             done++
                         }
                         is com.blissplayer.music.data.TagTools.WriteResult.NeedsPermission -> {
+                            if (p.song.contentUri in permissionAttempts) {
+                                errors.add("${p.song.title}: Android still denied access after permission was granted. The file was not changed.")
+                                continue
+                            }
                             runCatching { dlg.dismiss() }
-                            // Store and ask once; user grants, then we continue.
-                            pendingRetry = { applyProposals(list.drop(done + failed)) }
-                            senderLauncher.launch(IntentSenderRequest.Builder(r.sender).build())
+                            val remaining = list.drop(i)
+                            val requested = remaining.map { it.song.contentUri }.distinct().take(500)
+                            val savedSoFar = done
+                            val failuresSoFar = errors.toList()
+                            pendingRetry = { applyProposals(remaining, savedSoFar, failuresSoFar, after, permissionAttempts + requested) }
+                            try {
+                                val sender = if (Build.VERSION.SDK_INT >= 30) MediaStore.createWriteRequest(
+                                    contentResolver, requested.map { Uri.parse(it) }
+                                ).intentSender else r.sender
+                                senderLauncher.launch(IntentSenderRequest.Builder(sender).build())
+                            } catch (e: Exception) {
+                                pendingRetry = null
+                                AlertDialog.Builder(this@MainActivity).setCustomTitle(xpTitle("Write access failed"))
+                                    .setMessage("$done songs saved. Android could not request access for the remaining songs: ${e.message}")
+                                    .setPositiveButton("OK", null).show()
+                            }
+                            scan()
                             return@launch
                         }
                         is com.blissplayer.music.data.TagTools.WriteResult.Failed -> {
-                            failed++
-                            if (firstError.isBlank()) firstError = r.msg
+                            errors.add("${p.song.title}: ${r.msg}")
                         }
                     }
                 } catch (e: Exception) {
                     if (e is kotlinx.coroutines.CancellationException) throw e
-                    failed++
-                    if (firstError.isBlank()) firstError = e.message ?: "unknown problem"
+                    errors.add("${p.song.title}: ${e.message ?: "unknown problem"}")
                 }
             }
             runCatching { dlg.dismiss() }
             scan()
             refreshCountCache()
-            val extra = if (failed > 0) " $failed could not be saved${if (firstError.isNotBlank()) ": $firstError" else "."}" else ""
+            val extra = if (errors.isNotEmpty()) "\n\n${errors.size} could not be saved:\n" + errors.take(20).joinToString("\n") else ""
             AlertDialog.Builder(this@MainActivity)
                 .setCustomTitle(xpTitle("Analyzer done"))
-                .setMessage("Fixed $done of ${list.size} songs.$extra")
-                .setPositiveButton("OK", null)
+                .setMessage("Saved and verified $done songs.$extra")
+                .setPositiveButton("OK") { _, _ -> after?.invoke() }
+                .setOnCancelListener { after?.invoke() }
                 .show()
+            } finally {
+                runCatching { dlg.dismiss() }
+            }
         }
     }
 
@@ -3703,16 +3935,25 @@ class MainActivity : AppCompatActivity() {
             .show()
     }
 
-    private fun runOrganize() {
+    private fun runOrganize(retrySongs: List<Song>? = null, permissionAttempts: Set<String> = emptySet()) {
+        if (analyzerJob?.isActive == true) { toast("Another library operation is still running."); return }
         val folders = prefs.getStringSet("folders", emptySet())!!
-        val inScope = if (folders.isEmpty()) songs
-        else songs.filter { s ->
-            val fp = s.filePath
-            fp == null || folders.any { f -> fp.startsWith(f) }
-        }
+        val inScope = (retrySongs ?: if (folders.isEmpty()) songs else songs.filter { s ->
+            s.isInFolders(folders)
+        }).map { it.copy(album = effAlbum(it)) }
         if (inScope.isEmpty()) {
             toast("No songs in the enabled folders.")
             return
+        }
+        // Keep moved files in the enabled library, including after a partial/cancelled run.
+        if (folders.isNotEmpty()) {
+            val destinations = inScope.mapNotNull { s ->
+                val path = s.filePath ?: return@mapNotNull null
+                val root = if (path.startsWith("/storage/emulated/0/")) "/storage/emulated/0" else
+                    Regex("^/storage/[^/]+").find(path)?.value
+                root?.let { "$it/Music/BlissPlayer" }
+            }
+            prefs.edit().putStringSet("folders", folders + destinations).apply()
         }
         val bar = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
             max = inScope.size.coerceAtLeast(1)
@@ -3736,7 +3977,7 @@ class MainActivity : AppCompatActivity() {
             .setCancelable(false)
             .show()
         analyzerJob?.cancel()
-        analyzerJob = CoroutineScope(Dispatchers.Main).launch {
+        analyzerJob = lifecycleScope.launch {
             try {
                 val res = com.blissplayer.music.data.SongAnalyzer.organize(
                     this@MainActivity, inScope
@@ -3746,11 +3987,13 @@ class MainActivity : AppCompatActivity() {
                     label.text = if (name.isBlank()) "Done." else "Moving ($done of $total): $name"
                 }
                 runCatching { dlg?.dismiss() }
-                if (res.needsPermission.isNotEmpty() && Build.VERSION.SDK_INT >= 30) {
+                var permissionError = ""
+                val requestable = res.needsPermission.filter { it !in permissionAttempts }.take(500)
+                if (requestable.isNotEmpty() && Build.VERSION.SDK_INT >= 30) {
                     // One system tap covers the whole batch; then run again
                     // for the files it just unlocked.
-                    pendingRetry = { runOrganize() }
-                    val uris = res.needsPermission.mapNotNull { runCatching { Uri.parse(it) }.getOrNull() }
+                    pendingRetry = { runOrganize(inScope.filter { it.contentUri in res.needsPermission }, permissionAttempts + requestable) }
+                    val uris = requestable.map { Uri.parse(it) }.distinct()
                     if (uris.isNotEmpty()) {
                         try {
                             val sender = MediaStore.createWriteRequest(contentResolver, uris).intentSender
@@ -3758,24 +4001,35 @@ class MainActivity : AppCompatActivity() {
                             toast("Allow once, then organizing finishes the rest.")
                             return@launch
                         } catch (e: Exception) {
-                            // Fall through to the report below.
+                            pendingRetry = null
+                            permissionError = "\nAndroid could not request write permission: ${e.message}"
                         }
                     }
                 }
+                if (res.needsPermission.any { it in permissionAttempts }) {
+                    permissionError += "\nAndroid still denied some files after permission was granted. They were left unchanged. Check file access or whether another app has moved/deleted them."
+                }
                 scan()
-                val notes = if (res.notes.isNotEmpty()) "\n\n" + res.notes.joinToString("\n") else ""
+                val notes = (if (res.notes.isNotEmpty()) "\n\n" + res.notes.joinToString("\n") else "") + permissionError
                 AlertDialog.Builder(this@MainActivity)
                     .setCustomTitle(xpTitle("Done"))
                     .setMessage(
                         "Moved ${res.moved} songs into the BlissPlayer folder. " +
-                            "Skipped ${res.skipped} (already organized, unreadable, or locked by the system).$notes"
+                            "${res.alreadyOrganized} already in the right folder. " +
+                            "${res.needsPermission.size} need Android write permission. " +
+                            "${res.skipped - res.alreadyOrganized - res.needsPermission.size} failed.$notes"
                     )
                     .setPositiveButton("OK", null)
                     .show()
             } catch (e: Exception) {
                 if (e is kotlinx.coroutines.CancellationException) throw e
                 runCatching { dlg?.dismiss() }
-                toast("Organizer stopped early. Moves so far are kept.")
+                AlertDialog.Builder(this@MainActivity).setCustomTitle(xpTitle("Organizer stopped"))
+                    .setMessage("Moves already completed are kept. ${e.javaClass.simpleName}: ${e.message ?: "Unknown error"}")
+                    .setPositiveButton("OK", null).show()
+            } finally {
+                runCatching { dlg?.dismiss() }
+                if (!isDestroyed && !isFinishing) scan()
             }
         }
     }
@@ -3811,11 +4065,11 @@ class MainActivity : AppCompatActivity() {
         val pct = (vol.boost * 100).roundToInt()
         val warn = when {
             pct > 500 -> " (expect heavy distortion)"
-            pct > 150 -> " (past here quality drops)"
+            pct > 100 -> " (clipping risk)"
             else -> ""
         }
         boostLabel?.text = "Boost: $pct percent$warn. Tap to type an exact number."
-        boostLabel?.setTextColor(if (pct > 150) 0xFFB00020.toInt() else iconColor())
+        boostLabel?.setTextColor(if (pct > 100) (if (dark) 0xFFFFCC88.toInt() else 0xFF9B2500.toInt()) else iconColor())
         boostSeek?.let { if ((it.progress + 1) != pct.coerceIn(1, 500)) it.progress = (pct.coerceIn(1, 500) - 1).coerceIn(0, 499) }
         val auto = prefs.getBoolean(VolumeManager.KEY_AUTO_DEVICE, true)
         deviceLabel?.text = "Output: ${vol.currentDevice}" + if (auto) " (remembered per device)" else " (auto remember off)"
@@ -3830,7 +4084,7 @@ class MainActivity : AppCompatActivity() {
         }
         AlertDialog.Builder(this)
             .setCustomTitle(xpTitle("Exact boost percent"))
-            .setMessage("Nothing is capped. High numbers get loud and rough.")
+            .setMessage("1 to 2000%. High boost can distort, damage speakers or harm hearing. Start low; no boost setting guarantees safe listening.")
             .setView(pad(input))
             .setPositiveButton("Set") { _, _ ->
                 val pct = input.text.toString().toIntOrNull()?.coerceIn(1, 2000) ?: 100
@@ -3897,7 +4151,7 @@ class MainActivity : AppCompatActivity() {
             .setNegativeButton("Cancel") { _, _ -> eqJob?.cancel() }
             .setCancelable(false)
             .show()
-        eqJob = CoroutineScope(Dispatchers.Main).launch {
+        eqJob = lifecycleScope.launch {
             try {
                 val cached = db.getMeasures().mapValues { LoudnessScanner.Cached(it.value.first, it.value.second) }
                 val res = LoudnessScanner.equalizeAll(
@@ -3982,6 +4236,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun section(t: String): TextView =
         TextView(this).apply {
+            setTag(R.id.tabMore, "section:$t")
             text = t
             textSize = 14f
             xpBold()
@@ -4053,10 +4308,14 @@ class MainActivity : AppCompatActivity() {
     private fun toast(m: String) = Toast.makeText(this, m, Toast.LENGTH_SHORT).show()
 
     private fun skinStatic() {
-        findViewById<LinearLayout>(R.id.root).setBackgroundColor(
-            if (dark) 0xFF23262B.toInt() else 0xFFECE9D8.toInt()
-        )
+        findViewById<LinearLayout>(R.id.root).setBackgroundResource(R.drawable.xp_workspace)
+        androidx.core.view.WindowInsetsControllerCompat(window, findViewById(R.id.root)).apply {
+            isAppearanceLightStatusBars = !dark
+            isAppearanceLightNavigationBars = !dark
+        }
         titleBarWrap.setBackgroundResource(if (dark) R.drawable.xp_title_bar_dark else R.drawable.xp_title_bar)
+        titleBar.setTextColor(0xFFFFFFFF.toInt())
+        titleBar.xpTitleShadow()
         findViewById<ImageButton>(R.id.searchToggle)?.setColorFilter(0xFFFFFFFF.toInt())
         findViewById<LinearLayout>(R.id.miniPlayer).setBackgroundResource(
             if (dark) R.drawable.xp_panel_dark else R.drawable.xp_panel
@@ -4064,10 +4323,30 @@ class MainActivity : AppCompatActivity() {
         statusStrip.setBackgroundResource(if (dark) R.drawable.xp_status_dark else R.drawable.xp_status)
         statusStrip.setTextColor(iconColor())
         crumb.setTextColor(if (dark) 0xFFA8ADB5.toInt() else 0xFF5A5A5A.toInt())
-        miniTitle.setTextColor(iconColor())
-        miniSub.setTextColor(if (dark) 0xFFA8ADB5.toInt() else 0xFF5A5A5A.toInt())
+        (miniTitle.parent as? LinearLayout)?.apply {
+            setBackgroundResource(R.drawable.xp_display)
+            setPadding(dp(8), dp(8), dp(8), dp(8))
+            (layoutParams as? LinearLayout.LayoutParams)?.rightMargin = dp(6)
+        }
+        miniTitle.setTextColor(0xFFCAEF9B.toInt())
+        miniTitle.typeface = android.graphics.Typeface.MONOSPACE
+        miniSub.setTextColor(0xFF99C9B0.toInt())
         miniTime.setTextColor(if (dark) 0xFFA8ADB5.toInt() else 0xFF5A5A5A.toInt())
-        headerBar.setBackgroundResource(if (dark) R.drawable.xp_title_bar_dark else R.drawable.xp_title_bar)
+        headerBar.setBackgroundResource(R.drawable.xp_column_header)
+        headerBar.setTextColor(iconColor())
+        list.setBackgroundResource(if (dark) R.drawable.xp_field_dark else R.drawable.xp_field)
+        list.setPadding(dp(2), dp(2), dp(2), dp(2))
+        list.clipToPadding = true
+        findViewById<LinearLayout>(R.id.nowPlayingPanel)?.background = xpBtnPanel()
+        findViewById<LinearLayout>(R.id.npDisplay)?.apply {
+            setBackgroundResource(R.drawable.xp_display)
+            setPadding(dp(8), dp(6), dp(8), dp(6))
+        }
+        findViewById<TextView>(R.id.npTitle)?.apply {
+            setTextColor(0xFFCAEF9B.toInt())
+            typeface = android.graphics.Typeface.MONOSPACE
+        }
+        findViewById<TextView>(R.id.npArtist)?.setTextColor(0xFF99C9B0.toInt())
         listOf(
             R.id.tabSongs, R.id.tabArtists, R.id.tabAlbums, R.id.tabGenres, R.id.tabPlaylists, R.id.tabMore,
             R.id.btnPlayAll

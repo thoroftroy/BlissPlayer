@@ -4,6 +4,7 @@ import android.graphics.Typeface
 import android.view.Gravity
 import android.view.ViewGroup
 import android.widget.ImageButton
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.core.content.ContextCompat
@@ -35,6 +36,7 @@ class LibraryAdapter(
 
     class Holder(
         val box: LinearLayout,
+        val icon: ImageView,
         val title: TextView,
         val sub: TextView,
         val dur: TextView,
@@ -43,14 +45,20 @@ class LibraryAdapter(
 
     override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): Holder {
         val ctx = parent.context
+        fun dp(value: Int) = (value * ctx.resources.displayMetrics.density).toInt()
         val box = LinearLayout(ctx).apply {
             orientation = LinearLayout.HORIZONTAL
-            setPadding(20, 14, 8, 14)
+            setPadding(dp(6), dp(4), dp(3), dp(4))
+            minimumHeight = dp(56)
             gravity = Gravity.CENTER_VERTICAL
             layoutParams = RecyclerView.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT
             )
+        }
+        val icon = ImageView(ctx).apply {
+            layoutParams = LinearLayout.LayoutParams(dp(24), dp(24)).apply { rightMargin = dp(8) }
+            importantForAccessibility = android.view.View.IMPORTANT_FOR_ACCESSIBILITY_NO
         }
         val texts = LinearLayout(ctx).apply {
             orientation = LinearLayout.VERTICAL
@@ -80,18 +88,18 @@ class LibraryAdapter(
         }
         val more = ImageButton(ctx).apply {
             setImageDrawable(ContextCompat.getDrawable(ctx, R.drawable.ic_more))
-            setBackgroundColor(0x00000000)
+            setBackgroundResource(if (dark) R.drawable.xp_button_dark else R.drawable.xp_button)
             contentDescription = "More options"
             layoutParams = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.WRAP_CONTENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT
+                dp(40), dp(44)
             )
-            setPadding(20, 20, 20, 20)
+            setPadding(dp(8), dp(8), dp(8), dp(8))
         }
+        box.addView(icon)
         box.addView(texts)
         box.addView(dur)
         box.addView(more)
-        return Holder(box, title, sub, dur, more)
+        return Holder(box, icon, title, sub, dur, more)
     }
 
     override fun getItemCount() = rows.size
@@ -99,6 +107,7 @@ class LibraryAdapter(
     override fun onBindViewHolder(h: Holder, pos: Int) {
         val row = rows[pos]
         val selected = highlightId != null && (row as? Row.SongRow)?.song?.mediaId == highlightId
+        h.icon.setImageResource(if (row is Row.Group) R.drawable.xp_folder else R.drawable.xp_audio_file)
         when (row) {
             is Row.SongRow -> {
                 h.title.text = if (numbered) "${pos + 1}. ${row.song.title}" else row.song.title
@@ -140,9 +149,9 @@ class LibraryAdapter(
         } else {
             h.box.setBackgroundColor(
                 if (dark) {
-                    if (pos % 2 == 0) 0xFF23262B.toInt() else 0xFF2E333A.toInt()
+                    if (pos % 2 == 0) 0xFF1B222D.toInt() else 0xFF252E3C.toInt()
                 } else {
-                    if (pos % 2 == 0) 0xFFECE9D8.toInt() else 0xFFFFFFFF.toInt()
+                    if (pos % 2 == 0) 0xFFFFFFFF.toInt() else 0xFFF0F5FC.toInt()
                 }
             )
         }
