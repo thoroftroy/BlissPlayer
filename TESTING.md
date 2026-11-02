@@ -22,16 +22,22 @@ temporarily changes the emulator's screen/power state and app settings. It check
 - Service playback, track advancement, transient audio-focus recovery and explicit
   user pause, with the Activity closed, screen off and forced idle.
 
-Verified on November 2, 2026 (0.8.5, versionCode 21): **59 JVM checks passed**,
-four optional network tests skipped; **six Android API 35 emulator tests passed**
-on BlissTest2; Android lint clean.
+Verified on November 2, 2026 (0.8.31, versionCode 47): **59 JVM checks passed**,
+four optional network tests skipped; **seven Android API 35 emulator tests passed**
+(StabilityRegressionTest incl. a review-select-all-apply regression) plus the
+BulkYMusicTest bulk suites (queue-dots menu, headless bulk apply), on BlissTest2;
+Android lint clean. Version number ran fast because every build/test invocation
+increments it per the Message 37 rule.
 
 Bulk analyzer evidence (JVM, real tags from all 1177 files in
 `~/Downloads/YMusic`): **96.0% proposal coverage (1130/1177)**,
-**99.7% artist coverage (1174/1177)**. The 3 unknowns and most of the 47
-no-proposal files are bare-title uploads whose performer is unknowable offline
-(user-made songs, MJMX/Carter Vail self-releases); the online Wikipedia pass
-tries both Artist/Title orders for the rest.
+**99.7% artist coverage (1174/1177)**. On-device bulk evidence (two batches,
+6GB emulator disk): batch 1 (590 files) analyzed to 567 proposals with the real
+confirm/apply dialogs, and headless apply wrote 95/101 with Bill Withers fixed;
+batch 2 (587 files) completed the full user flow Analyze -> Apply confident ->
+system Allow -> Analyzer done, 286/301 proposals with My Way now
+Frank Sinatra in MediaStore. adb-pushed files stay `is_pending=1` until
+finalized per ID, or the app (correctly) sees nothing; clear it after pushing.
 
 Manual emulator checks on the final APK (screenshots, not only dumps):
 startup background-play prompt shown with Open settings / Not now; Play starts

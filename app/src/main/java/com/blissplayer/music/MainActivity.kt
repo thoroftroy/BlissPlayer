@@ -2524,12 +2524,54 @@ class MainActivity : AppCompatActivity() {
                 if (idx >= 0) svc?.player?.seekTo(idx, 0)
             },
             onMenu = { r ->
-                val s = (r as Row.SongRow).song
-                queue.removeAll { it.mediaId == s.mediaId }
-                removeFromPlayer(s.mediaId)
-                refreshQueueList()
+                queueMenu((r as Row.SongRow).song)
             }
         )
+    }
+
+    /** Queue dots open a real menu. Nothing is removed without choosing it. */
+    private fun queueMenu(song: Song) {
+        val items = listOf(
+            "Play now",
+            "Remove from queue",
+            "Add to playlist",
+            "Skip segments",
+            "Edit details",
+            "Details"
+        )
+        xpMenuDialog(song.title, items) { which ->
+            when (which) {
+                0 -> {
+                    ensureQueueSync()
+                    val idx = queue.indexOfFirst { it.mediaId == song.mediaId }
+                    if (idx >= 0) {
+                        svc?.player?.seekTo(idx, 0)
+                        svc?.player?.play()
+                    } else toast("That song is no longer in the queue.")
+                }
+                1 -> {
+                    queue.removeAll { it.mediaId == song.mediaId }
+                    removeFromPlayer(song.mediaId)
+                    refreshQueueList()
+                    toast("Removed from the queue.")
+                }
+                2 -> addToPlaylistDialog(listOf(song.mediaId))
+                3 -> segmentDialog(song)
+                4 -> lifecycleScope.launch {
+                    val tags = TagTools.readTags(this@MainActivity, song)
+                    tagEditorDialog(song, tags)
+                }
+                5 -> AlertDialog.Builder(this)
+                    .setCustomTitle(xpTitle(song.title))
+                    .setMessage(
+                        "Artist: ${song.artist}\nAlbum: ${effAlbum(song)}\nGenre: ${db.getGenre(song.mediaId)}\n" +
+                            "Length: ${fmt(song.durationMs)}\nSize: ${song.sizeBytes / 1024} KB\n" +
+                            (song.filePath ?: "")
+                    )
+                    .setPositiveButton("OK", null)
+                    .show()
+            }
+        }
     }
 
     private fun attachQueueTouch(rv: RecyclerView, getAdapter: () -> LibraryAdapter?) {
@@ -3720,6 +3762,15 @@ class MainActivity : AppCompatActivity() {
 
     private var analyzerJob: Job? = null
 
+    /**
+     * Show a dialog only while this screen is alive. Analyzer/organizer jobs
+     * outlive rotations and back-presses, so an unguarded show() leaks a
+     * window (and once crashed the app) when they finish late.
+     */
+    private fun safeShow(b: AlertDialog.Builder): AlertDialog? =
+        if (isDestroyed || isFinishing) null
+        else runCatching { b.show() }.getOrNull()
+
     private fun runAnalyze(inScope: List<Song>, online: Boolean) {
         val genreSnapshot = genreMap.toMap()
         val albumSnapshot = inScope.associate { it.mediaId to effAlbum(it) }
@@ -3735,15 +3786,14 @@ class MainActivity : AppCompatActivity() {
             addView(bar)
         }
         var dlg: AlertDialog? = null
-        dlg = AlertDialog.Builder(this)
+        dlg = safeShow(AlertDialog.Builder(this)
             .setCustomTitle(xpTitle("Analyzing"))
             .setView(box)
             .setNegativeButton("Stop") { _, _ ->
                 analyzerJob?.cancel()
                 toast("Analyzer stopped. Nothing was changed yet.")
             }
-            .setCancelable(false)
-            .show()
+            .setCancelable(false))
         analyzerJob?.cancel()
         analyzerJob = lifecycleScope.launch {
             try {
@@ -3770,12 +3820,11 @@ class MainActivity : AppCompatActivity() {
                 }
                 runCatching { dlg?.dismiss() }
                 if (proposals.isEmpty()) {
-                    AlertDialog.Builder(this@MainActivity)
+                    safeShow(AlertDialog.Builder(this@MainActivity)
                         .setCustomTitle(xpTitle("Analyzer"))
                         .setMessage(if (online) "No verified metadata changes were found. Some songs may not be in the online index. Nothing was changed."
                             else "No name-cleanup changes were found. Nothing was changed.")
-                        .setPositiveButton("OK", null)
-                        .show()
+                        .setPositiveButton("OK", null))
                     return@launch
                 }
                 toast("Analyzer found ${proposals.size} songs to fix.")
@@ -3804,19 +3853,19 @@ class MainActivity : AppCompatActivity() {
         }
         if (proposals.size > 12) msg.append("\n...and ${proposals.size - 12} more.")
         msg.append("\n\nConfident fixes keep playlists working. Files are edited in place.")
-        AlertDialog.Builder(this)
+        safeShow(AlertDialog.Builder(this)
             .setCustomTitle(xpTitle("Apply analyzer?"))
             .setMessage(msg.toString())
             .setPositiveButton(if (check.isEmpty()) "Apply all" else "Apply confident (${high.size})") { _, _ ->
                 applyProposals(high, after = { if (check.isNotEmpty()) showConfirmList(check) })
             }
             .setNeutralButton(if (check.isEmpty()) null else "Review all") { _, _ -> showConfirmList(proposals) }
-            .setNegativeButton("Cancel", null)
-            .show()
+            .setNegativeButton("Cancel", null))
     }
 
     private fun showConfirmList(list: List<com.blissplayer.music.data.SongAnalyzer.Proposal>) {
         val selected = mutableSetOf<Int>()
+        val boxes = mutableListOf<android.widget.CheckBox>()
         val box = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(8), dp(8), dp(8), dp(8))
@@ -3833,18 +3882,35 @@ class MainActivity : AppCompatActivity() {
                 textSize = 13f
                 setTextColor(iconColor())
                 setOnCheckedChangeListener { _, checked -> if (checked) selected.add(i) else selected.remove(i) }
+                boxes.add(this)
             })
         }
-        AlertDialog.Builder(this)
-            .setCustomTitle(xpTitle("Confirm each fix"))
+        // One tap applies every suggestion: bulk cleanup stays a few taps.
+        // The dialog must stay open after Select all (neutral buttons
+        // dismiss by default), so the button is rewired on show.
+        val built = AlertDialog.Builder(this)
+            .setCustomTitle(xpTitle("Confirm each fix (${list.size})"))
             .setView(sv)
             .setPositiveButton("Apply selected") { _, _ ->
                 if (selected.isEmpty()) toast("No songs selected. Nothing changed.")
                 else applyProposals(list.filterIndexed { i, _ -> i in selected })
             }
+            .setNeutralButton("Select all", null)
             .setNegativeButton("Close", null)
-            .show()
+            .create()
+        built.setOnShowListener {
+            built.getButton(AlertDialog.BUTTON_NEUTRAL)?.setOnClickListener {
+                boxes.forEach { it.isChecked = true }
+                toast("${list.size} selected. Tap Apply selected to save them.")
+            }
+        }
+        safeShow(built)
     }
+
+    /** Same guard for an already-built dialog (custom button wiring). */
+    private fun safeShow(b: AlertDialog): AlertDialog? =
+        if (isDestroyed || isFinishing) null
+        else runCatching { b.show(); b }.getOrNull()
 
     private fun applyProposals(
         list: List<com.blissplayer.music.data.SongAnalyzer.Proposal>,
@@ -3866,11 +3932,10 @@ class MainActivity : AppCompatActivity() {
             addView(label)
             addView(bar)
         }
-        val dlg = AlertDialog.Builder(this)
+        val dlg = safeShow(AlertDialog.Builder(this)
             .setCustomTitle(xpTitle("Applying fixes"))
             .setView(box)
-            .setCancelable(false)
-            .show()
+            .setCancelable(false))
         analyzerJob = lifecycleScope.launch {
             var done = previousDone
             val errors = previousErrors.toMutableList()
@@ -3893,7 +3958,7 @@ class MainActivity : AppCompatActivity() {
                                 errors.add("${p.song.title}: Android still denied access after permission was granted. The file was not changed.")
                                 continue
                             }
-                            runCatching { dlg.dismiss() }
+                            runCatching { dlg?.dismiss() }
                             val remaining = list.drop(i)
                             val requested = remaining.map { it.song.contentUri }.distinct().take(500)
                             val savedSoFar = done
@@ -3906,9 +3971,9 @@ class MainActivity : AppCompatActivity() {
                                 senderLauncher.launch(IntentSenderRequest.Builder(sender).build())
                             } catch (e: Exception) {
                                 pendingRetry = null
-                                AlertDialog.Builder(this@MainActivity).setCustomTitle(xpTitle("Write access failed"))
+                                safeShow(AlertDialog.Builder(this@MainActivity).setCustomTitle(xpTitle("Write access failed"))
                                     .setMessage("$done songs saved. Android could not request access for the remaining songs: ${e.message}")
-                                    .setPositiveButton("OK", null).show()
+                                    .setPositiveButton("OK", null))
                             }
                             scan()
                             return@launch
@@ -3922,18 +3987,17 @@ class MainActivity : AppCompatActivity() {
                     errors.add("${p.song.title}: ${e.message ?: "unknown problem"}")
                 }
             }
-            runCatching { dlg.dismiss() }
+            runCatching { dlg?.dismiss() }
             scan()
             refreshCountCache()
             val extra = if (errors.isNotEmpty()) "\n\n${errors.size} could not be saved:\n" + errors.take(20).joinToString("\n") else ""
-            AlertDialog.Builder(this@MainActivity)
+            safeShow(AlertDialog.Builder(this@MainActivity)
                 .setCustomTitle(xpTitle("Analyzer done"))
                 .setMessage("Saved and verified $done songs.$extra")
                 .setPositiveButton("OK") { _, _ -> after?.invoke() }
-                .setOnCancelListener { after?.invoke() }
-                .show()
+                .setOnCancelListener { after?.invoke() })
             } finally {
-                runCatching { dlg.dismiss() }
+                runCatching { dlg?.dismiss() }
             }
         }
     }
@@ -3983,15 +4047,14 @@ class MainActivity : AppCompatActivity() {
             addView(bar)
         }
         var dlg: AlertDialog? = null
-        dlg = AlertDialog.Builder(this)
+        dlg = safeShow(AlertDialog.Builder(this)
             .setCustomTitle(xpTitle("Organizing"))
             .setView(box)
             .setNegativeButton("Stop") { _, _ ->
                 analyzerJob?.cancel()
                 toast("Organizer stopped. Moves so far are kept.")
             }
-            .setCancelable(false)
-            .show()
+            .setCancelable(false))
         analyzerJob?.cancel()
         analyzerJob = lifecycleScope.launch {
             try {
@@ -4027,7 +4090,7 @@ class MainActivity : AppCompatActivity() {
                 }
                 scan()
                 val notes = (if (res.notes.isNotEmpty()) "\n\n" + res.notes.joinToString("\n") else "") + permissionError
-                AlertDialog.Builder(this@MainActivity)
+                safeShow(AlertDialog.Builder(this@MainActivity)
                     .setCustomTitle(xpTitle("Done"))
                     .setMessage(
                         "Moved ${res.moved} songs into the BlissPlayer folder. " +
@@ -4035,14 +4098,13 @@ class MainActivity : AppCompatActivity() {
                             "${res.needsPermission.size} need Android write permission. " +
                             "${res.skipped - res.alreadyOrganized - res.needsPermission.size} failed.$notes"
                     )
-                    .setPositiveButton("OK", null)
-                    .show()
+                    .setPositiveButton("OK", null))
             } catch (e: Exception) {
                 if (e is kotlinx.coroutines.CancellationException) throw e
                 runCatching { dlg?.dismiss() }
-                AlertDialog.Builder(this@MainActivity).setCustomTitle(xpTitle("Organizer stopped"))
+                safeShow(AlertDialog.Builder(this@MainActivity).setCustomTitle(xpTitle("Organizer stopped"))
                     .setMessage("Moves already completed are kept. ${e.javaClass.simpleName}: ${e.message ?: "Unknown error"}")
-                    .setPositiveButton("OK", null).show()
+                    .setPositiveButton("OK", null))
             } finally {
                 runCatching { dlg?.dismiss() }
                 if (!isDestroyed && !isFinishing) scan()

@@ -184,3 +184,19 @@ Make sure that you test with fake bluetooth devices, dont lcaim features are don
 - [x] Crash one-shot + no-Downloads export, M4A tag round-trip, quota/permission batches: all 6 connected API 35 regressions green on 0.8.3 code.
 - [x] Built BlissPlayer-v0.8.5-debug.apk (versionCode 21). Version auto-incremented on every build invocation (0.8.1 install/connected/install/connected/final = 0.8.2/0.8.3/0.8.4/0.8.5).
 - [ ] NOT verified: real-car Bluetooth radio handoff, long-duration API 37 handset playback, physical headphone-jack insertion, acoustic quality/hearing safety. Emulator touch mapping is flaky (taps land ~100px off/non-deterministically; uiautomator snapshots go stale) so the on-device Analyze-button tap-through was not completed; analyzer dialog flow itself is covered by instrumentation with real views.
+
+## Message 39 (queue dots delete + uploader artists unfinished)
+Clicking the 3 dotts in the now playing removes the song from the que instantly, this is obvously a bug. I also see things like BIll Witherss aint no sunshine are unknown artist and posted by andres trevino so the atritist isnt bill withers even tho it obvously is, so uhh, you should be able to finish fixing thigs, keep going you arent quite done yet
+
+## Message 40 (bulk YMusic: 95% note + 1000+ songs on emulator)
+THe 96% was 95% of the ymusic folder to be clear, i only see 25 songs in the emulator now overa thousand like it should have
+
+### 0.8.6-0.8.31 checklist (Nov 2, 2026)
+- [x] Queue 3-dots no longer deletes: now-playing and landscape queue dots open a real menu (Play now, Remove from queue, Add to playlist, Skip segments, Edit details, Details). Verified on-device by instrumentation (menu appears, song stays).
+- [x] Pushed the whole YMusic folder to the emulator in two batches (590 + 587 files, 6GB disk limit). Fixed adb/MediaStore is_pending trap that hid pushed files from the app (per-ID finalize).
+- [x] Batch 1 on-device: 95/101 proposals, 95 tag writes, Bill Withers artist fixed and asserted.
+- [x] Batch 2 on-device: 286/301 proposals (95.0%), 286 writes, zero denied; full user flow (Analyze -> Apply confident -> system Allow -> Analyzer done) completed, My Way artist now Frank Sinatra in MediaStore.
+- [x] Safe dialog display (safeShow) for every analyzer/organizer completion path after a real WindowLeaked from a late-finishing bulk run.
+- [x] Review list gained Select all (dialog stays open), plus a regression test driving review -> select all -> apply to Analyzer done.
+- [x] Full gate green on final code: 59 JVM (4 network skipped), 7 Android API 35 regressions, lint clean. Built BlissPlayer-v0.8.31-debug.apk (versionCode 47; number ran fast because every verification build invocation increments per Message 37 rule).
+- [ ] NOT verified: real-car Bluetooth radio, long-duration API 37 handset playback, physical aux insertion, acoustic quality. Emulator touch injection is flaky (plain taps dropped; dwell/swipes and accessibility clicks work) and its accessibility tree goes blind for minutes, so some manual tap-throughs were verified via screenshots/logcat instead.

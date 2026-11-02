@@ -260,6 +260,25 @@ class StabilityRegressionTest {
         assertFalse(device.hasObject(By.text("Allow background playback?")))
     }
 
+    @Test fun reviewSelectAllAppliesChecked() {
+        scenario = ActivityScenario.launch(MainActivity::class.java)
+        val fake = Song(424242L, "content://fake/424242", null, "Fake Song", "Fake Artist",
+            "Fake Album", 1000L, 100L, "audio/mp4", 1L)
+        val proposal = SongAnalyzer.Proposal(
+            fake, "Real Song", "Real Artist", "Real Album", "Rock", "Check", "test")
+        scenario!!.onActivity { a ->
+            val m = MainActivity::class.java.getDeclaredMethod("showConfirmList", List::class.java)
+            m.isAccessible = true
+            m.invoke(a, listOf(proposal))
+        }
+        assertTrue(device.wait(Until.hasObject(By.textContains("Confirm each fix")), 10000))
+        device.findObject(By.text("Select all")).click()
+        device.findObject(By.text("Apply selected")).click()
+        // Bogus file: nothing to save, but the chain must complete, not crash.
+        assertTrue(device.wait(Until.hasObject(By.text("Analyzer done")), 60000))
+        device.findObject(By.text("OK")).click()
+    }
+
     @Test fun crashAlertDismissedWithBackDoesNotRepeatOrExport() {
         fun downloadCount(): Int = context.contentResolver.query(MediaStore.Downloads.EXTERNAL_CONTENT_URI,
             arrayOf(MediaStore.Downloads._ID), "${MediaStore.Downloads.DISPLAY_NAME} LIKE ?",
