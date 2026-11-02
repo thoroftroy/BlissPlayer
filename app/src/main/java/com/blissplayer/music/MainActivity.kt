@@ -46,6 +46,7 @@ import androidx.media3.common.Player
 import androidx.media3.common.Player.REPEAT_MODE_ALL
 import androidx.media3.common.Player.REPEAT_MODE_OFF
 import androidx.media3.common.Player.REPEAT_MODE_ONE
+import androidx.media3.common.Timeline
 import androidx.recyclerview.widget.ItemTouchHelper
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
@@ -302,6 +303,13 @@ class MainActivity : AppCompatActivity() {
             miniPlayPause.setImageResource(if (isPlaying) R.drawable.ic_pause else R.drawable.ic_play)
             npPlay?.setImageResource(if (isPlaying) R.drawable.ic_pause else R.drawable.ic_play)
             setPlayBtnIcon(isPlaying)
+            refreshMini()
+        }
+
+        override fun onTimelineChanged(timeline: Timeline, reason: Int) {
+            // Playlist applied, items added/removed, durations known: the
+            // current item is real now, so re-resolve the display even if an
+            // earlier synchronous refresh ran too soon.
             refreshMini()
         }
     }
@@ -760,6 +768,9 @@ class MainActivity : AppCompatActivity() {
         // background-play button so they show the truth.
         if (tab == 5 && ::moreBox.isInitialized) buildMorePane()
         if (::vol.isInitialized) vol.refreshRoute()
+        // Rotation/recreate can leave the mini player showing a stale
+        // "Nothing playing" while the service kept going. Re-resolve it.
+        if (svc != null) refreshMini()
     }
 
     private fun scan(fromTap: Boolean = false) {
@@ -933,7 +944,7 @@ class MainActivity : AppCompatActivity() {
             p.pause()
             lastCountedId = found[idx].mediaId
             lastTrackIndex = idx
-            refreshMini()
+            refreshMini(found[idx])
         } catch (e: Exception) {
             // Corrupt resume data: drop it.
             prefs.edit().remove("resume_queue").apply()
@@ -1503,7 +1514,7 @@ class MainActivity : AppCompatActivity() {
         p.prepare()
         p.play()
         saveResume()
-        refreshMini()
+        refreshMini(context.getOrNull(start.coerceIn(0, context.size - 1)))
     }
 
     /** Tapping a search hit slips it in next and jumps to it. Queue survives. */
@@ -1520,6 +1531,7 @@ class MainActivity : AppCompatActivity() {
         p.seekTo(at, 0)
         p.play()
         saveResume()
+        refreshMini(song)
         refreshQueueList()
     }
 
@@ -1700,10 +1712,14 @@ class MainActivity : AppCompatActivity() {
 
     // ---------- mini player / ticker ----------
 
-    private fun refreshMini() {
+    private fun refreshMini(known: Song? = null) {
         val p = svc?.player
         val item = p?.currentMediaItem
-        val song = item?.mediaId?.toLongOrNull()?.let { byId[it] }
+        // Right after setMediaItems the player has not applied the playlist
+        // yet, so currentMediaItem is still null. Callers that know which
+        // song is starting pass it in, or the display lies until the next
+        // track event. Timeline changes always re-resolve from the player.
+        val song = known ?: item?.mediaId?.toLongOrNull()?.let { byId[it] }
         miniTitle.text = song?.title ?: "Nothing playing"
         // Just the song here. Boost already shows right above in the status strip.
         miniSub.text = song?.artist ?: "Tap Play to start"

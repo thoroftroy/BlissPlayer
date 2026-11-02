@@ -168,6 +168,17 @@ object SongAnalyzer {
         RegexOption.IGNORE_CASE
     )
 
+    /**
+     * Same list but word-bounded, for adopting a side as the artist: Alive is
+     * not live, Party is not part, Basshunter is not bass, Videos need the
+     * description check instead.
+     */
+    private val junkWord = Regex(
+        "\\b(?:official|live|music\\s+video|video|audio|hd|hq|4k|lyrics?|visualizer|vevo|full\\s+album|playlist|dj\\s+mix|jukebox|topic|mv|interviews?|slowed|reverb|reverbed|sped|boosted|nightcore|daycore|8d|tiktok|bass|upgrade|upgrades|remaster|remastered|original|version|album|part|pt|hardcore|worldwide|hcww)\\b",
+        RegexOption.IGNORE_CASE
+    )
+    private fun hasJunkWord(seg: String): Boolean = junkWord.containsMatchIn(seg)
+
     private val trailingYear = Regex("^(?:19|20)\\d{2}$")
     private val trailingPart = Regex("(?i)^(?:part|pt)\\.?\\s*\\d+(?:\\s*of\\s*\\d+)?$")
     private fun isJunkTail(seg: String): Boolean {
@@ -308,9 +319,16 @@ object SongAnalyzer {
         title = title.replace(Regex("\\s*\\|\\s*"), " - ")
         // "Artist: Title" is "Artist - Title" (times like 10:00 are left alone).
         title = title.replace(Regex("(?<!\\d)\\s*[:：]\\s*(?!\\d)"), " - ")
-        // Leading/trailing quote underscores are wrappers: _Song_ -> Song.
-        title = title.trim('_', ' ', '-', '.', '"', '“', '”', '\'', '‘', '’')
-        artist = artist.trim('_', ' ', '-', '.', '"', '“', '”', '\'', '‘', '’')
+        // Leading/trailing underscores are wrappers: _Song_ -> Song.
+        // Quotes are NOT trimmed here: SongNames.unquote removes wrappers
+        // (and only wrappers) just below, keeping the reason accurate and
+        // protecting inner apostrophes like 'Til Tuesday.
+        // Saved first: split branches below need the pre-trim shape to spot
+        // outer quotes broken by an Artist - Title split ('A' - 'B').
+        val preTrimTitle = title
+        val preTrimArtist = artist
+        title = title.trim('_', ' ', '-', '.')
+        artist = artist.trim('_', ' ', '-', '.')
         // Underscores between words are separators or spaces.
         if ("_" in title) {
             var us = title.replace(Regex("\\s_+\\s+"), " - ")
@@ -341,7 +359,13 @@ object SongAnalyzer {
 
         val initialTitle = SongNames.unquote(title)
         val initialArtist = SongNames.unquote(artist)
-        if (initialTitle != title || initialArtist != artist) reasons.add("removed surrounding quotes")
+        // The trim above already strips wrappers, so compare against the
+        // pre-trim shape: `"The Hearse Song"` lost quotes, not just spaces.
+        // Apostrophes inside words (Don't, O'Connor) are never wrappers.
+        if (initialTitle != title || initialArtist != artist ||
+            SongNames.unquote(preTrimTitle) != preTrimTitle.trim() ||
+            SongNames.unquote(preTrimArtist) != preTrimArtist.trim()
+        ) reasons.add("removed surrounding quotes")
         title = initialTitle
         artist = initialArtist
 
@@ -355,6 +379,16 @@ object SongAnalyzer {
         if (newSongPrefix.containsMatchIn(title)) {
             title = title.replace(newSongPrefix, "").trim()
             reasons.add("dropped junk prefix")
+        }
+
+        // Leading "OFFICIAL ..." upload markers: the song is after the prefix.
+        val officialPrefix = Regex("^\"?official\"?\\s+", RegexOption.IGNORE_CASE)
+        if (officialPrefix.containsMatchIn(title)) {
+            val cut = title.replace(officialPrefix, "").trim()
+            if (cut.isNotBlank() && cut.length >= 2) {
+                title = cut
+                reasons.add("dropped junk prefix")
+            }
         }
 
         // Track numbers first, before any Artist - Title split ("01 - A - B").
@@ -371,8 +405,9 @@ object SongAnalyzer {
         if (artistUnknown && " - " in title) {
             val parts = title.split(" - ", limit = 2)
             if (parts[0].isNotBlank() && parts[1].isNotBlank()) {
-                artist = parts[0].trim().removeSuffix(" - Topic").trim()
-                title = parts[1].trim()
+                // Each side may carry its own wrapper quotes: 'A' - 'B'.
+                artist = SongNames.unquote(parts[0].trim()).removeSuffix(" - Topic").trim()
+                title = SongNames.unquote(parts[1].trim())
                 reasons.add("split Artist - Title")
             }
         } else if ((title.equals("Unknown title", true) || title.isBlank()) && base.isNotBlank()) {
@@ -385,8 +420,8 @@ object SongAnalyzer {
             if (parts[0].isNotBlank() && parts[1].isNotBlank() &&
                 !parts[0].matches(Regex("^(na|n/a|unknown)$", RegexOption.IGNORE_CASE))
             ) {
-                artist = parts[0].trim().removeSuffix(" - Topic").trim()
-                if (title.isBlank()) title = parts[1].trim()
+                artist = SongNames.unquote(parts[0].trim()).removeSuffix(" - Topic").trim()
+                if (title.isBlank()) title = SongNames.unquote(parts[1].trim())
                 reasons.add("split filename Artist - Title")
             }
         }
@@ -486,12 +521,50 @@ object SongAnalyzer {
             }
         }
 
-        // Dashed titles: decide Artist - Title vs Title - Artist vs Title - Description.
+        // Three parts with the tag repeating the last one:
+        // "NORTHBREAKER - NEVER GIVE UP ... - HARDCORE WORLDWIDE"
+        // tagged HARDCORE WORLDWIDE (the label). Head is the act, the middle
+        // is the song. Runs first so the chain below never sees a solved title.
+        var dashHandled = false
         if (" - " in title && !isUnknownArtist(artist)) {
+            val head3 = title.substringBefore(" - ").trim()
+            val tail3 = title.substringAfter(" - ").trim()
+            if (" - " in tail3 && head3.isNotBlank()) {
+                val last = tail3.substringAfterLast(" - ").trim()
+                val middle = tail3.substringBeforeLast(" - ").trim()
+                if (middle.isNotBlank() && last.isNotBlank() &&
+                    normNoSpace(last) == normNoSpace(artist) && isJunkTail(last) &&
+                    !isJunkTail(head3) && !isJunkTail(middle)
+                ) {
+                    artist = head3
+                    title = middle
+                    safe = false
+                    if ("moved artist from title" !in reasons) reasons.add("moved artist from title")
+                    dashHandled = true
+                }
+            }
+        }
+
+        // Dashed titles: decide Artist - Title vs Title - Artist vs Title - Description.
+        if (!dashHandled && " - " in title && !isUnknownArtist(artist)) {
             val head = title.substringBefore(" - ").trim()
             val tail = title.substringAfter(" - ").trim()
-            val headIsArtist = head.isNotBlank() && normNoSpace(head) == normNoSpace(artist)
-            val tailIsArtist = tail.isNotBlank() && normNoSpace(tail) == normNoSpace(artist)
+            val headIsArtist = head.isNotBlank() &&
+                (normNoSpace(head) == normNoSpace(artist) || artistMatches(artist, head))
+            val tailIsArtist = tail.isNotBlank() && !(" - " in tail) &&
+                (normNoSpace(tail) == normNoSpace(artist) || artistMatches(artist, tail))
+            // The tag may name one performer of a multi-artist side
+            // ("TheDooo" for "TheDooo, GBSN, John Silkie - ...").
+            val artistInHead = !headIsArtist && head.isNotBlank() && splitArtists(head).any {
+                normNoSpace(it) == normNoSpace(artist)
+            }
+            val artistInTail = !tailIsArtist && tail.isNotBlank() && !(" - " in tail) &&
+                splitArtists(tail).any { normNoSpace(it) == normNoSpace(artist) }
+            // Channel names that embed the performer ("Scatman John YouTube Channel").
+            val headInArtist = head.length >= 3 && normNoSpace(head).length >= 5 &&
+                normNoSpace(artist).contains(normNoSpace(head))
+            val tailInArtist = tail.length >= 3 && !(" - " in tail) && normNoSpace(tail).length >= 5 &&
+                normNoSpace(artist).contains(normNoSpace(tail))
             if (tailIsArtist && head.isNotBlank()) {
                 // "Adipocere - Rusty Cage" with artist Rusty Cage: reversed.
                 title = head
@@ -499,22 +572,62 @@ object SongAnalyzer {
             } else if (headIsArtist && tail.isNotBlank()) {
                 title = tail
                 if ("removed artist prefix" !in reasons) reasons.add("removed artist prefix")
+            } else if (artistInHead && normNoSpace(head) != normNoSpace(artist) &&
+                !versionWords.containsMatchIn(title) && !versionWords.containsMatchIn(artist)
+            ) {
+                // Partial credit completed: the head lists every performer.
+                artist = head
+                title = tail
+                safe = false
+                if ("moved artist from title" !in reasons) reasons.add("moved artist from title")
+            } else if (artistInTail && normNoSpace(tail) != normNoSpace(artist) &&
+                !versionWords.containsMatchIn(title) && !versionWords.containsMatchIn(artist)
+            ) {
+                // Partial credit completed: the tail lists every performer.
+                artist = tail
+                title = head
+                safe = false
+                if ("moved artist from title" !in reasons) reasons.add("moved artist from title")
             } else if (head.isNotBlank() && tail.isNotBlank() &&
                 WikiLookup.norm(artist) !in WikiLookup.norm(title)
             ) {
+                // Modified re-uploads keep their identity: never invent an
+                // artist for a slowed/nightcore/tiktok file. The version words
+                // stay and the file is flagged for review below.
+                val versionedTitle = versionWords.containsMatchIn(title) ||
+                    versionWords.containsMatchIn(artist)
                 // "Bad Romance - Vintage ... Cover" is Title - Description: keep the
                 // real performer, strip the description instead of inventing an artist.
-                val tailIsDescription = isJunkTail(tail) ||
-                    Regex("(?i)\\b(cover|vintage|style|tribute|ft\\.?|feat\\.?|version|remix|acoustic|live|official)\\b")
-                        .containsMatchIn(tail)
+                val tailIsDescription = !versionedTitle && (isJunkTail(tail) ||
+                    Regex("(?i)\\b(cover|vintage|style|tribute|ft\\.?|feat\\.?|version|remix(?:es)?|edit|acoustic|live|official)\\b")
+                        .containsMatchIn(tail))
                 if (tailIsDescription) {
                     title = head
                     if ("removed description suffix" !in reasons) reasons.add("removed description suffix")
-                } else if (labelWords.containsMatchIn(artist) || isUploaderLike(artist) ||
-                    artist.endsWith("vevo", ignoreCase = true)
+                } else if (!versionedTitle && tailInArtist && !headInArtist) {
+                    // Uploader channel built on the performer's name.
+                    artist = tail
+                    title = head
+                    safe = false
+                    if ("moved artist from title" !in reasons) reasons.add("moved artist from title")
+                } else if (!versionedTitle &&
+                    (labelWords.containsMatchIn(artist) || isUploaderLike(artist) ||
+                        artist.endsWith("vevo", ignoreCase = true) || headInArtist)
                 ) {
                     // Uploader channel: "16 Stitch - Things They Say" by TheKrow.
                     // "Ain't Got No ... - Nina Simone" by drMandinga (order checked online).
+                    artist = head
+                    title = tail
+                    safe = false
+                    if ("moved artist from title" !in reasons) reasons.add("moved artist from title")
+                } else if (!versionedTitle && !(" - " in tail) && head.length >= 2 && tail.length >= 2 &&
+                    !hasJunkWord(head) && !hasJunkWord(tail) &&
+                    normNoSpace(head) != normNoSpace(tail)
+                ) {
+                    // Last resort: the tag names an uploader nobody can verify
+                    // ("Bill Withers - Ain't No Sunshine" tagged Andres Trevino).
+                    // Head-first is the common upload order; the online pass
+                    // tries the swapped order before trusting it.
                     artist = head
                     title = tail
                     safe = false
@@ -524,6 +637,45 @@ object SongAnalyzer {
         } else if (" - " in title && isUnknownArtist(artist)) {
             // Already split above for unknown artists; collapse any leftover doubles.
             title = title.replace(Regex("(\\s*-\\s*){2,}"), " - ").trim()
+        }
+
+        // Spaceless hyphens: "Don McLean- American Pie" is still Artist - Title.
+        // Both sides must be phrases so compounds (mother-in-law, Twenty-one)
+        // and single-word artists are never touched.
+        if (" - " !in title && Regex("\\S-|-\\S").containsMatchIn(title) &&
+            !versionWords.containsMatchIn(title) && !versionWords.containsMatchIn(artist)
+        ) {
+            val hm = Regex("^(.+?\\S)\\s*-\\s*(\\S.+)$").find(title)
+            if (hm != null) {
+                val head = hm.groupValues[1].trim()
+                val tail = hm.groupValues[2].trim()
+                val sidesArePhrases = ' ' in head && ' ' in tail &&
+                    head.length >= 4 && tail.length >= 4
+                val artistUnrelated = !isUnknownArtist(artist) &&
+                    WikiLookup.norm(artist) !in WikiLookup.norm(title) &&
+                    normNoSpace(head) != normNoSpace(artist) &&
+                    normNoSpace(tail) != normNoSpace(artist)
+                val artistUnknown = isUnknownArtist(artist) || artist.isBlank()
+                if (sidesArePhrases && (artistUnrelated || artistUnknown) &&
+                    !isJunkTail(head) && !isJunkTail(tail)
+                ) {
+                    // "Fire-The Ink Spots" is reversed (tail starts with The);
+                    // otherwise head-first is the common upload order.
+                    val tailFirst = Regex("^the\\s+\\S+", RegexOption.IGNORE_CASE).containsMatchIn(tail) &&
+                        head.split(Regex("\\s+")).size >= 5
+                    if (tailFirst) {
+                        title = head
+                        artist = tail
+                    } else {
+                        artist = head
+                        title = tail
+                    }
+                    safe = false
+                    if (artistUnknown) {
+                        if ("split Artist - Title" !in reasons) reasons.add("split Artist - Title")
+                    } else if ("moved artist from title" !in reasons) reasons.add("moved artist from title")
+                }
+            }
         }
 
         // Compilation/decade junk leading the artist name.
@@ -697,13 +849,22 @@ object SongAnalyzer {
                 // when the primary reading is not confident.
                 var altT = ""
                 var altA = ""
-                if (c.artist.isBlank() || isUnknownArtist(c.artist) || "split Artist - Title" in c.reasons) {
+                if (c.artist.isBlank() || isUnknownArtist(c.artist) || "split Artist - Title" in c.reasons ||
+                    "moved artist from title" in c.reasons
+                ) {
                     val variants = splitVariants(base.ifBlank { s.title })
                     val primary = c.artist to c.title
                     val swapped = variants.firstOrNull { it != primary }
                     if (swapped != null) {
                         altT = swapped.second
                         altA = swapped.first
+                    } else if ("moved artist from title" in c.reasons && c.artist.isNotBlank()) {
+                        // The offline guess may have the order backwards
+                        // ("Stayin' Alive - Bee Gees" vs "Bill Withers - Ain't No
+                        // Sunshine"): offer the flipped reading so the online
+                        // index picks the winner instead of trusting the guess.
+                        altT = c.artist
+                        altA = c.title
                     }
                 }
                 mids.add(Mid(s, c.title, c.artist, altT, altA, c.reasons.toMutableList(), c.safe, null, null, c.versioned))
