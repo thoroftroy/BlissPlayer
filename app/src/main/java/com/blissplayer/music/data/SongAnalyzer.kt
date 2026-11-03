@@ -9,9 +9,13 @@ import com.blissplayer.music.model.Song
 import com.blissplayer.music.model.SongNames
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
+import kotlin.coroutines.coroutineContext
 
 /**
  * Song analyzer + organizer.
@@ -47,6 +51,28 @@ object SongAnalyzer {
         /** Modified re-upload (slowed, nightcore, 8D...): never Wikipedia-adopted. */
         val versioned: Boolean = false
     )
+
+    /**
+     * One Wikipedia answer, cached by normalized title+artist so repeat runs
+     * never re-hit the network. Misses are cached too: obscure songs cost
+     * one lookup ever.
+     */
+    data class CachedLookup(
+        val title: String, val artist: String,
+        val genre: String?, val album: String?,
+        val pageId: Long, val hitTitle: String,
+        val high: Boolean, val titleConfirmed: Boolean,
+        val found: Boolean
+    )
+
+    /** Persistent lookup answers. BlissDb implements this; tests pass null. */
+    interface LookupCache {
+        fun get(title: String, artist: String): CachedLookup?
+        fun put(title: String, artist: String, hit: CachedLookup)
+    }
+
+    fun cacheKey(title: String, artist: String): String =
+        WikiLookup.norm(title) + "|" + WikiLookup.norm(artist)
 
     private val noise = listOf(
         Regex("\\[.*?official.*?video.*?\\]", RegexOption.IGNORE_CASE),
@@ -100,8 +126,11 @@ object SongAnalyzer {
     fun stripLeadingJunk(artist: String): Pair<String, Boolean> {
         var a = artist.trim()
         var hit = false
-        // "80s Soviet Synthpop.  Real Artist": decade lead means the tail is the name.
-        if (decadeLead.containsMatchIn(a)) {
+        // Decade leads ("80s Soviet Synthpop.  Real Artist") lose the decade.
+        // Plain numbers are kept: bands really are called 16 Stitch or 100 gecs.
+        if (decadeLead.containsMatchIn(a) &&
+            Regex("^(?:[6789]0s?|(?:19|20)\\d{2}s?)\\b", RegexOption.IGNORE_CASE).containsMatchIn(a)
+        ) {
             val afterDot = a.substringAfterLast(".  ", "")
             a = if (afterDot.isNotBlank() && afterDot != a) afterDot.trim()
             else a.replace(decadeLead, "").trim()
@@ -533,7 +562,8 @@ object SongAnalyzer {
                 val last = tail3.substringAfterLast(" - ").trim()
                 val middle = tail3.substringBeforeLast(" - ").trim()
                 if (middle.isNotBlank() && last.isNotBlank() &&
-                    normNoSpace(last) == normNoSpace(artist) && isJunkTail(last) &&
+                    normNoSpace(last) == normNoSpace(artist) &&
+                    (isJunkTail(last) || labelWords.containsMatchIn(last)) &&
                     !isJunkTail(head3) && !isJunkTail(middle)
                 ) {
                     artist = head3
@@ -655,8 +685,8 @@ object SongAnalyzer {
                     WikiLookup.norm(artist) !in WikiLookup.norm(title) &&
                     normNoSpace(head) != normNoSpace(artist) &&
                     normNoSpace(tail) != normNoSpace(artist)
-                val artistUnknown = isUnknownArtist(artist) || artist.isBlank()
-                if (sidesArePhrases && (artistUnrelated || artistUnknown) &&
+                val artistBlank = isUnknownArtist(artist) || artist.isBlank()
+                if (sidesArePhrases && (artistUnrelated || artistBlank) &&
                     !isJunkTail(head) && !isJunkTail(tail)
                 ) {
                     // "Fire-The Ink Spots" is reversed (tail starts with The);
@@ -749,59 +779,105 @@ object SongAnalyzer {
         return Cleaned(title, artist, reasons, safe, versioned)
     }
 
+    /**
+     * Genre words, most specific first. Matched with word boundaries so
+     * "pop" never fires on "popular" and "mix" never fires on "remix".
+     * Covers the shapes YouTube uploads actually carry: subgenres
+     * (death metal, synthwave), scenes (k-pop, lo-fi, chiptune), moods
+     * (worship, acoustic) and famous names (Mozart is always Classical).
+     */
     private val genreWords = listOf(
-        "k-pop" to "K-Pop", "j-pop" to "J-Pop",
-        "dance-pop" to "Dance-Pop", "hip-hop" to "Hip-Hop", "hip hop" to "Hip-Hop",
-        "r&b" to "R&B", "lo-fi" to "Lo-Fi", "lofi" to "Lo-Fi",
-        "rock" to "Rock", "metal" to "Metal", "punk" to "Punk",
-        "pop" to "Pop", "rap" to "Hip-Hop", "trap" to "Hip-Hop",
-        "country" to "Country", "jazz" to "Jazz", "blues" to "Blues",
-        "soul" to "Soul", "gospel" to "Gospel", "folk" to "Folk",
-        "classical" to "Classical", "electronic" to "Electronic",
-        "house" to "Electronic", "techno" to "Electronic", "edm" to "Electronic",
-        "reggaeton" to "Latin", "latin" to "Latin", "salsa" to "Latin",
-        "bossa" to "Jazz", "swing" to "Jazz", "bluegrass" to "Country",
-        "symphony" to "Classical", "worship" to "Gospel", "hymn" to "Gospel"
+        "death metal" to "Metal", "black metal" to "Metal", "thrash metal" to "Metal",
+        "doom metal" to "Metal", "power metal" to "Metal", "speed metal" to "Metal",
+        "heavy metal" to "Metal", "nu metal" to "Metal", "metalcore" to "Metal",
+        "deathcore" to "Metal", "grindcore" to "Metal", "hardcore punk" to "Punk",
+        "metal" to "Metal", "metalhead" to "Metal",
+        "hard rock" to "Rock", "classic rock" to "Rock", "alt rock" to "Rock",
+        "alternative rock" to "Rock", "indie rock" to "Rock", "indie" to "Rock",
+        "alternative" to "Rock", "punk rock" to "Punk", "punk" to "Punk",
+        "pop punk" to "Punk", "ska" to "Reggae", "reggae" to "Reggae",
+        "grunge" to "Rock", "britpop" to "Rock", "rock" to "Rock",
+        "rocker" to "Rock", "rockabilly" to "Rock",
+        "hip hop" to "Hip-Hop", "hip-hop" to "Hip-Hop", "rap" to "Hip-Hop",
+        "trap" to "Hip-Hop", "drill" to "Hip-Hop", "grime" to "Hip-Hop",
+        "r&b" to "R&B", "rnb" to "R&B", "soul" to "Soul", "funk" to "Soul", "funky" to "Soul",
+        "motown" to "Soul", "disco" to "Dance", "dance-pop" to "Dance-Pop",
+        "dance" to "Dance", "house music" to "Electronic", "deep house" to "Electronic", "french house" to "Electronic",
+        "techno" to "Electronic", "trance" to "Electronic", "dubstep" to "Electronic",
+        "drum and bass" to "Electronic", "dnb" to "Electronic", "edm" to "Electronic",
+        "electro" to "Electronic", "electronic" to "Electronic", "electronica" to "Electronic",
+        "synthwave" to "Electronic", "synthpop" to "Electronic", "synth pop" to "Electronic",
+        "synth" to "Electronic", "retrowave" to "Electronic", "vaporwave" to "Electronic",
+        "chillwave" to "Electronic", "ambient" to "Ambient", "downtempo" to "Electronic",
+        "lo-fi" to "Lo-Fi", "lofi" to "Lo-Fi", "lo fi" to "Lo-Fi",
+        "chillhop" to "Lo-Fi", "jazzhop" to "Lo-Fi",
+        "chiptune" to "Chiptune", "8-bit" to "Chiptune", "8bit" to "Chiptune",
+        "16-bit" to "Chiptune", "bitpop" to "Chiptune",
+        "k-pop" to "K-Pop", "kpop" to "K-Pop", "j-pop" to "J-Pop", "jpop" to "J-Pop",
+        "c-pop" to "K-Pop", "city pop" to "J-Pop", "citypop" to "J-Pop",
+        "pop" to "Pop", "poppy" to "Pop",
+        "jazz" to "Jazz", "bebop" to "Jazz", "bossa" to "Jazz", "bossa nova" to "Jazz",
+        "swing" to "Jazz", "blues" to "Blues", "rhythm and blues" to "Blues",
+        "country" to "Country", "bluegrass" to "Country", "honky tonk" to "Country",
+        "americana" to "Country", "western" to "Country",
+        "folk" to "Folk", "acoustic folk" to "Folk", "singer-songwriter" to "Folk",
+        "classical" to "Classical", "symphony" to "Classical", "symphonic" to "Classical",
+        "concerto" to "Classical", "sonata" to "Classical", "opera" to "Classical",
+        "overture" to "Classical", "nocturne" to "Classical", "etude" to "Classical",
+        "waltz" to "Classical", "requiem" to "Classical", "oratorio" to "Classical",
+        "baroque" to "Classical", "romantic era" to "Classical",
+        "latin" to "Latin", "reggaeton" to "Latin", "salsa" to "Latin",
+        "bachata" to "Latin", "samba" to "Latin", "banda" to "Latin",
+        "norteno" to "Latin", "mariachi" to "Latin", "tango" to "Latin",
+        "kizomba" to "Latin", "afrobeat" to "Latin", "afrobeats" to "Latin",
+        "gospel" to "Gospel", "worship" to "Gospel", "hymn" to "Gospel",
+        "praise" to "Gospel", "christian rock" to "Gospel", "ccm" to "Gospel",
+        "soundtrack" to "Soundtrack", "ost" to "Soundtrack",
+        "musical theatre" to "Soundtrack", "showtune" to "Soundtrack",
+        "shanty" to "Folk", "sea shanty" to "Folk", "celtic" to "Folk",
+        "medieval" to "Folk", "bardcore" to "Folk", "tavern" to "Folk",
+        "qawwali" to "World", "bhajan" to "World", "kirtan" to "World",
+        "enchante" to "World", "flamenco" to "World",
+        "lullaby" to "Acoustic",
+        "christmas" to "Holiday", "carol" to "Holiday",
+        "halloween" to "Holiday", "spooky" to "Holiday",
+        "kids" to "Kids", "nursery" to "Kids", "cartoon" to "Kids", "anime" to "Soundtrack",
+        "comedy" to "Comedy", "parody" to "Comedy", "novelty" to "Comedy",
+        "spoken" to "Spoken", "poetry" to "Spoken", "sermon" to "Spoken"
     )
+
+    private fun genreWordHit(hay: String, word: String): Boolean {
+        if (' ' !in word && '-' !in word && '&' !in word) {
+            return Regex("\\b${Regex.escape(word)}\\b").containsMatchIn(hay)
+        }
+        return word in hay
+    }
 
     /** First known genre word found in Wikipedia categories, else null. */
     fun genreFromCategories(categories: List<String>): String? {
         for (c in categories) {
             val low = c.lowercase()
             for ((word, name) in genreWords) {
-                if (word in low) return name
+                if (genreWordHit(low, word)) return name
             }
         }
         return null
-    }
-
-    fun keywordGenre(title: String, artist: String, current: String): String {
-        if (current.isNotBlank() && current != "Uncategorized") return current
-        val hay = "$title $artist".lowercase()
-        for ((word, name) in genreWords) {
-            if (word in hay) return name
-        }
-        return current.ifBlank { "Uncategorized" }
     }
 
     fun propose(song: Song, fileName: String, currentGenre: String): Proposal? {
         val base = fileName.substringAfterLast('/').substringBeforeLast('.').trim()
         val cleaned = cleanLocal(song.title, song.artist, base)
         if (cleaned.title.isBlank()) return null
-        var genre = keywordGenre(cleaned.title, cleaned.artist, currentGenre)
+        // Genre and album come only from the online index (or existing tags):
+        // never guessed offline.
         val reasons = cleaned.reasons.toMutableList()
-        var high = cleaned.safe
-        if (genre != currentGenre && genre != "Uncategorized") {
-            reasons.add("keyword genre")
-            high = false
-        }
+        val high = cleaned.safe
         if (reasons.isEmpty()) return null
-        if (cleaned.title == song.title && cleaned.artist.ifBlank { song.artist } == song.artist &&
-            genre == currentGenre) return null
+        if (cleaned.title == song.title && cleaned.artist.ifBlank { song.artist } == song.artist) return null
         return Proposal(
             song, cleaned.title.ifBlank { song.title },
             cleaned.artist.ifBlank { song.artist },
-            song.album, genre.ifBlank { "Uncategorized" },
+            song.album, currentGenre.ifBlank { "Uncategorized" },
             if (high) "High" else "Check", reasons.joinToString(", ")
         )
     }
@@ -816,26 +892,23 @@ object SongAnalyzer {
         genreOf: (Long) -> String,
         albumOf: (Long) -> String,
         online: Boolean,
+        lookupCache: LookupCache? = null,
         onProgress: (done: Int, total: Int, phase: String) -> Unit
     ): List<Proposal> {
         // Report on the caller's dispatcher (Main in the UI), never on the worker.
         val progressContext = currentCoroutineContext().minusKey(Job)
-        return analyzeOnWorker(songs, genreOf, albumOf, online) { done, total, phase ->
+        return analyzeOnWorker(songs, genreOf, albumOf, online, lookupCache) { done, total, phase ->
             withContext(progressContext) { onProgress(done, total, phase) }
         }
     }
 
     private suspend fun analyzeOnWorker(
         songs: List<Song>, genreOf: (Long) -> String, albumOf: (Long) -> String, online: Boolean,
+        lookupCache: LookupCache?,
         report: suspend (Int, Int, String) -> Unit
     ): List<Proposal> = withContext(Dispatchers.Default) {
-        // Phase 1: local rules, fast.
-        data class Mid(
-            val song: Song, var title: String, var artist: String,
-            var altTitle: String, var altArtist: String,
-            val reasons: MutableList<String>, var high: Boolean,
-            var wikiGenre: String?, var wikiAlbum: String?, val versioned: Boolean
-        )
+        // Phase 1: local rules, fast. Mid lives at object level so the
+        // parallel lookup step can take it.
         val mids = mutableListOf<Mid>()
         songs.forEachIndexed { i, s ->
             coroutineContext.ensureActive()
@@ -875,7 +948,9 @@ object SongAnalyzer {
 
         // Phase 2: Wikipedia confirmation + enrichment.
         // One cheap probe first: without network there is no point burning
-        // minutes on per-song timeouts.
+        // minutes on per-song timeouts. Songs run several-wide with a
+        // persistent answer cache, so a thousand-song library costs one
+        // lookup per unique song ever.
         var offline = false
         if (online && mids.isNotEmpty()) {
             offline = try {
@@ -884,70 +959,24 @@ object SongAnalyzer {
                 if (e is kotlinx.coroutines.CancellationException) throw e
                 true
             }
-            mids.forEachIndexed { i, m ->
-                coroutineContext.ensureActive()
-                // Modified re-uploads keep their version words: Wikipedia
-                // would only find the unmodified original, so skip it.
-                if (!offline && !m.versioned) {
-                    val g0 = genreOf(m.song.mediaId)
-                    // Primary reading first; when it is not confident, try the
-                    // swapped order ("Title - Artist" uploaders) before giving up.
-                    val tried = mutableListOf<Pair<String, String>>(m.title to m.artist)
-                    m.altArtist.takeIf { it.isNotBlank() }?.let { aa ->
-                        m.altTitle.takeIf { it.isNotBlank() }?.let { at ->
-                            if (at to aa != tried[0]) tried.add(at to aa)
-                        }
+            if (!offline) {
+                val sem = kotlinx.coroutines.sync.Semaphore(8)
+                val done = java.util.concurrent.atomic.AtomicInteger(0)
+                mids.map { m ->
+                    async {
+                        sem.withPermit { lookupOne(m, genreOf, lookupCache) }
+                        report(done.incrementAndGet(), mids.size, "lookup")
                     }
-                    var settled = false
-                    for ((tt, aa) in tried) {
-                        coroutineContext.ensureActive()
-                        val hit = try {
-                            WikiLookup.lookup(tt, aa)
-                        } catch (e: Exception) {
-                            if (e is kotlinx.coroutines.CancellationException) throw e
-                            null
-                        } ?: continue
-                        val applied = applyWikiResult(tt, aa, g0, hit)
-                        if (applied.high) {
-                            m.title = applied.title
-                            m.artist = applied.artist
-                            m.high = true
-                            m.reasons.addAll(applied.reasons)
-                            m.wikiGenre = applied.genre
-                            // Real album from the song page, when it has one.
-                            m.wikiAlbum = try {
-                                WikiLookup.albumOf(hit.pageId)
-                            } catch (e: Exception) {
-                                if (e is kotlinx.coroutines.CancellationException) throw e
-                                null
-                            }
-                            if (m.wikiAlbum != null) m.reasons.add("Wikipedia album")
-                            break
-                        } else if (!settled) {
-                            // Keep the first answer as the review candidate.
-                            m.title = applied.title
-                            m.artist = applied.artist
-                            m.reasons.addAll(applied.reasons)
-                            m.high = false
-                            m.wikiGenre = applied.genre
-                            settled = true
-                        }
-                    }
-                }
-                report(i + 1, mids.size, "lookup")
+                }.awaitAll()
             }
         }
         report(songs.size, songs.size, "done")
 
         val out = mids.mapNotNull { m ->
             val g0 = genreOf(m.song.mediaId)
-            var genre = m.wikiGenre ?: keywordGenre(m.title, m.artist, g0)
-            if (genre != g0 && genre != "Uncategorized" &&
-                m.reasons.none { it.startsWith("genre") || it.startsWith("Wikipedia genre") }
-            ) {
-                m.reasons.add("keyword genre")
-                m.high = false
-            }
+            // Genre and album come only from the online index (or existing
+            // tags): never guessed offline.
+            val genre = m.wikiGenre ?: g0
             // Never manufacture an album when the online lookup has no evidence.
             val effAlbum0 = albumOf(m.song.mediaId)
             var album = m.wikiAlbum
@@ -968,6 +997,307 @@ object SongAnalyzer {
         }.sortedWith(compareBy({ it.confidence != "High" }, { it.song.title.lowercase() }))
         if (offline) throw OfflineException(out)
         out
+    }
+
+    /** One song against the online index: cache first, then readings in order. */
+    private data class Mid(
+        val song: Song, var title: String, var artist: String,
+        var altTitle: String, var altArtist: String,
+        val reasons: MutableList<String>, var high: Boolean,
+        var wikiGenre: String?, var wikiAlbum: String?, val versioned: Boolean
+    )
+
+    /** A folded answer from cache or network, ready to apply or skip. */
+    private data class Folded(
+        val title: String,
+        /** Suggested performer, null when the tag's own artist stands. */
+        val artist: String?,
+        val genre: String?,
+        val album: String?,
+        val hitTitle: String,
+        val pageId: Long,
+        val high: Boolean,
+        val titleConfirmed: Boolean,
+        val reasons: List<String>
+    )
+
+    /** Tags that carry no performer information: anything may be adopted. */
+    private fun artistSuspicious(artist: String): Boolean =
+        isUnknownArtist(artist) || isUploaderLike(artist) ||
+            labelWords.containsMatchIn(artist) || artist.endsWith("vevo", ignoreCase = true)
+
+    /**
+     * Genre/album adoption needs a corroborated title: a clear match, a
+     * performer we already trust, a tag with no performer info, or a title
+     * too distinctive to be another song ("Halo" stays cautious).
+     */
+    private fun corroborated(
+        localArtist: String, snippetArtist: String?, title: String, high: Boolean
+    ): Boolean {
+        if (high) return true
+        if (snippetArtist != null && artistMatches(localArtist, snippetArtist)) return true
+        if (artistSuspicious(localArtist)) return true
+        return title.trim().split(Regex("\\s+")).filter { it.isNotEmpty() }.size >= 2
+    }
+
+    /**
+     * Fold MusicBrainz recording results the same shape as a Wikipedia hit:
+     * exact title match required, performer adopted only from unknown or
+     * matching tags, everything review-flagged otherwise. Local titles
+     * stand (they are already cleaned); MusicBrainz supplies artist, genre
+     * and album.
+     */
+    fun mbFold(
+        localTitle: String, localArtist: String, currentGenre: String,
+        hits: List<MusicBrainzLookup.Hit>
+    ): WikiApplied? {
+        if (hits.isEmpty() || localTitle.isBlank()) return null
+        val want = WikiLookup.norm(MusicBrainzLookup.baseTitle(localTitle))
+        if (want.isBlank()) return null
+        val localUnknown = isUnknownArtist(localArtist)
+        // Exact title first (unknown or matching performer), then title-only.
+        var settled: WikiApplied? = null
+        for (h in hits) {
+            if (WikiLookup.norm(MusicBrainzLookup.baseTitle(h.track)) != want) continue
+            val match = h.artist.isNotBlank() && (localUnknown || artistMatches(localArtist, h.artist))
+            if (localUnknown || match) {
+                val reasons = mutableListOf("MusicBrainz: ${h.track}")
+                val genre: String? =
+                    if (h.genre != null && (currentGenre.isBlank() || currentGenre == "Uncategorized")) h.genre
+                    else null
+                val artist = if (h.artist.isNotBlank()) h.artist else localArtist
+                return WikiApplied(localTitle, artist, genre, reasons, true, true, h.artist)
+            }
+            if (settled == null && h.artist.isNotBlank()) {
+                val reasons = mutableListOf("MusicBrainz title match (artist differs: ${h.artist})")
+                val genre: String? =
+                    if (h.genre != null && (currentGenre.isBlank() || currentGenre == "Uncategorized")) h.genre
+                    else null
+                settled = WikiApplied(localTitle, localArtist, genre, reasons, false, true, h.artist)
+            }
+        }
+        return settled
+    }
+
+    /** Album from the title-matching MusicBrainz hit, if any. */
+    private fun mbAlbum(localTitle: String, hits: List<MusicBrainzLookup.Hit>): String? {
+        if (hits.isEmpty()) return null
+        val want = WikiLookup.norm(MusicBrainzLookup.baseTitle(localTitle))
+        if (want.isBlank()) return null
+        for (h in hits) {
+            if (WikiLookup.norm(MusicBrainzLookup.baseTitle(h.track)) == want) {
+                return h.album?.takeIf { it.isNotBlank() }
+            }
+        }
+        return null
+    }
+
+    private suspend fun lookupOne(
+        m: Mid, genreOf: (Long) -> String, cache: LookupCache?
+    ) {
+        coroutineContext.ensureActive()
+        // Modified re-uploads keep their version words: Wikipedia
+        // would only find the unmodified original, so skip it.
+        if (m.versioned) return
+        val g0 = genreOf(m.song.mediaId)
+        // Primary reading first, then the swapped order ("Title - Artist"
+        // uploaders), then the bare title (uploader tags poison the query).
+        val tried = mutableListOf<Pair<String, String>>(m.title to m.artist)
+        m.altArtist.takeIf { it.isNotBlank() }?.let { aa ->
+            m.altTitle.takeIf { it.isNotBlank() }?.let { at ->
+                if (at to aa != tried[0]) tried.add(at to aa)
+            }
+        }
+        if (!isUnknownArtist(m.artist) && WikiLookup.norm(m.artist) !in WikiLookup.norm(m.title)) {
+            val solo = m.title to ""
+            if (solo != tried[0] && solo !in tried) tried.add(solo)
+        }
+        // Once any reading confirms the title, later readings still try cheap
+        // MusicBrainz (it may upgrade to High) but skip slow Wikipedia: it would
+        // only re-confirm the same title.
+        var confirmed = false
+        for ((tt, aa) in tried) {
+            coroutineContext.ensureActive()
+            val solo = aa.isBlank()
+            val memo = runCatching { cache?.get(tt, aa) }.getOrNull()
+            if (memo != null && !memo.found) continue
+            if (memo != null && memo.found) {
+                // Memo artist differs from this reading: a recorded suggestion.
+                val suggested = memo.artist.takeIf { it.isNotBlank() && it != aa }
+                val f = Folded(
+                    memo.title, suggested, memo.genre, memo.album,
+                    memo.hitTitle, memo.pageId, memo.high, memo.titleConfirmed,
+                    if (memo.high) listOf("Online: ${memo.hitTitle}")
+                    else listOf("Online title match")
+                )
+                if (absorb(m, f, g0, solo)) return
+                if (f.titleConfirmed) confirmed = true
+                continue
+            }
+            // MusicBrainz first: one structured call carries performer,
+            // album, genre. Wikipedia runs only when it has nothing at all.
+            val mb = try {
+                MusicBrainzLookup.search(tt, aa)
+            } catch (e: Exception) {
+                if (e is kotlinx.coroutines.CancellationException) throw e
+                emptyList()
+            }
+            val folded = mbFold(tt, aa, g0, mb)
+            if (folded != null) {
+                val ok = corroborated(aa, folded.snippetArtist, tt, folded.high)
+                if (ok) {
+                    val album = mbAlbum(tt, mb)
+                    // Genre backfill: MusicBrainz tags are sparse, so a
+                    // confirmed title without genre gets one Wikipedia
+                    // details call (cached with the answer).
+                    var mbGenre = folded.genre
+                    if (mbGenre == null && folded.titleConfirmed &&
+                        (g0.isBlank() || g0 == "Uncategorized")
+                    ) {
+                        mbGenre = wikiGenreFor(tt, aa)
+                    }
+                    runCatching {
+                        cache?.put(
+                            tt, aa, CachedLookup(
+                                folded.title,
+                                if (!solo && folded.titleConfirmed) folded.snippetArtist ?: folded.artist else folded.artist,
+                                mbGenre, album, -1, folded.title,
+                                folded.high && !solo, folded.titleConfirmed, true
+                            )
+                        )
+                    }
+                    val f = Folded(
+                        folded.title,
+                        if (!solo && folded.titleConfirmed) folded.snippetArtist else null,
+                        mbGenre, album, folded.title, -1,
+                        folded.high && !solo, folded.titleConfirmed, folded.reasons.toList()
+                    )
+                    if (absorb(m, f, g0, solo)) return
+                    if (f.titleConfirmed) confirmed = true
+                    continue
+                }
+            }
+            if (!confirmed) {
+            val hit = try {
+                WikiLookup.lookup(tt, aa)
+            } catch (e: Exception) {
+                if (e is kotlinx.coroutines.CancellationException) throw e
+                null
+            }
+            if (hit == null) {
+                runCatching { cache?.put(tt, aa, miss()) }
+                continue
+            }
+            val applied = applyWikiResult(tt, aa, g0, hit)
+            if (!corroborated(aa, applied.snippetArtist, tt, applied.high)) {
+                // Title matched nothing trustworthy: pure guess, not kept.
+                // Cache the miss so obscure songs cost one lookup ever.
+                if (!applied.titleConfirmed) {
+                    runCatching {
+                        cache?.put(
+                            tt, aa, CachedLookup(
+                                applied.title, aa, null, null,
+                                hit.pageId, hit.title, false, false, false
+                            )
+                        )
+                    }
+                }
+                continue
+            }
+            var genre = applied.genre
+            var album: String? = null
+            if (applied.titleConfirmed) {
+                // One combined call serves categories-genre and infobox
+                // genre/album together.
+                val details = pageDetails(hit.pageId)
+                if (genre == null) {
+                    genre = details?.first?.let { genreFromCategories(it) }
+                        ?: details?.second?.genre?.let { genreFromCategories(listOf(it)) }
+                }
+                album = WikiLookup.snippetAlbum(hit.snippet) ?: details?.second?.album
+            }
+            runCatching {
+                cache?.put(
+                    tt, aa, CachedLookup(
+                        applied.title,
+                        if (!solo && applied.titleConfirmed) {
+                            applied.snippetArtist ?: applied.artist
+                        } else applied.artist,
+                        genre, album, hit.pageId, hit.title,
+                        applied.high && !solo, applied.titleConfirmed, true
+                    )
+                )
+            }
+            val f = Folded(
+                applied.title,
+                if (!solo && applied.titleConfirmed) applied.snippetArtist else null,
+                genre, album, hit.title, hit.pageId, applied.high && !solo, applied.titleConfirmed,
+                applied.reasons.toList()
+            )
+            if (absorb(m, f, g0, solo)) return
+            if (f.titleConfirmed) confirmed = true
+            } // (!confirmed)
+        }
+    }
+
+    /**
+     * Fold one answer into the candidate. High confidence settles the song;
+     * a confirmed title settles it once as a review candidate. Returns true
+     * when no further reading can improve it.
+     */
+    private fun absorb(m: Mid, f: Folded, g0: String, solo: Boolean): Boolean {
+        if (f.high && !solo) {
+            m.title = f.title
+            if (f.artist != null) m.artist = f.artist
+            m.high = true
+            m.reasons.addAll(f.reasons.filter { it !in m.reasons })
+            adoptGenreAlbum(m, f, g0)
+            return true
+        }
+        if (f.titleConfirmed && m.reasons.none { it.startsWith("Wikipedia") || it.startsWith("MusicBrainz") }) {
+            m.title = f.title
+            if (!solo && f.artist != null) m.artist = f.artist
+            m.reasons.addAll(f.reasons.filter { it !in m.reasons })
+            m.high = false
+            adoptGenreAlbum(m, f, g0)
+        }
+        return false
+    }
+
+    private fun adoptGenreAlbum(m: Mid, f: Folded, g0: String) {
+        if (f.genre != null && (g0.isBlank() || g0 == "Uncategorized")) {
+            m.wikiGenre = f.genre
+            if ("Online genre" !in m.reasons) m.reasons.add("Online genre")
+        }
+        if (f.album != null) {
+            m.wikiAlbum = f.album
+            if ("Online album" !in m.reasons) m.reasons.add("Online album")
+        }
+    }
+
+    private fun miss(): CachedLookup =
+        CachedLookup("", "", null, null, -1, "", false, false, false)
+
+    /** Genre for an already-confirmed title via one Wikipedia search + details. */
+    private suspend fun wikiGenreFor(title: String, artist: String): String? {
+        return try {
+            coroutineContext.ensureActive()
+            val pageId = WikiLookup.searchPageId(title, artist) ?: return null
+            val details = pageDetails(pageId) ?: return null
+            genreFromCategories(details.first)
+                ?: details.second?.genre?.let { genreFromCategories(listOf(it)) }
+        } catch (e: Exception) {
+            if (e is kotlinx.coroutines.CancellationException) throw e
+            null
+        }
+    }
+
+    /** Categories + infobox for one song page, else null. One fetch per song page. */
+    private suspend fun pageDetails(pageId: Long): Pair<List<String>, WikiLookup.Infobox?>? = try {
+        WikiLookup.pageDetails(pageId)
+    } catch (e: Exception) {
+        if (e is kotlinx.coroutines.CancellationException) throw e
+        null
     }
 
     /** Thrown when Wikipedia is unreachable: carries the offline-only results. */
@@ -992,20 +1322,21 @@ object SongAnalyzer {
         val titleMatch = canon.isNotBlank() &&
             WikiLookup.norm(canon) == WikiLookup.norm(localTitle)
         val localUnknown = isUnknownArtist(localArtist)
-        val snippetArtist = WikiLookup.snippetArtist(hit.snippet)
-        val artistMatch = snippetArtist != null &&
-            (localUnknown || artistMatches(localArtist, snippetArtist))
+        val snippetPerformer = WikiLookup.snippetArtist(hit.snippet)
+        val artistMatch = snippetPerformer != null &&
+            (localUnknown || artistMatches(localArtist, snippetPerformer))
 
         if (titleMatch && (localUnknown || artistMatch)) {
             // Clear match: take the canonical title and the performer.
             title = canon
-            if (snippetArtist != null) artist = snippetArtist
+            if (snippetPerformer != null) artist = snippetPerformer
             reasons.add("Wikipedia: ${hit.title}")
             high = true
-        } else if (titleMatch && snippetArtist != null) {
+        } else if (titleMatch && snippetPerformer != null) {
             // Title confirmed, performer differs: keep ours, flag review.
+            // The caller may still adopt the performer as a suggestion.
             title = canon
-            reasons.add("Wikipedia title match (artist differs: $snippetArtist)")
+            reasons.add("Wikipedia title match (artist differs: $snippetPerformer)")
             high = false
         } else if (titleMatch) {
             // Title confirmed but no performer found: keep everything, review.
@@ -1016,19 +1347,21 @@ object SongAnalyzer {
             // Best guess only: suggest, do not trust.
             reasons.add("Wikipedia guess: ${hit.title}")
             high = false
-            return WikiApplied(title, artist, null, reasons, high)
+            return WikiApplied(title, artist, null, reasons, high, titleMatch, snippetPerformer)
         }
+        // Genre travels with the hit; the caller adopts it only when the
+        // title is corroborated, and says so itself.
         val g = genreFromCategories(hit.categories)
         if (g != null && (currentGenre.isBlank() || currentGenre == "Uncategorized")) {
             genre = g
-            reasons.add("Wikipedia genre")
         }
-        return WikiApplied(title, artist, genre, reasons, high)
+        return WikiApplied(title, artist, genre, reasons, high, titleMatch, snippetPerformer)
     }
 
     data class WikiApplied(
         val title: String, val artist: String, val genre: String?,
-        val reasons: List<String>, val high: Boolean
+        val reasons: MutableList<String>, val high: Boolean,
+        val titleConfirmed: Boolean, val snippetArtist: String?
     )
 
     private fun sanitize(name: String): String {

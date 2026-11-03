@@ -19,6 +19,7 @@ import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
+import androidx.media3.common.Timeline
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.session.MediaNotification
 import androidx.media3.session.MediaSession
@@ -47,6 +48,10 @@ import kotlin.math.log10
  * Both are public APIs, so this works on any device without custom DSP code.
  *
  * Media3 owns audio focus, including transient loss/resume while the UI is gone.
+ * Focus is managed here, not by Media3: transient interruptions pause and
+ * resume alone, permanent takeovers and unplugs pause with a recorded
+ * reason, and a user pause is never overridden. A stall watchdog restarts
+ * frozen playback without reopening the app.
  */
 @OptIn(androidx.media3.common.util.UnstableApi::class)
 class PlayerService : MediaSessionService() {
@@ -98,6 +103,131 @@ class PlayerService : MediaSessionService() {
     @Volatile var previewSongId: Long? = null
 
     private lateinit var db: BlissDb
+    private val focusPolicy = FocusPolicy()
+    private var audioManager: android.media.AudioManager? = null
+    private var focusRequest: android.media.AudioFocusRequest? = null
+    private var focusHeld = false
+    private var waitingForFocus = false
+    /** Set when our own focus/noise handler paused: not a user pause. */
+    private var systemPauseArmed = false
+    // Stall watchdog: position must advance while supposed to be playing.
+    private var lastWatchPos = -1L
+    private var lastWatchTime = 0L
+    private var stallCount = 0
+    private var bufferingSince = 0L
+    private var bufferingItem: String? = null
+    private val focusListener = android.media.AudioManager.OnAudioFocusChangeListener { change ->
+        val respect = respectFocus()
+        when (change) {
+            android.media.AudioManager.AUDIOFOCUS_GAIN -> {
+                applyFocusActions(focusPolicy.onEvent(FocusPolicy.Event.FOCUS_GAIN, respect, player.isPlaying))
+                // Delayed grant from an earlier start: take it unless paused meanwhile.
+                if (waitingForFocus && !focusPolicy.userPaused) ensureFocusThenPlay()
+            }
+            android.media.AudioManager.AUDIOFOCUS_LOSS_TRANSIENT ->
+                applyFocusActions(focusPolicy.onEvent(FocusPolicy.Event.FOCUS_TRANSIENT, respect, player.isPlaying))
+            android.media.AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK ->
+                applyFocusActions(focusPolicy.onEvent(FocusPolicy.Event.FOCUS_DUCK, respect, player.isPlaying))
+            android.media.AudioManager.AUDIOFOCUS_LOSS -> {
+                applyFocusActions(focusPolicy.onEvent(FocusPolicy.Event.FOCUS_LOSS, respect, player.isPlaying))
+                if (respect) abandonFocus()
+            }
+        }
+        persistPauseReason()
+    }
+    private val noisyReceiver = object : android.content.BroadcastReceiver() {
+        override fun onReceive(c: android.content.Context?, intent: android.content.Intent?) {
+            if (intent?.action != android.media.AudioManager.ACTION_AUDIO_BECOMING_NOISY) return
+            if (!::player.isInitialized || !player.isPlaying) return
+            systemPauseArmed = true
+            applyFocusActions(focusPolicy.onEvent(FocusPolicy.Event.NOISY, true, true))
+            persistPauseReason()
+        }
+    }
+    private var noisyRegistered = false
+
+    private fun respectFocus(): Boolean =
+        getSharedPreferences("bliss", MODE_PRIVATE).getString("focus_mode", "CallsOnly") != "Off"
+
+    private fun applyFocusActions(actions: List<FocusPolicy.Action>) {
+        if (!::player.isInitialized) return
+        for (a in actions) when (a) {
+            FocusPolicy.Action.NONE -> {}
+            FocusPolicy.Action.PAUSE -> {
+                systemPauseArmed = true
+                player.pause()
+            }
+            FocusPolicy.Action.RESUME -> ensureFocusThenPlay()
+            FocusPolicy.Action.DUCK_ON, FocusPolicy.Action.DUCK_OFF -> applyGainFor(player.currentMediaItem)
+        }
+    }
+
+    /** Request audio focus, then play. Retries on transient denial via regain. */
+    private fun ensureFocusThenPlay() {
+        if (!::player.isInitialized) return
+        if (!respectFocus()) {
+            focusHeld = false
+            waitingForFocus = false
+            player.play()
+            return
+        }
+        if (focusHeld) {
+            player.play()
+            return
+        }
+        when (requestFocus()) {
+            android.media.AudioManager.AUDIOFOCUS_REQUEST_GRANTED -> {
+                focusHeld = true
+                waitingForFocus = false
+                player.play()
+            }
+            android.media.AudioManager.AUDIOFOCUS_REQUEST_DELAYED -> {
+                // Another app is finishing: stay quiet until it lets go.
+                // Record the intent so the coming gain actually starts us.
+                waitingForFocus = true
+                focusPolicy.onEvent(FocusPolicy.Event.PLAY_STARTED, respectFocus(), false)
+            }
+            else -> {
+                waitingForFocus = false
+                focusPolicy.noteDenied()
+                persistPauseReason()
+                systemPauseArmed = true
+                player.pause()
+                android.widget.Toast.makeText(this,
+                    "Another app is playing audio.", android.widget.Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
+    private fun requestFocus(): Int {
+        val am = audioManager ?: return android.media.AudioManager.AUDIOFOCUS_REQUEST_FAILED
+        val req = focusRequest ?: android.media.AudioFocusRequest.Builder(android.media.AudioManager.AUDIOFOCUS_GAIN)
+            .setAudioAttributes(
+                android.media.AudioAttributes.Builder()
+                    .setUsage(android.media.AudioAttributes.USAGE_MEDIA)
+                    .setContentType(android.media.AudioAttributes.CONTENT_TYPE_MUSIC)
+                    .build()
+            )
+            .setOnAudioFocusChangeListener(focusListener)
+            .setAcceptsDelayedFocusGain(true)
+            .build()
+            .also { focusRequest = it }
+        return runCatching { am.requestAudioFocus(req) }
+            .getOrDefault(android.media.AudioManager.AUDIOFOCUS_REQUEST_FAILED)
+    }
+
+    private fun abandonFocus() {
+        focusHeld = false
+        waitingForFocus = false
+        val am = audioManager
+        val req = focusRequest
+        if (am != null && req != null) runCatching { am.abandonAudioFocusRequest(req) }
+    }
+
+    private fun persistPauseReason() {
+        getSharedPreferences("bliss", MODE_PRIVATE).edit()
+            .putString("last_pause_reason", focusPolicy.pauseReason).apply()
+    }
     private val notifManager by lazy { getSystemService(NotificationManager::class.java) }
     private val notifTickHandler = Handler(Looper.getMainLooper())
     private val notifTick = object : Runnable {
@@ -106,6 +236,7 @@ class PlayerService : MediaSessionService() {
                 postNotif()
                 // Also detects a selected speaker route while Bluetooth stays connected.
                 volumeManager.refreshRoute()
+                watchPosition()
                 val now = android.os.SystemClock.elapsedRealtime()
                 if (now - lastResumeSave > 15000) {
                     savePlaybackState()
@@ -113,6 +244,34 @@ class PlayerService : MediaSessionService() {
                 }
                 notifTickHandler.postDelayed(this, 1000)
             }
+        }
+    }
+
+    /**
+     * The notification can claim playback while the position never moves
+     * (wedged decoder/effect/output). Catch it and recover without the user
+     * reopening the app: first re-kick the renderer, then skip the file.
+     */
+    private fun watchPosition() {
+        if (!::player.isInitialized || !player.isPlaying) return
+        val pos = player.currentPosition
+        val now = android.os.SystemClock.elapsedRealtime()
+        if (pos != lastWatchPos) {
+            lastWatchPos = pos
+            lastWatchTime = now
+            stallCount = 0
+            return
+        }
+        if (now - lastWatchTime < 5_000) return
+        lastWatchTime = now
+        stallCount++
+        if (stallCount == 1) {
+            recordStall("stalled")
+            player.seekTo(pos)
+            player.prepare()
+        } else {
+            recordStall("stalled")
+            skipStalled()
         }
     }
     private val segTickHandler = Handler(Looper.getMainLooper())
@@ -129,6 +288,33 @@ class PlayerService : MediaSessionService() {
         override fun onMediaItemTransition(item: MediaItem?, reason: Int) {
             applyGainFor(item)
             savePlaybackState()
+        }
+
+        override fun onTimelineChanged(timeline: Timeline, reason: Int) {
+            // A queue exists: stay foreground so swiping the app away never
+            // takes the music or its notification with it. Only swiping the
+            // notification itself (ACTION_STOP) ends playback.
+            if (player.mediaItemCount > 0) {
+                runCatching { startForeground(NOTIF_ID, buildNotification()) }
+            }
+        }
+
+        override fun onPlaybackStateChanged(state: Int) {
+            if (!::player.isInitialized) return
+            val itemId = player.currentMediaItem?.mediaId
+            if (state == Player.STATE_BUFFERING && player.playWhenReady) {
+                // Local files never buffer long: something is wedged.
+                if (bufferingItem != itemId) {
+                    bufferingItem = itemId
+                    bufferingSince = android.os.SystemClock.elapsedRealtime()
+                } else if (android.os.SystemClock.elapsedRealtime() - bufferingSince > 15_000) {
+                    bufferingItem = null
+                    recordStall("buffering")
+                    skipStalled()
+                }
+            } else {
+                bufferingItem = null
+            }
         }
 
         override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
@@ -175,13 +361,71 @@ class PlayerService : MediaSessionService() {
 
         override fun onIsPlayingChanged(isPlaying: Boolean) {
             postNotif()
+            // A queue means the notification (and foreground status) stays,
+            // paused or playing, until the notification itself is swiped away.
+            if (player.mediaItemCount > 0) {
+                runCatching { startForeground(NOTIF_ID, buildNotification()) }
+            }
             notifTickHandler.removeCallbacks(notifTick)
             segTickHandler.removeCallbacks(segTick)
             if (isPlaying) {
+                applyFocusActions(focusPolicy.onEvent(FocusPolicy.Event.PLAY_STARTED, respectFocus(), true))
+                persistPauseReason()
+                ensureFocusHeld()
+                lastWatchPos = -1L
+                stallCount = 0
                 notifTickHandler.post(notifTick)
                 segTickHandler.post(segTick)
+            } else {
+                if (systemPauseArmed) {
+                    systemPauseArmed = false
+                } else {
+                    focusPolicy.onEvent(FocusPolicy.Event.USER_PAUSE, respectFocus(), false)
+                    persistPauseReason()
+                    if (respectFocus()) abandonFocus()
+                }
             }
         }
+    }
+
+    /** Every UI play path funnels here so focus is claimed before sound. */
+    fun userPlay() = ensureFocusThenPlay()
+
+    /** Playing without held focus (direct player.play() paths): claim it. */
+    private fun ensureFocusHeld() {
+        if (!::player.isInitialized || !respectFocus() || focusHeld) return
+        when (requestFocus()) {
+            android.media.AudioManager.AUDIOFOCUS_REQUEST_GRANTED -> focusHeld = true
+            android.media.AudioManager.AUDIOFOCUS_REQUEST_DELAYED -> waitingForFocus = true
+            else -> {
+                waitingForFocus = false
+                focusPolicy.noteDenied()
+                persistPauseReason()
+                systemPauseArmed = true
+                player.pause()
+            }
+        }
+    }
+
+    /** Frozen-but-"playing" watchdog shared by the position and buffering checks. */
+    private fun recordStall(kind: String) {
+        focusPolicy.onEvent(FocusPolicy.Event.USER_PAUSE, true, false)
+        getSharedPreferences("bliss", MODE_PRIVATE).edit()
+            .putString("last_pause_reason", kind).apply()
+    }
+
+    /** A stall leaves the current file; try the next song before giving up. */
+    private fun skipStalled() {
+        if (!::player.isInitialized || player.mediaItemCount == 0) return
+        if (player.mediaItemCount == 1 || player.currentMediaItemIndex >= player.mediaItemCount - 1) {
+            systemPauseArmed = true
+            player.pause()
+            return
+        }
+        player.seekToNextMediaItem()
+        player.prepare()
+        lastWatchPos = -1L
+        stallCount = 0
     }
 
     override fun onCreate() {
@@ -197,13 +441,24 @@ class PlayerService : MediaSessionService() {
                     .setUsage(C.USAGE_MEDIA)
                     .setContentType(C.AUDIO_CONTENT_TYPE_MUSIC)
                     .build(),
-                true // standard transient pause/duck/resume, independent of the Activity
+                false // focus is managed below: resume-on-regain, ducking, reasons
             )
             .setWakeMode(C.WAKE_MODE_LOCAL) // CPU stays up for gapless local playback
-            .setHandleAudioBecomingNoisy(true) // pause on headphone unplug
+            .setHandleAudioBecomingNoisy(false) // own noisy receiver, so pauses attribute correctly
             .build()
         player.addListener(listener)
 
+        audioManager = getSystemService(android.media.AudioManager::class.java)
+        if (!noisyRegistered) {
+            noisyRegistered = true
+            runCatching {
+                androidx.core.content.ContextCompat.registerReceiver(
+                    this, noisyReceiver,
+                    android.content.IntentFilter(android.media.AudioManager.ACTION_AUDIO_BECOMING_NOISY),
+                    androidx.core.content.ContextCompat.RECEIVER_NOT_EXPORTED
+                )
+            }
+        }
         configureAudioFocus()
         volumeManager = (application as com.blissplayer.music.BlissApplication).volumeManager
         volumeManager.addListener(volumeListener)
@@ -224,8 +479,12 @@ class PlayerService : MediaSessionService() {
     }
 
     fun configureAudioFocus() {
-        player.setAudioAttributes(player.audioAttributes,
-            getSharedPreferences("bliss", MODE_PRIVATE).getString("focus_mode", "CallsOnly") != "Off")
+        if (!::player.isInitialized) return
+        if (!respectFocus()) {
+            abandonFocus()
+        } else if (player.isPlaying) {
+            ensureFocusHeld()
+        }
     }
 
     /** Android 15+ requires foreground status before a background focus request. */
@@ -236,7 +495,7 @@ class PlayerService : MediaSessionService() {
             getSharedPreferences("bliss", MODE_PRIVATE).edit()
                 .putString("last_playback_error", lastPlaybackError).apply()
         }
-        player.play()
+        ensureFocusThenPlay()
     }
 
     private fun savePlaybackState() {
@@ -333,6 +592,9 @@ class PlayerService : MediaSessionService() {
                 ACTION_PREV -> player.seekToPreviousMediaItem()
                 // Swiping the notification away means done with music: stop it all.
                 ACTION_STOP -> {
+                    focusPolicy.onEvent(FocusPolicy.Event.STOPPED, respectFocus(), false)
+                    persistPauseReason()
+                    abandonFocus()
                     player.pause()
                     player.clearMediaItems()
                     stopSelf()
@@ -502,6 +764,11 @@ class PlayerService : MediaSessionService() {
     override fun onDestroy() {
         savePlaybackState()
         scope.cancel()
+        abandonFocus()
+        if (noisyRegistered) {
+            noisyRegistered = false
+            runCatching { unregisterReceiver(noisyReceiver) }
+        }
         notifTickHandler.removeCallbacksAndMessages(null)
         segTickHandler.removeCallbacksAndMessages(null)
         volumeManager.removeListener(volumeListener)
@@ -522,7 +789,8 @@ class PlayerService : MediaSessionService() {
     fun applyGainFor(item: MediaItem?) {
         val id = item?.mediaId?.toLongOrNull()
         val norm = if (id != null) (normGains[id] ?: 1.0).toFloat() else 1.0f
-        val total = (norm * boost * tone.gain()).coerceIn(0.0001f, 80.0f)
+        val duck = if (focusPolicy.ducked) 0.25f else 1f
+        val total = (norm * boost * tone.gain() * duck).coerceIn(0.0001f, 80.0f)
         // Stage 1: ExoPlayer volume does everything up to unity.
         player.volume = total.coerceIn(0.0f, 1.0f)
         // Stage 2: enhancer adds the rest as dB above unity. The phone clamps to its own max.
@@ -538,6 +806,19 @@ class PlayerService : MediaSessionService() {
     fun refreshGains() {
         normGains = db.allGains()
         if (::player.isInitialized) applyGainFor(player.currentMediaItem)
+    }
+
+    /**
+     * The equalizer needs a live audio session, which only exists after the
+     * player has prepared something. The session callback does not always
+     * refire, so attach on demand when the mixer opens: works paused too,
+     * only a never-played session truly has nothing to attach to.
+     */
+    fun ensureToneAttached(): Boolean {
+        if (tone.bands().isNotEmpty()) return true
+        val id = runCatching { if (::player.isInitialized) player.audioSessionId else 0 }.getOrDefault(0)
+        if (id != 0 && id != C.AUDIO_SESSION_ID_UNSET) tone.attach(id)
+        return tone.bands().isNotEmpty()
     }
 
     /** Simple local binder so MainActivity can call play/queue helpers directly. */

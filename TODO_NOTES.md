@@ -200,3 +200,24 @@ THe 96% was 95% of the ymusic folder to be clear, i only see 25 songs in the emu
 - [x] Review list gained Select all (dialog stays open), plus a regression test driving review -> select all -> apply to Analyzer done.
 - [x] Full gate green on final code: 59 JVM (4 network skipped), 7 Android API 35 regressions, lint clean. Built BlissPlayer-v0.8.31-debug.apk (versionCode 47; number ran fast because every verification build invocation increments per Message 37 rule).
 - [ ] NOT verified: real-car Bluetooth radio, long-duration API 37 handset playback, physical aux insertion, acoustic quality. Emulator touch injection is flaky (plain taps dropped; dwell/swipes and accessibility clicks work) and its accessibility tree goes blind for minutes, so some manual tap-throughs were verified via screenshots/logcat instead.
+
+## Message 41, many fixes for 0.9.x
+okay the main biggest issue is just the background playback, it works most of hte time but someitmes ill open mesasegso r something and it just pauses for no rteason, but its anot actually paused the notification shows that its still playing but the bar isnt moving and i have to enter the app to play it again, also when i swipe the app away it shoudlnt close the notification it hsould keep playing until i swipe thje notification, allow it to fully run in the notification, silently if needed. Another thing, the anazlyer should be donig generas and albumbs better, keep testing until at least 1000 of the 1200 songs work confidently with titles, albumbs, generas, artists, the whole thing. Also add a equalizer silder so when you equalize you can choose hwo styrong you want it to be, maybe you want it to equalize as much as possible orj ust subtly move it. When a song is selected in the now playing the 3 dots turn white and are hard to see, this should be fixed. Organize button should actually move all files into the BlissPlayer folder with their differnt subdirectories, i still have music in my downloads after running it. Also the your muisioc shows which folders to use, after they are seperarted into differnt subdirs it becomes impossible to use beacuse the list is too long, puit it in a tree so i can collapse and view thew tree of subdirs and enable and disable them in bulk, disabling shoudlnt remove it form the list it should just remove it from being used and gray it out in the list. Presets for boost are good but there is currently no way to remove them once you create them, frequency mmixer always tells you to open a song, it shoudlnt need a song playing also i have a song playing while its saying that, A copy of this messsage is in todo notes, keep going till its perfect then sleep the computer with systemctl sleep, do not stop for any reason until tis perfect. The bluetooth auto connecting and autoplay and auto boost works perfectly btw good job!
+
+## Message 42 (summary: crash report privacy + version bump per build)
+User asked to keep going: crash logs must never auto-save into the Downloads folder; on a crash there should be a crash report but it stays private (shown once, export only to a user-chosen file). Also bump the version patch and versionCode on every APK build.
+
+## Message 43 (why did you stop + file count)
+What are you waiting for??? why did you stop??? Also there are over a thousand ymusic files not 500
+
+## Message 44 (repeat of Message 41: full 0.9.x list restated)
+User restated the Message 41 list verbatim (background stall with frozen bar, swipe-app-away must not stop notification, analyzer to 1000+ confident with title/artist/album/genre, equalizer strength slider, white dots on selected row, organize-all into BlissPlayer tree, collapsible folder tree with bulk enable/disable gray-out, preset delete, mixer without playback, keep Bluetooth as-is) and asked whether everything other than the analyzer is already fixed.
+
+## Message 45 (sleep when done verifying)
+okay when you fginish verifying everythting sleep the computer with systemctl sleep
+
+## Message 46 (why Apple + YouTube/Wikipedia only)
+User asked why lookups use Apple at all since every song is from YouTube, and said lookup should be YouTube + Wikipedia. Answered: Apple was keyless structured (title/artist/album/genre in one call); YouTube has no keyless structured API and scraping gives no genre/album. Replaced Apple with MusicBrainz (keyless, structured) + Wikipedia, Apple code deleted.
+
+## Message 47 (call it good enough, build for real phone)
+okay lets just call it good enough, get it built and setup so i can install on my real phone

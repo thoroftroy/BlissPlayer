@@ -60,3 +60,26 @@ reason; the dialog/apply flow is covered by the instrumentation suite.
 
 The test fixture is a three-second 440 Hz sine at very low volume, generated with
 FFmpeg/AAC, not a user music file. Test reports are in `app/build/reports/`.
+
+## 0.9 round (Nov 3, 2026, v0.9.20)
+- Apple/iTunes lookup removed entirely; pipeline is now MusicBrainz-first
+  (title/artist/album/genre tags, studio-album release-group preference,
+  1 req/s bucket, circuit breaker) + Wikipedia second (search, combined
+  categories+infobox details call, genre backfill for confirmed titles).
+- Full JVM suite green (71 checks, includes new MusicBrainz parse/fold and
+  studio-album tests). FocusPolicy pure unit tests green.
+- Connected StabilityRegressionTest 10/10 green on BlissTest2: swipe-away
+  keeps notification + advancing position, More-pane tree/preset-delete/
+  mixer/EQ-slider/organize entry, Downloads-leftovers organize (3/3 moved),
+  plus all prior regressions (focus resume, doze, crash privacy, queue menu,
+  select-all, tag writes).
+- Organize-all verified end-to-end on device: 587/587 files moved from
+  Music/YMusic into Music/BlissPlayer/Artist/Album.
+- Analyzer bulk measurement over all 1177 YMusic files (JVM, live APIs):
+  1147/1177 proposals (97.5%), 1050 albums filled, genre the remaining gap
+  (MusicBrainz tags sparse; Wikipedia backfill added). Bulk run in progress
+  with persistent resume cache; per-API throttles (Apple 403-boxed this IP,
+  MusicBrainz 1/s, Wikipedia burst limits) make a full pass ~1h, cached once.
+- Shipped BlissPlayer-v0.9.20-debug.apk (installed + launch-verified).
+- NOT verified: real-car Bluetooth handoff, physical aux, long-duration
+  handset playback, acoustic quality/hearing safety.

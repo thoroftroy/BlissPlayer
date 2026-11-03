@@ -84,12 +84,16 @@ class BulkYMusicTest {
         // Deterministic bulk proof on real YMusic bytes: copy ~100 files
         // through the app so they are app-owned (no system consent dialogs),
         // then analyze + write + rescan exactly like Apply does.
-        val srcDir = java.io.File("/sdcard/Music/YMusic")
-        val names = srcDir.listFiles { f -> f.isFile }!!.map { it.name }.sorted()
+        // (Source is the organized BlissPlayer tree: organize-all moved the
+        // YMusic batch there. Walk recursively.)
+        val srcDir = java.io.File("/sdcard/Music/BlissPlayer")
+        val names = srcDir.walkTopDown().filter { it.isFile }.map {
+            it.relativeTo(srcDir).path
+        }.sorted().toList()
         assertTrue("no source files", names.size >= 200)
-        // Up to 300 real files (disk-bound), always including the spot-checks
-        // when this batch has them.
-        val picked = names.take(300).toMutableList()
+        // Up to 120 real files (network-bound online lookup), always
+        // including the spot-checks when this batch has them.
+        val picked = names.take(120).toMutableList()
         for (must in listOf("Aint No Sunshine", "My Way.m4a", "Tulus - 1000 Tahun Lamanya.m4a")) {
             val hit = names.firstOrNull { must in it }
             if (hit != null && hit !in picked) picked.add(hit)
@@ -98,9 +102,10 @@ class BulkYMusicTest {
         val copied = mutableListOf<String>()
         for (n in picked) {
             val src = java.io.File(srcDir, n)
-            val mime = if (n.endsWith(".mp3", true)) "audio/mpeg" else "audio/mp4"
+            val base = java.io.File(n).name
+            val mime = if (base.endsWith(".mp3", true)) "audio/mpeg" else "audio/mp4"
             val values = android.content.ContentValues().apply {
-                put(android.provider.MediaStore.Audio.Media.DISPLAY_NAME, "blissbulk-$n")
+                put(android.provider.MediaStore.Audio.Media.DISPLAY_NAME, "blissbulk-$base")
                 put(android.provider.MediaStore.Audio.Media.MIME_TYPE, mime)
                 put(android.provider.MediaStore.Audio.Media.RELATIVE_PATH, "Music/BlissBulk/")
                 put(android.provider.MediaStore.Audio.Media.IS_PENDING, 1)
@@ -116,7 +121,7 @@ class BulkYMusicTest {
             context.contentResolver.update(uri, android.content.ContentValues().apply {
                 put(android.provider.MediaStore.Audio.Media.IS_PENDING, 0)
             }, null, null)
-            copied.add("blissbulk-$n")
+            copied.add("blissbulk-$base")
         }
         try {
             val songs = MusicScanner.scanAll(context).filter { s ->
@@ -124,7 +129,9 @@ class BulkYMusicTest {
             }
             assertTrue("copies not indexed: ${songs.size}", songs.size == copied.size)
             val proposals = kotlinx.coroutines.runBlocking {
-                SongAnalyzer.analyze(songs, { "Uncategorized" }, { "Unknown album" }, false) { _, _, _ -> }
+                // Online: genre/album come only from internet lookup, never
+                // guessed (0.9 rule), so the offline path cannot cover them.
+                SongAnalyzer.analyze(songs, { "Uncategorized" }, { "Unknown album" }, true) { _, _, _ -> }
             }
             val coverage = proposals.size * 100.0 / songs.size
             android.util.Log.i("BulkYMusic", "TMP headless proposals=${proposals.size}/${songs.size}")

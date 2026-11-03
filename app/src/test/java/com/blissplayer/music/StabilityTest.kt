@@ -159,4 +159,81 @@ class StabilityTest {
         assertEquals(1f, ToneMath.gain(12, 1200), 0f)
         assertTrue(ToneMath.gain(-24, 1500) > 0f)
     }
+
+    private fun policy() = com.blissplayer.music.playback.FocusPolicy()
+
+    @Test fun transientLossPausesAndRegainResumes() {
+        val p = policy()
+        p.onEvent(com.blissplayer.music.playback.FocusPolicy.Event.PLAY_STARTED, true, true)
+        assertEquals(listOf(com.blissplayer.music.playback.FocusPolicy.Action.PAUSE),
+            p.onEvent(com.blissplayer.music.playback.FocusPolicy.Event.FOCUS_TRANSIENT, true, true))
+        assertEquals("focus-transient", p.pauseReason)
+        assertEquals(listOf(com.blissplayer.music.playback.FocusPolicy.Action.RESUME),
+            p.onEvent(com.blissplayer.music.playback.FocusPolicy.Event.FOCUS_GAIN, true, false))
+        assertNull(p.pauseReason)
+        assertFalse(p.autoPaused)
+    }
+
+    @Test fun permanentLossPausesAndRegainResumesOnlyWhenFree() {
+        val p = policy()
+        p.onEvent(com.blissplayer.music.playback.FocusPolicy.Event.PLAY_STARTED, true, true)
+        assertEquals(listOf(com.blissplayer.music.playback.FocusPolicy.Action.PAUSE),
+            p.onEvent(com.blissplayer.music.playback.FocusPolicy.Event.FOCUS_LOSS, true, true))
+        assertEquals("focus-permanent", p.pauseReason)
+        // If focus ever comes back while we still own the auto-pause,
+        // taking it is correct: nobody else is playing.
+        assertEquals(listOf(com.blissplayer.music.playback.FocusPolicy.Action.RESUME),
+            p.onEvent(com.blissplayer.music.playback.FocusPolicy.Event.FOCUS_GAIN, true, false))
+        assertNull(p.pauseReason)
+    }
+
+    @Test fun userPauseBlocksAnyAutoResume() {
+        val p = policy()
+        p.onEvent(com.blissplayer.music.playback.FocusPolicy.Event.PLAY_STARTED, true, true)
+        p.onEvent(com.blissplayer.music.playback.FocusPolicy.Event.FOCUS_TRANSIENT, true, true) // system pause, may resume
+        p.onEvent(com.blissplayer.music.playback.FocusPolicy.Event.USER_PAUSE, true, false) // user pauses during the call
+        assertEquals(listOf(com.blissplayer.music.playback.FocusPolicy.Action.NONE),
+            p.onEvent(com.blissplayer.music.playback.FocusPolicy.Event.FOCUS_GAIN, true, false))
+        p.onEvent(com.blissplayer.music.playback.FocusPolicy.Event.PLAY_STARTED, true, true) // user presses play again
+        assertNull(p.pauseReason)
+    }
+
+    @Test fun duckLowersAndRestoresWithoutPausing() {
+        val p = policy()
+        p.onEvent(com.blissplayer.music.playback.FocusPolicy.Event.PLAY_STARTED, true, true)
+        assertEquals(listOf(com.blissplayer.music.playback.FocusPolicy.Action.DUCK_ON),
+            p.onEvent(com.blissplayer.music.playback.FocusPolicy.Event.FOCUS_DUCK, true, true))
+        assertTrue(p.ducked)
+        assertNull(p.pauseReason)
+        assertEquals(listOf(com.blissplayer.music.playback.FocusPolicy.Action.DUCK_OFF),
+            p.onEvent(com.blissplayer.music.playback.FocusPolicy.Event.FOCUS_GAIN, true, true))
+        assertFalse(p.ducked)
+    }
+
+    @Test fun ignoreModeIgnoresFocusButNotUnplug() {
+        val p = policy()
+        p.onEvent(com.blissplayer.music.playback.FocusPolicy.Event.PLAY_STARTED, false, true)
+        assertEquals(listOf(com.blissplayer.music.playback.FocusPolicy.Action.NONE),
+            p.onEvent(com.blissplayer.music.playback.FocusPolicy.Event.FOCUS_LOSS, false, true))
+        assertNull(p.pauseReason)
+        assertEquals(listOf(com.blissplayer.music.playback.FocusPolicy.Action.PAUSE),
+            p.onEvent(com.blissplayer.music.playback.FocusPolicy.Event.NOISY, false, true))
+        assertEquals("noisy", p.pauseReason)
+    }
+
+    @Test fun stopResetsEverything() {
+        val p = policy()
+        p.onEvent(com.blissplayer.music.playback.FocusPolicy.Event.PLAY_STARTED, true, true)
+        p.onEvent(com.blissplayer.music.playback.FocusPolicy.Event.FOCUS_TRANSIENT, true, true)
+        p.onEvent(com.blissplayer.music.playback.FocusPolicy.Event.STOPPED, true, false)
+        assertEquals(listOf(com.blissplayer.music.playback.FocusPolicy.Action.NONE),
+            p.onEvent(com.blissplayer.music.playback.FocusPolicy.Event.FOCUS_GAIN, true, false))
+    }
+
+    @Test fun reasonsDescribeThemselves() {
+        assertNull(com.blissplayer.music.playback.FocusPolicy.describe(null))
+        assertNull(com.blissplayer.music.playback.FocusPolicy.describe("user"))
+        assertTrue(com.blissplayer.music.playback.FocusPolicy.describe("focus-permanent")!!.contains("another app"))
+        assertTrue(com.blissplayer.music.playback.FocusPolicy.describe("noisy")!!.contains("headphones"))
+    }
 }

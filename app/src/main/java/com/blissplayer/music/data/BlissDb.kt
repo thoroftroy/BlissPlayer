@@ -12,7 +12,7 @@ import android.database.sqlite.SQLiteOpenHelper
  *  playlists(id, name) + playlist_songs(playlist_id, media_id, position)
  *  boost(device_name PRIMARY KEY, gain_mult)  , per-device amp memory (car vs headphones)
  */
-class BlissDb(context: Context) : SQLiteOpenHelper(context, "bliss.db", null, 8) {
+class BlissDb(context: Context) : SQLiteOpenHelper(context, "bliss.db", null, 9) {
 
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL("CREATE TABLE gains(media_id INTEGER PRIMARY KEY, gain_mult REAL NOT NULL)")
@@ -28,6 +28,7 @@ class BlissDb(context: Context) : SQLiteOpenHelper(context, "bliss.db", null, 8)
         db.execSQL("CREATE INDEX idx_seg ON segments(media_id)")
         db.execSQL("CREATE TABLE song_genre(media_id INTEGER PRIMARY KEY, genre TEXT NOT NULL)")
         db.execSQL("CREATE TABLE song_album(media_id INTEGER PRIMARY KEY, album TEXT NOT NULL)")
+        db.execSQL("CREATE TABLE lookup_cache(key TEXT PRIMARY KEY, title TEXT NOT NULL, artist TEXT NOT NULL, genre TEXT NOT NULL DEFAULT '', album TEXT NOT NULL DEFAULT '', pageid INTEGER NOT NULL DEFAULT 0, hittitle TEXT NOT NULL DEFAULT '', high INTEGER NOT NULL DEFAULT 0, confirmed INTEGER NOT NULL DEFAULT 0, found INTEGER NOT NULL DEFAULT 0)")
     }
 
     override fun onUpgrade(db: SQLiteDatabase, old: Int, new: Int) {
@@ -49,6 +50,9 @@ class BlissDb(context: Context) : SQLiteOpenHelper(context, "bliss.db", null, 8)
         }
         if (old < 8) {
             db.execSQL("CREATE TABLE IF NOT EXISTS song_album(media_id INTEGER PRIMARY KEY, album TEXT NOT NULL)")
+        }
+        if (old < 9) {
+            db.execSQL("CREATE TABLE IF NOT EXISTS lookup_cache(key TEXT PRIMARY KEY, title TEXT NOT NULL, artist TEXT NOT NULL, genre TEXT NOT NULL DEFAULT '', album TEXT NOT NULL DEFAULT '', pageid INTEGER NOT NULL DEFAULT 0, hittitle TEXT NOT NULL DEFAULT '', high INTEGER NOT NULL DEFAULT 0, confirmed INTEGER NOT NULL DEFAULT 0, found INTEGER NOT NULL DEFAULT 0)")
         }
     }
 
@@ -322,6 +326,46 @@ class BlissDb(context: Context) : SQLiteOpenHelper(context, "bliss.db", null, 8)
             while (c.moveToNext()) m[c.getLong(0)] = c.getString(1)
         }
         return m
+    }
+
+    // ---- Wikipedia lookup cache (analyzer): keyed by normalized
+    // title+artist so repeat runs never re-hit the network. Misses are
+    // stored too, so obscure songs cost one lookup ever.
+    fun getLookup(key: String): SongAnalyzer.CachedLookup? {
+        readableDatabase.rawQuery(
+            "SELECT title, artist, genre, album, pageid, hittitle, high, confirmed, found FROM lookup_cache WHERE key=?",
+            arrayOf(key)
+        )?.use { c ->
+            if (c.moveToFirst()) {
+                return SongAnalyzer.CachedLookup(
+                    c.getString(0) ?: "", c.getString(1) ?: "",
+                    c.getString(2)?.takeIf { it.isNotEmpty() },
+                    c.getString(3)?.takeIf { it.isNotEmpty() },
+                    c.getLong(4), c.getString(5) ?: "",
+                    c.getInt(6) != 0, c.getInt(7) != 0, c.getInt(8) != 0
+                )
+            }
+        }
+        return null
+    }
+
+    fun putLookup(key: String, hit: SongAnalyzer.CachedLookup) {
+        writableDatabase.insertWithOnConflict(
+            "lookup_cache", null,
+            ContentValues().apply {
+                put("key", key)
+                put("title", hit.title)
+                put("artist", hit.artist)
+                put("genre", hit.genre ?: "")
+                put("album", hit.album ?: "")
+                put("pageid", hit.pageId)
+                put("hittitle", hit.hitTitle)
+                put("high", if (hit.high) 1 else 0)
+                put("confirmed", if (hit.titleConfirmed) 1 else 0)
+                put("found", if (hit.found) 1 else 0)
+            },
+            SQLiteDatabase.CONFLICT_REPLACE
+        )
     }
 
     // ---- loudness measure cache (Equalize) ----

@@ -138,7 +138,9 @@ class LibraryAdapter(
         h.title.setTextColor(if (selected) 0xFFFFFFFF.toInt() else tc)
         h.sub.setTextColor(if (selected) 0xFFFFFFFF.toInt() else sc)
         h.dur.setTextColor(if (selected) 0xFFFFFFFF.toInt() else sc)
-        h.more.setColorFilter(if (selected) 0xFFFFFFFF.toInt() else tc)
+        // Dots keep the theme color even on a selected row: the button face
+        // stays beige, so white dots would vanish on it.
+        h.more.setColorFilter(tc)
         h.box.setBackgroundResource(0)
         // Playing row: XP blue with the classic dotted focus frame.
         // Idle rows keep the striped face.

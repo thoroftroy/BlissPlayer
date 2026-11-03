@@ -1,5 +1,6 @@
 package com.blissplayer.music
 
+import com.blissplayer.music.data.MusicBrainzLookup
 import com.blissplayer.music.data.SongAnalyzer
 import com.blissplayer.music.data.WikiLookup
 import com.blissplayer.music.model.Song
@@ -488,12 +489,69 @@ class AnalyzerTest {
     }
 
     @Test
+    fun mbParseShapes() {
+        val body = "{\"recordings\":[{\"id\":\"3f66\",\"score\":100,\"title\":\"Lonely\"," +
+            "\"artist-credit\":[{\"name\":\"Akon\"}]," +
+            "\"releases\":[{\"title\":\"Trouble (Deluxe Edition)\",\"status\":\"Official\"}]," +
+            "\"tags\":[{\"count\":5,\"name\":\"hip hop\"},{\"count\":2,\"name\":\"rnb\"}]}]}"
+        val hits = MusicBrainzLookup.parse(body)
+        assertEquals(1, hits.size)
+        assertEquals("Lonely", hits[0].track)
+        assertEquals("Akon", hits[0].artist)
+        assertEquals("Trouble (Deluxe Edition)", hits[0].album)
+        assertEquals("Hip-Hop", hits[0].genre)
+        assertTrue(MusicBrainzLookup.parse("{\"recordings\":[]}").isEmpty())
+        assertEquals("Rock", MusicBrainzLookup.genreDisplay("alternative rock"))
+        assertEquals("Rock", MusicBrainzLookup.genreDisplay("emo"))
+        assertNull(MusicBrainzLookup.genreDisplay("!?!"))
+        assertEquals("Rough Hands", MusicBrainzLookup.baseTitle("Rough Hands (Live)"))
+        val folded = SongAnalyzer.mbFold("Lonely", "Akon", "Uncategorized", hits)
+        assertNotNull(folded)
+        assertTrue(folded!!.high)
+        assertEquals("Hip-Hop", folded.genre)
+        // Studio album wins over a live Official release.
+        val live = "{\"recordings\":[{\"id\":\"y\",\"title\":\"Drink\"," +
+            "\"artist-credit\":[{\"name\":\"Alestorm\"}]," +
+            "\"releases\":[{\"title\":\"Live in Tilburg\",\"status\":\"Official\"}]," +
+            "\"release-groups\":[{\"title\":\"Live in Tilburg\",\"primary-type\":\"Live\"}," +
+            "{\"title\":\"Captain Morgan's Revenge\",\"primary-type\":\"Album\"}]," +
+            "\"tags\":[]}]}"
+        val lhits = MusicBrainzLookup.parse(live)
+        assertEquals(1, lhits.size)
+        assertEquals("Captain Morgan's Revenge", lhits[0].album)
+    }
+
+    @Test
     fun albumParseShapes() {
         assertEquals("25", WikiLookup.parseAlbum("| album = [[25 (Adele album)|25]]"))
         assertEquals("Whenever You Need Somebody", WikiLookup.parseAlbum("|album=[[Whenever You Need Somebody]]"))
         assertEquals("Abbey Road", WikiLookup.parseAlbum("| album = ''[[Abbey Road]]''"))
         assertNull(WikiLookup.parseAlbum("no infobox here"))
         assertNull(WikiLookup.parseAlbum("| album = "))
+    }
+
+    @Test
+    fun genreParseShapes() {
+        assertEquals("Heavy metal", WikiLookup.parseGenre("| genre = [[Heavy metal]]<br/>[[Hard rock]]"))
+        assertEquals("Dance-pop", WikiLookup.parseGenre("|genre=''[[Dance-pop]]''"))
+        assertEquals("Hip hop music", WikiLookup.parseGenre("| genre = Hip hop music"))
+        assertNull(WikiLookup.parseGenre("no infobox here"))
+        assertNull(WikiLookup.parseGenre("| genre = "))
+        assertNull(WikiLookup.parseGenre("| genre = " + "x".repeat(50)))
+    }
+
+    @Test
+    fun snippetAlbumShapes() {
+        assertEquals(
+            "Rattle and Hum",
+            WikiLookup.snippetAlbum("\"I Still Haven't Found What I'm Looking For\" is a song by Irish rock band U2. It is the second track from their fifth studio album, Rattle and Hum.")
+        )
+        assertEquals(
+            "25",
+            WikiLookup.snippetAlbum("\"Hello\" is a song recorded by English singer-songwriter Adele for her third studio album, 25 (2015).")
+        )
+        assertNull(WikiLookup.snippetAlbum("\"Hello\" is a song recorded by Adele."))
+        assertNull(WikiLookup.snippetAlbum("No song mention here at all."))
     }
 
     @Test

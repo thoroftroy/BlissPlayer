@@ -1512,7 +1512,7 @@ class MainActivity : AppCompatActivity() {
         p.setMediaItems(context.map(::toItem), start.coerceIn(0, context.size - 1), 0)
         // Keep the user's loop mode; do not force it off.
         p.prepare()
-        p.play()
+        svc?.userPlay()
         saveResume()
         refreshMini(context.getOrNull(start.coerceIn(0, context.size - 1)))
     }
@@ -1529,7 +1529,7 @@ class MainActivity : AppCompatActivity() {
         queue.add(at, song)
         p.addMediaItem(at, toItem(song))
         p.seekTo(at, 0)
-        p.play()
+        svc?.userPlay()
         saveResume()
         refreshMini(song)
         refreshQueueList()
@@ -1688,7 +1688,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun togglePlay() {
         val p = svc?.player ?: return
-        if (p.isPlaying) p.pause() else p.play()
+        if (p.isPlaying) p.pause() else svc?.userPlay()
     }
 
     private fun skipNext() {
@@ -2172,7 +2172,7 @@ class MainActivity : AppCompatActivity() {
         val song = segEditSong ?: return
         val p = svc?.player ?: return
         if (p.currentMediaItem?.mediaId?.toLongOrNull() == song.mediaId) {
-            if (p.isPlaying) p.pause() else p.play()
+            if (p.isPlaying) p.pause() else svc?.userPlay()
         } else {
             playQueue(listOf(song), 0)
         }
@@ -2546,7 +2546,7 @@ class MainActivity : AppCompatActivity() {
                     val idx = queue.indexOfFirst { it.mediaId == song.mediaId }
                     if (idx >= 0) {
                         svc?.player?.seekTo(idx, 0)
-                        svc?.player?.play()
+                        svc?.userPlay()
                     } else toast("That song is no longer in the queue.")
                 }
                 1 -> {
@@ -2847,6 +2847,7 @@ class MainActivity : AppCompatActivity() {
     private fun mixerDialog() {
         val service = svc ?: return toast("Playback is still starting. Try again in a moment.")
         val tone = service.tone
+        service.ensureToneAttached()
         val bands = tone.bands()
         if (bands.isEmpty()) {
             AlertDialog.Builder(this).setCustomTitle(xpTitle("Frequency mixer"))
@@ -2948,46 +2949,120 @@ class MainActivity : AppCompatActivity() {
                     .onFailure { toast("No file picker on this device. Scan-all stays on.") }
             }
         })
-        // Folder checklist: every folder with music, tick to include.
+        // Folder tree: every folder with music, collapsible, tick to include.
+        // Unticked folders stay listed but grayed out, never removed.
         // System sounds are off by default so ringtones never become songs.
         val folders = prefs.getStringSet("folders", emptySet())!!.toMutableSet()
         val detected = songs.mapNotNull { it.filePath?.substringBeforeLast('/') }.distinct().sorted()
         if (detected.isNotEmpty()) {
             moreBox.addView(TextView(this).apply {
-                text = "Tick the folders to play from. Unticked folders are skipped. System sounds stay off."
+                text = "Tick folders to play from. Unticked folders stay in the list, grayed out, and their songs are skipped. Folders nest: ticking a parent ticks everything under it. System sounds stay off."
                 textSize = 12f
             })
             val sysKeys = listOf("/Ringtones", "/Alarms", "/Notifications", "/Android/", "/MIUI/", "/DCIM/")
-            detected.forEach { folder ->
-                val isSys = sysKeys.any { folder.contains(it, ignoreCase = true) }
-                // First run: system folders start unticked even though prefs are empty (scan-all).
-                val checked = if (folders.isEmpty()) !isSys else folders.any { folder.startsWith(it) || it.startsWith(folder) }
-                val cb = android.widget.CheckBox(this).apply {
-                    text = folder
-                    textSize = 12f
-                    isChecked = checked
-                    setTextColor(iconColor())
-                    buttonTintList = android.content.res.ColorStateList.valueOf(0xFF0058E6.toInt())
-                    setOnCheckedChangeListener { _, on ->
-                        val cur = prefs.getStringSet("folders", emptySet())!!.toMutableSet()
-                        if (on) {
-                            // Enabling: if we were in scan-all, start from detected non-sys set.
-                            if (cur.isEmpty()) {
-                                cur.addAll(detected.filter { d -> !sysKeys.any { d.contains(it, ignoreCase = true) } })
-                            }
-                            cur.add(folder)
-                        } else {
-                            if (cur.isEmpty()) {
-                                cur.addAll(detected.filter { d -> !sysKeys.any { d.contains(it, ignoreCase = true) } })
-                            }
-                            cur.removeAll { it == folder || folder.startsWith(it) || it.startsWith(folder) }
-                        }
-                        prefs.edit().putStringSet("folders", cur).apply()
-                        scan(fromTap = true)
+            fun isSys(p: String) = sysKeys.any { p.contains(it, ignoreCase = true) }
+            fun slash(p: String) = p.trimEnd('/')
+            val allPaths = (detected + folders).filter { it.isNotBlank() }.map(::slash).toSortedSet()
+            fun parentOf(p: String): String? =
+                allPaths.filter { it != p && p.startsWith(it + "/") }.maxByOrNull { it.length }
+            val kids = mutableMapOf<String?, MutableList<String>>()
+            allPaths.forEach { p -> kids.getOrPut(parentOf(p)) { mutableListOf() }.add(p) }
+            fun leavesUnder(p: String): List<String> {
+                val k = kids[p].orEmpty()
+                if (k.isEmpty()) return listOf(p)
+                return k.flatMap { leavesUnder(it) }
+            }
+            val allLeaves = kids[null].orEmpty().flatMap { leavesUnder(it) }
+            fun effectiveOn(leaf: String): Boolean {
+                val cur = prefs.getStringSet("folders", emptySet())!!
+                return if (cur.isEmpty()) !isSys(leaf)
+                else cur.any { leaf == it || leaf.startsWith(slash(it) + "/") }
+            }
+            fun toggleNode(node: String, on: Boolean) {
+                val cur = prefs.getStringSet("folders", emptySet())!!.toMutableSet()
+                if (cur.isEmpty()) cur.addAll(allLeaves.filter { !isSys(it) })
+                if (on) {
+                    cur.add(slash(node))
+                    cur.removeAll { it != slash(node) && it.startsWith(slash(node) + "/") }
+                } else {
+                    val target = slash(node)
+                    val doomed = leavesUnder(node).toSet()
+                    val removedAncestors = cur.filter { target.startsWith(slash(it) + "/") }
+                    cur.removeAll { it == target || doomed.any { d -> it == d || it.startsWith(d + "/") } }
+                    cur.removeAll(removedAncestors.toSet())
+                    removedAncestors.forEach { a ->
+                        cur.addAll(leavesUnder(a).filter { it !in doomed })
                     }
                 }
-                moreBox.addView(cb)
+                prefs.edit().putStringSet("folders", cur).apply()
+                buildMorePane()
+                scan(fromTap = true)
             }
+            val open = prefs.getStringSet("folder_tree_open", null)
+                ?: allPaths.filter { kids[it].orEmpty().isNotEmpty() && kids[it].orEmpty().size <= 8 }.toSet()
+            moreBox.addView(LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                addView(xpBtn("Expand all").apply {
+                    layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                    setOnClickListener {
+                        prefs.edit().putStringSet("folder_tree_open",
+                            allPaths.filter { kids[it].orEmpty().isNotEmpty() }.toSet()).apply()
+                        buildMorePane()
+                    }
+                })
+                addView(xpBtn("Collapse all").apply {
+                    layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                    setOnClickListener {
+                        prefs.edit().putStringSet("folder_tree_open", emptySet()).apply()
+                        buildMorePane()
+                    }
+                })
+            })
+            fun countUnder(p: String): Int =
+                songs.count { s -> val f = s.filePath; f != null && (f == p || f.startsWith(slash(p) + "/")) }
+            fun addNode(p: String, depth: Int) {
+                val children = kids[p].orEmpty()
+                val short = p.substringAfterLast('/')
+                val n = countUnder(p)
+                val leaves = leavesUnder(p)
+                val onCount = leaves.count { effectiveOn(it) }
+                val fullyOn = onCount == leaves.size
+                val partial = onCount in 1 until leaves.size
+                val row = LinearLayout(this).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    setPadding(dp(4) + dp(14) * depth, dp(1), dp(2), dp(1))
+                }
+                if (children.isNotEmpty()) {
+                    val isOpen = p in open
+                    row.addView(xpBtn(if (isOpen) "[-]" else "[+]").apply {
+                        textSize = 12f
+                        minimumWidth = 0
+                        setOnClickListener {
+                            val cur = prefs.getStringSet("folder_tree_open",
+                                allPaths.filter { kids[it].orEmpty().isNotEmpty() && kids[it].orEmpty().size <= 8 }.toSet()
+                            )!!.toMutableSet()
+                            if (isOpen) cur.remove(p) else cur.add(p)
+                            prefs.edit().putStringSet("folder_tree_open", cur).apply()
+                            buildMorePane()
+                        }
+                    })
+                }
+                val label = "$short ($n song${if (n == 1) "" else "s"})" + if (partial) " (partial)" else ""
+                row.addView(android.widget.CheckBox(this).apply {
+                    text = label
+                    textSize = 12f
+                    isChecked = fullyOn
+                    val gray = !fullyOn && !partial
+                    setTextColor(if (gray) 0xFF888888.toInt() else iconColor())
+                    alpha = if (gray) 0.6f else 1f
+                    buttonTintList = android.content.res.ColorStateList.valueOf(0xFF0058E6.toInt())
+                    setOnCheckedChangeListener { _, isOn -> toggleNode(p, isOn) }
+                    layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                })
+                moreBox.addView(row)
+                if (p in open) children.forEach { addNode(it, depth + 1) }
+            }
+            kids[null].orEmpty().forEach { addNode(it, 0) }
             moreBox.addView(xpBtn("Add a folder path by hand").apply {
                 setOnClickListener { manualFolderDialog() }
             })
@@ -3045,7 +3120,7 @@ class MainActivity : AppCompatActivity() {
             }
         })
         moreBox.addView(TextView(this).apply {
-            text = "Automatic ducks short notification sounds and resumes after temporary interruptions, including calls. Starting other media can pause playback. Ignore may play over other apps; Android can still enforce interruptions."
+            text = "Automatic ducks short notification sounds and resumes alone after calls, maps and other short interruptions. If another app keeps playing (video, game, music), BlissPlayer pauses and stays paused so it never talks over them; tap play to take sound back. Ignore may play over other apps; Android can still enforce interruptions."
             textSize = 12f
         })
         val bgAllowed = isBackgroundAllowed()
@@ -3087,7 +3162,7 @@ class MainActivity : AppCompatActivity() {
         }
         moreBox.addView(boostSeek)
         moreBox.addView(TextView(this).apply {
-            text = "Tap a preset to use it, hold to edit or delete. Tap the percent to enter 1 to 2000%. Boost can clip or distort at any setting above 100%, depending on the recording. Loud sound can damage hearing and speakers; start low. Phone hardware sets the final ceiling."
+            text = "Tap a preset to use it, hold for edit options, or press Delete to remove it. Tap the percent to enter 1 to 2000%. Boost can clip or distort at any setting above 100%, depending on the recording. Loud sound can damage hearing and speakers; start low. Phone hardware sets the final ceiling."
             textSize = 12f
             xpBold()
         })
@@ -3156,6 +3231,31 @@ class MainActivity : AppCompatActivity() {
         moreBox.addView(TextView(this).apply {
             text = "Songs from different sources are all over the place volume wise. Press the button once and BlissPlayer samples every song, finds the average, and turns the quiet ones up and the loud ones down. Nothing is rewritten, and Undo is one tap. Songs already done are skipped unless they changed."
             textSize = 12f
+        })
+        val eqStrengthLabel = TextView(this).apply { textSize = 13f; setTextColor(iconColor()) }
+        fun eqStrengthText(v: Int) {
+            eqStrengthLabel.text = "Equalize strength: $v percent" +
+                if (v >= 100) " (maximum, every song lands on the average)"
+                else if (v <= 0) " (off, volumes stay as they are)"
+                else " (gentle, songs move partway to the average)"
+        }
+        moreBox.addView(eqStrengthLabel)
+        moreBox.addView(SeekBar(this).apply {
+            max = 100
+            val start = (prefs.getFloat("eq_strength", 1f) * 100).roundToInt().coerceIn(0, 100)
+            progress = start
+            eqStrengthText(start)
+            progressDrawable = xpProgress()
+            thumb = xpThumb()
+            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(s: SeekBar?, v: Int, fromUser: Boolean) {
+                    if (!fromUser) return
+                    prefs.edit().putFloat("eq_strength", v / 100f).apply()
+                    eqStrengthText(v)
+                }
+                override fun onStartTrackingTouch(s: SeekBar?) {}
+                override fun onStopTrackingTouch(s: SeekBar?) {}
+            })
         })
         moreBox.addView(TextView(this).apply {
             val gains = db.allGains()
@@ -3336,7 +3436,7 @@ class MainActivity : AppCompatActivity() {
             setOnClickListener { organizeConfirm() }
         })
         moreBox.addView(TextView(this).apply {
-            text = "Organize files into Music, BlissPlayer, Artist, Album. Only touches folders you enabled."
+            text = "Organize files into Music, BlissPlayer, Artist, Album. Touches every song in the library, even in unticked folders."
             textSize = 12f
         })
 
@@ -3427,6 +3527,9 @@ class MainActivity : AppCompatActivity() {
         })
         prefs.getString("last_playback_error", null)?.let { error ->
             moreBox.addView(TextView(this).apply { text = "Last playback problem: $error"; textSize = 12f })
+        }
+        com.blissplayer.music.playback.FocusPolicy.describe(prefs.getString("last_pause_reason", null))?.let { why ->
+            moreBox.addView(TextView(this).apply { text = "Last stop: $why"; textSize = 12f; xpBold() })
         }
         moreBox.addView(TextView(this).apply {
             text = "If the app ever closes on its own, come back here to copy what happened."
@@ -3524,28 +3627,31 @@ class MainActivity : AppCompatActivity() {
         }
         presets.forEach { (name, mult) ->
             val pct = (mult * 100).roundToInt()
-            val b = xpBtn("$name ($pct percent)").apply {
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
                 setTag(R.id.tabMore, "preset")
+            }
+            row.addView(xpBtn("$name ($pct percent)").apply {
+                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
                 setOnClickListener { vol.setBoost(mult.toFloat()) }
                 setOnLongClickListener {
                     xpMenuDialog(name, listOf("Use", "Edit", "Delete")) { which ->
                         when (which) {
                             0 -> vol.setBoost(mult.toFloat())
                             1 -> presetAddDialog(name, pct)
-                            2 -> AlertDialog.Builder(this@MainActivity)
-                                .setCustomTitle(xpTitle("Delete preset $name?"))
-                                .setPositiveButton("Delete") { _, _ ->
-                                    db.deletePreset(name)
-                                    buildMorePane()
-                                }
-                                .setNegativeButton("Keep", null)
-                                .show()
+                            2 -> confirmDeletePreset(name)
                         }
                     }
                     true
                 }
-            }
-            moreBox.addView(b)
+            })
+            row.addView(xpBtn("Delete").apply {
+                layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT
+                ).apply { marginStart = dp(6) }
+                setOnClickListener { confirmDeletePreset(name) }
+            })
+            moreBox.addView(row)
         }
         if (presets.isEmpty()) {
             moreBox.addView(TextView(this).apply {
@@ -3554,6 +3660,18 @@ class MainActivity : AppCompatActivity() {
                 textSize = 12f
             })
         }
+    }
+
+    private fun confirmDeletePreset(name: String) {
+        AlertDialog.Builder(this)
+            .setCustomTitle(xpTitle("Delete preset $name?"))
+            .setPositiveButton("Delete") { _, _ ->
+                db.deletePreset(name)
+                toast("Preset $name deleted.")
+                buildMorePane()
+            }
+            .setNegativeButton("Keep", null)
+            .show()
     }
 
     private fun presetAddDialog(existingName: String? = null, existingPct: Int = 100) {
@@ -3566,7 +3684,7 @@ class MainActivity : AppCompatActivity() {
             existingName?.let { setText(it) }
         }
         val ePct = EditText(this).apply {
-            hint = "Percent, 1 to 500"
+            hint = "Percent, 1 to 2000"
             inputType = InputType.TYPE_CLASS_NUMBER
             setText(existingPct.toString())
         }
@@ -3577,7 +3695,7 @@ class MainActivity : AppCompatActivity() {
             .setView(box)
             .setPositiveButton("Save") { _, _ ->
                 val name = eName.text.toString().ifBlank { existingName ?: "Preset" }
-                val pct = ePct.text.toString().toIntOrNull()?.coerceIn(1, 500) ?: 100
+                val pct = ePct.text.toString().toIntOrNull()?.coerceIn(1, 2000) ?: 100
                 if (existingName != null && existingName != name) db.deletePreset(existingName)
                 db.putPreset(name, pct / 100.0)
                 toast("Preset $name saved at $pct percent.")
@@ -3798,6 +3916,18 @@ class MainActivity : AppCompatActivity() {
         analyzerJob = lifecycleScope.launch {
             try {
                 val proposals = try {
+                    val cache = object : com.blissplayer.music.data.SongAnalyzer.LookupCache {
+                        override fun get(title: String, artist: String) =
+                            runCatching {
+                                db.getLookup(com.blissplayer.music.data.SongAnalyzer.cacheKey(title, artist))
+                            }.getOrNull()
+
+                        override fun put(title: String, artist: String, hit: com.blissplayer.music.data.SongAnalyzer.CachedLookup) {
+                            runCatching {
+                                db.putLookup(com.blissplayer.music.data.SongAnalyzer.cacheKey(title, artist), hit)
+                            }
+                        }
+                    }
                     com.blissplayer.music.data.SongAnalyzer.analyze(
                         inScope, { genreSnapshot[it] ?: "Uncategorized" },
                         { id -> albumSnapshot[id] ?: "Unknown album" },
@@ -3810,7 +3940,8 @@ class MainActivity : AppCompatActivity() {
                                 "lookup" -> "Checking online index ($done of $total)."
                                 else -> "Finishing up."
                             }
-                        }
+                        },
+                        lookupCache = cache
                     )
                 } catch (e: com.blissplayer.music.data.SongAnalyzer.OfflineException) {
                     runCatching { dlg?.dismiss() }
@@ -4009,7 +4140,7 @@ class MainActivity : AppCompatActivity() {
         }
         AlertDialog.Builder(this)
             .setCustomTitle(xpTitle("Organize into BlissPlayer folder?"))
-            .setMessage("Moves your enabled songs into Music, BlissPlayer, Artist, Album. Playlists keep working. System folders are never touched.")
+            .setMessage("Moves all ${songs.size} songs into Music, BlissPlayer, Artist, Album, no matter which folders are ticked. Playlists keep working. System folders are never touched.")
             .setPositiveButton("Organize") { _, _ -> runOrganize() }
             .setNegativeButton("Cancel", null)
             .show()
@@ -4017,15 +4148,15 @@ class MainActivity : AppCompatActivity() {
 
     private fun runOrganize(retrySongs: List<Song>? = null, permissionAttempts: Set<String> = emptySet()) {
         if (analyzerJob?.isActive == true) { toast("Another library operation is still running."); return }
-        val folders = prefs.getStringSet("folders", emptySet())!!
-        val inScope = (retrySongs ?: if (folders.isEmpty()) songs else songs.filter { s ->
-            s.isInFolders(folders)
-        }).map { it.copy(album = effAlbum(it)) }
+        // Organizing always covers the whole library: leftovers in Downloads
+        // or unticked folders move too. (Analyzing still respects folders.)
+        val inScope = (retrySongs ?: songs).map { it.copy(album = effAlbum(it)) }
         if (inScope.isEmpty()) {
-            toast("No songs in the enabled folders.")
+            toast("No songs to organize. Scan your music first.")
             return
         }
         // Keep moved files in the enabled library, including after a partial/cancelled run.
+        val folders = prefs.getStringSet("folders", emptySet())!!
         if (folders.isNotEmpty()) {
             val destinations = inScope.mapNotNull { s ->
                 val path = s.filePath ?: return@mapNotNull null
@@ -4185,10 +4316,12 @@ class MainActivity : AppCompatActivity() {
             toast("Scan your music first.")
             return
         }
+        val strength = prefs.getFloat("eq_strength", 1f)
         val gains = db.allGains()
         val cached = db.getMeasures()
         val need = songs.count { s -> s.mediaId !in gains || cached[s.mediaId]?.second != s.modified }
-        if (need == 0) {
+        val strengthChanged = prefs.getFloat("eq_strength_used", -1f) !in listOf(-1f, strength)
+        if (need == 0 && !strengthChanged) {
             AlertDialog.Builder(this)
                 .setCustomTitle(xpTitle("Already equalized"))
                 .setMessage("Every song is already equalized and nothing changed, so there is nothing to do.")
@@ -4197,9 +4330,11 @@ class MainActivity : AppCompatActivity() {
                 .show()
             return
         }
+        val why = if (need == 0) "Strength changed, so gains are recomputed from saved measurements (no re-listening needed)."
+        else "$need new or changed, the rest are reused from last time."
         AlertDialog.Builder(this)
             .setCustomTitle(xpTitle("Equalize ${songs.size} songs?"))
-            .setMessage("$need new or changed, the rest are reused from last time. This runs in the background and you can keep using the app. Nothing about your files changes, and Undo is one tap.")
+            .setMessage("$why Strength ${(strength * 100).roundToInt()} percent. This runs in the background and you can keep using the app. Nothing about your files changes, and Undo is one tap.")
             .setPositiveButton("Equalize") { _, _ -> runEqualize() }
             .setNegativeButton("Not now", null)
             .show()
@@ -4231,10 +4366,12 @@ class MainActivity : AppCompatActivity() {
             .show()
         eqJob = lifecycleScope.launch {
             try {
+                val strength = prefs.getFloat("eq_strength", 1f)
                 val cached = db.getMeasures().mapValues { LoudnessScanner.Cached(it.value.first, it.value.second) }
                 val res = LoudnessScanner.equalizeAll(
                     this@MainActivity, songs,
                     cached = cached,
+                    strength = strength,
                     putGain = { id, mult -> db.putGain(id, mult) },
                     putCache = { id, rms, mod -> db.putMeasure(id, rms, mod) },
                     onProgress = { done, total, title, eta ->
@@ -4252,6 +4389,7 @@ class MainActivity : AppCompatActivity() {
                     .putInt("eq_measured", res.measured)
                     .putInt("eq_up", res.raised)
                     .putInt("eq_down", res.lowered)
+                    .putFloat("eq_strength_used", prefs.getFloat("eq_strength", 1f))
                     .apply()
                 if (tab == 5) buildMorePane()
                 val skippedTxt = if (res.skipped > 0) ", skipped ${res.skipped}" else ""
@@ -4259,7 +4397,7 @@ class MainActivity : AppCompatActivity() {
                 AlertDialog.Builder(this@MainActivity)
                     .setCustomTitle(xpTitle("Done"))
                     .setMessage(
-                        "Checked ${res.measured} songs.$reusedTxt Turned up ${res.raised}, turned down ${res.lowered}$skippedTxt. " +
+                        "Checked ${res.measured} songs at ${(prefs.getFloat("eq_strength", 1f) * 100).roundToInt()} percent strength.$reusedTxt Turned up ${res.raised}, turned down ${res.lowered}$skippedTxt. " +
                             "From now on everything plays at the same average volume, on top of your Boost."
                     )
                     .setPositiveButton("OK", null)

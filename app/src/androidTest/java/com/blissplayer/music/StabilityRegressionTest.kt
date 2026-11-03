@@ -1,5 +1,6 @@
 package com.blissplayer.music
 
+import android.app.NotificationManager
 import android.content.ContentUris
 import android.content.ContentValues
 import android.content.Context
@@ -22,6 +23,8 @@ import androidx.test.platform.app.InstrumentationRegistry
 import androidx.test.rule.ServiceTestRule
 import androidx.test.uiautomator.By
 import androidx.test.uiautomator.UiDevice
+import androidx.test.uiautomator.UiScrollable
+import androidx.test.uiautomator.UiSelector
 import androidx.test.uiautomator.Until
 import com.blissplayer.music.data.BlissDb
 import com.blissplayer.music.data.MusicScanner
@@ -277,6 +280,260 @@ class StabilityRegressionTest {
         // Bogus file: nothing to save, but the chain must complete, not crash.
         assertTrue(device.wait(Until.hasObject(By.text("Analyzer done")), 60000))
         device.findObject(By.text("OK")).click()
+    }
+
+    @Test fun swipeAwayKeepsNotificationAndPositionAdvances() {
+        val song = sample()
+        val svc = bind()
+        main {
+            svc.player.setMediaItem(MediaItem.Builder().setMediaId(song.mediaId.toString()).setUri(song.contentUri).build())
+            svc.player.repeatMode = Player.REPEAT_MODE_ONE
+            svc.player.prepare()
+            svc.player.play()
+        }
+        awaitState("Playback never started") { svc.player.isPlaying }
+        val nm = context.getSystemService(NotificationManager::class.java)
+        fun blissNotification() = nm.activeNotifications.any { it.packageName == context.packageName }
+        assertTrue("no notification while playing", blissNotification())
+        // Swiping the app away: UI gone, process (and service) lives.
+        scenario!!.close()
+        scenario = null
+        SystemClock.sleep(3000)
+        main { assertTrue("playback died with the UI", svc.player.isPlaying) }
+        assertTrue("notification died with the UI", blissNotification())
+        var p0 = -1L
+        main { p0 = svc.player.currentPosition }
+        SystemClock.sleep(2000)
+        var p1 = -1L
+        main { p1 = svc.player.currentPosition }
+        assertTrue("position bar frozen while showing playing ($p0 -> $p1)", p1 != p0)
+        main { svc.player.pause() }
+    }
+
+    @Test fun nineZeroMorePaneFixes() {
+        scenario = ActivityScenario.launch(MainActivity::class.java)
+        assertTrue("library never loaded", device.wait(Until.hasObject(By.textContains("songs. Tap a song")), 60000))
+        device.findObject(By.text("More")).click()
+        assertTrue(device.wait(Until.hasObject(By.text("Control Panel")), 10000))
+        // Sections open deterministically (header taps are flaky on the
+        // emulator): set the open-set pref and rebuild the pane.
+        fun openSections(vararg names: String) {
+            scenario!!.onActivity { a ->
+                a.getSharedPreferences("bliss", android.content.Context.MODE_PRIVATE)
+                    .edit().putStringSet("more_panels", names.toSet()).apply()
+                val m = MainActivity::class.java.getDeclaredMethod("buildMorePane")
+                m.isAccessible = true
+                m.invoke(a)
+            }
+        }
+        // Folder tree: collapsible with bulk buttons; entries stay listed.
+        openSections("Your music", "Playback controls", "Boost", "Live sound mixer", "Loudness", "Song analyzer")
+        scenario!!.onActivity { a ->
+            val f = MainActivity::class.java.getDeclaredField("moreBox")
+            f.isAccessible = true
+            val box = f.get(a) as android.view.ViewGroup
+            val sb = StringBuilder("PANE9 panes=${box.childCount}")
+            for (i in 0 until box.childCount) {
+                val p = box.getChildAt(i) as? android.view.ViewGroup ?: continue
+                var head = "?"
+                var kids = 0
+                var vis = "?"
+                for (j in 0 until p.childCount) {
+                    val c = p.getChildAt(j)
+                    if (c is android.widget.TextView && c.getTag(com.blissplayer.music.R.id.tabMore)?.toString()?.startsWith("section:") == true) head = c.text.toString()
+                    else if (c is android.view.ViewGroup) {
+                        kids = c.childCount
+                        vis = c.visibility.toString()
+                        for (k in 0 until c.childCount) {
+                            val g = c.getChildAt(k)
+                            val t = (g as? android.widget.TextView)?.text?.toString()?.take(40)
+                                ?: (g as? android.widget.Button)?.text?.toString()?.take(40)
+                            if (t != null) sb.append("\n  $head/${g.javaClass.simpleName}: $t")
+                        }
+                    }
+                }
+                sb.append("\nPANE9 [$head] kids=$kids vis=$vis")
+            }
+            println(sb.toString())
+        }
+        assertTrue("no Expand all", device.wait(Until.hasObject(By.text("Expand all")), 5000))
+        assertTrue("no Collapse all", device.wait(Until.hasObject(By.text("Collapse all")), 8000))
+        // Boost preset gains an explicit Delete; deleting removes just it.
+        // (Below-the-fold nodes are invisible to uiautomator: scroll first.)
+        val scroll = UiScrollable(UiSelector().scrollable(true))
+        assertTrue("cannot scroll to Add preset",
+            scroll.scrollIntoView(UiSelector().text("Add preset")))
+        assertTrue("no Add preset", device.wait(Until.hasObject(By.text("Add preset")), 5000))
+        device.findObject(By.text("Add preset")).click()
+        assertTrue(device.wait(Until.hasObject(By.text("New preset")), 5000))
+        val edits = device.findObjects(By.clazz("android.widget.EditText"))
+        assertTrue("preset name field missing", edits.isNotEmpty())
+        edits[0].text = "DeleteMe9"
+        device.findObject(By.text("Save")).click()
+        assertTrue("preset row missing", device.wait(Until.hasObject(By.textContains("DeleteMe9")), 5000))
+        assertTrue("preset Delete missing", device.wait(Until.hasObject(By.text("Delete")), 5000))
+        device.findObject(By.text("Delete")).click()
+        assertTrue(device.wait(Until.hasObject(By.text("Delete preset DeleteMe9?")), 5000))
+        // Dialog window sorts after the covered activity: its Delete is last.
+        val deletes = device.findObjects(By.text("Delete"))
+        assertTrue("no Delete anywhere", deletes.isNotEmpty())
+        deletes.last().click()
+        assertTrue("preset survived delete", device.wait(Until.gone(By.textContains("DeleteMe9")), 8000))
+        // Mixer attaches while a song plays instead of demanding playback.
+        // (Bind the service directly: no second activity needed.)
+        val binder = serviceRule.bindService(
+            Intent(context, PlayerService::class.java).setAction("com.blissplayer.music.PLAYER_UI"))
+        val svc = (binder as PlayerService.LocalBinder).service().also { service = it }
+        val song = sample()
+        main {
+            svc.player.setMediaItem(MediaItem.Builder().setMediaId(song.mediaId.toString()).setUri(song.contentUri).build())
+            svc.player.repeatMode = Player.REPEAT_MODE_ONE
+            svc.player.prepare()
+            svc.player.play()
+        }
+        awaitState("Playback never started") { svc.player.isPlaying }
+        awaitState("Audio session never opened") { svc.player.audioSessionId != 0 }
+        SystemClock.sleep(2000) // let the visible activity finish binding its svc
+        main {
+            assertTrue("tone did not attach with a live session", svc.ensureToneAttached())
+            assertTrue("attached mixer has no bands", svc.tone.bands().isNotEmpty())
+        }
+        scenario!!.onActivity { a ->
+            val sf = MainActivity::class.java.getDeclaredField("svc")
+            sf.isAccessible = true
+            assertNotNull("activity never bound its service", sf.get(a))
+            val m = MainActivity::class.java.getDeclaredMethod("mixerDialog")
+            m.isAccessible = true
+            m.invoke(a)
+        }
+        assertTrue("mixer never opened", device.wait(Until.hasObject(By.text("Live frequency mixer")), 10000))
+        assertFalse("mixer still demands playback with a song playing",
+            device.hasObject(By.textContains("Play a song first")))
+        assertTrue("mixer toggle missing", device.wait(Until.hasObject(By.textContains("Mixer:")), 8000))
+        device.pressBack()
+        // Equalizer strength slider and organize-all entry point exist.
+        assertTrue("cannot scroll to EQ slider",
+            scroll.scrollIntoView(UiSelector().textContains("Equalize strength")))
+        assertTrue("no equalize strength slider", device.wait(Until.hasObject(By.textContains("Equalize strength")), 5000))
+        assertTrue("cannot scroll to organize",
+            scroll.scrollIntoView(UiSelector().textContains("Organize into BlissPlayer folder")))
+        assertTrue("no organize-all", device.wait(Until.hasObject(By.textContains("Organize into BlissPlayer folder")), 5000))
+        main { svc.player.pause() }
+    }
+
+    @Test fun organizeMovesDownloadsLeftovers() {
+        // App-foreign audio files sitting in Download/: organize-all must
+        // move every library file into Music/BlissPlayer, not just enabled
+        // folders. One system consent tap covers the batch.
+        val stamp = System.nanoTime()
+        val names = (1..3).map { "blissleftover${stamp}_$it.m4a" }
+        for (n in names) {
+            // Audio bytes via the Downloads table: lands in Download/ and the
+            // system media scanner indexes it as foreign audio, exactly like
+            // a real user download.
+            val duri = checkNotNull(context.contentResolver.insert(
+                MediaStore.Downloads.EXTERNAL_CONTENT_URI,
+                ContentValues().apply {
+                    put(MediaStore.Downloads.DISPLAY_NAME, n)
+                    put(MediaStore.Downloads.MIME_TYPE, "audio/mp4")
+                    put(MediaStore.Downloads.RELATIVE_PATH, "Download/")
+                    put(MediaStore.Downloads.IS_PENDING, 1)
+                }))
+            instrumentation.context.assets.open("regression-tone.m4a").use { input ->
+                checkNotNull(context.contentResolver.openOutputStream(duri)).use { input.copyTo(it) }
+            }
+            context.contentResolver.update(duri, ContentValues().apply {
+                put(MediaStore.Downloads.IS_PENDING, 0)
+            }, null, null)
+        }
+        // Wait for the system to index the downloads as audio rows.
+        fun audioRow(n: String): android.database.Cursor? = context.contentResolver.query(
+            MediaStore.Audio.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY),
+            arrayOf(MediaStore.Audio.Media._ID),
+            "${MediaStore.Audio.Media.DISPLAY_NAME} = ?", arrayOf(n), null)
+        val scanUntil = SystemClock.elapsedRealtime() + 60000
+        while (SystemClock.elapsedRealtime() < scanUntil) {
+            android.media.MediaScannerConnection.scanFile(context,
+                names.map { "/sdcard/Download/$it" }.toTypedArray(), null, null)
+            var seen = 0
+            for (n in names) audioRow(n)!!.use { if (it.count > 0) seen++ }
+            if (seen == 3) break
+            SystemClock.sleep(2000)
+        }
+        for (n in names) audioRow(n)!!.use {
+            assertTrue("system never indexed Download leftover $n", it.count > 0)
+        }
+        try {
+            scenario = ActivityScenario.launch(MainActivity::class.java)
+            assertTrue("library never loaded", device.wait(Until.hasObject(By.textContains("songs. Tap a song")), 60000))
+            // Scope this run to the 3 leftovers (null would mean the
+            // whole library): build their Songs from the indexed rows.
+            val leftovers = context.contentResolver.query(
+                MediaStore.Audio.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY),
+                arrayOf(MediaStore.Audio.Media._ID, MediaStore.Audio.Media.TITLE,
+                    MediaStore.Audio.Media.ARTIST, MediaStore.Audio.Media.ALBUM,
+                    MediaStore.Audio.Media.DATA),
+                "${MediaStore.Audio.Media.DISPLAY_NAME} LIKE ?",
+                arrayOf("blissleftover${stamp}_%.m4a"), null
+            )!!.use { c ->
+                val id = c.getColumnIndexOrThrow(MediaStore.Audio.Media._ID)
+                val ti = c.getColumnIndexOrThrow(MediaStore.Audio.Media.TITLE)
+                val ar = c.getColumnIndexOrThrow(MediaStore.Audio.Media.ARTIST)
+                val al = c.getColumnIndexOrThrow(MediaStore.Audio.Media.ALBUM)
+                val da = c.getColumnIndexOrThrow(MediaStore.Audio.Media.DATA)
+                generateSequence { if (c.moveToNext()) c else null }.map {
+                    val mid = it.getLong(id)
+                    com.blissplayer.music.model.Song(mid,
+                        "content://media/external_primary/audio/media/$mid",
+                        it.getString(da), it.getString(ti) ?: "?", it.getString(ar) ?: "Unknown artist",
+                        it.getString(al) ?: "Unknown album", 3000, 10000, "audio/mp4")
+                }.toList()
+            }
+            assertEquals("leftovers not all indexed", 3, leftovers.size)
+            scenario!!.onActivity { a ->
+                val m = MainActivity::class.java.getDeclaredMethod(
+                    "runOrganize", List::class.java, Set::class.java)
+                m.isAccessible = true
+                m.invoke(a, leftovers, emptySet<String>())
+            }
+            val until = SystemClock.elapsedRealtime() + 120000
+            var done = false
+            while (SystemClock.elapsedRealtime() < until) {
+                // System consent sheet ("Allow") appears for foreign files.
+                runCatching { device.findObject(By.text("Allow"))?.click() }
+                if (device.hasObject(By.textContains("Moved 3 songs into the BlissPlayer folder"))) {
+                    done = true
+                    break
+                }
+                SystemClock.sleep(1000)
+            }
+            runCatching { device.findObject(By.text("OK"))?.click() }
+            assertTrue("organizer never reported moving all 3 leftovers", done)
+            // Ground truth: every leftover now lives under BlissPlayer.
+            context.contentResolver.query(
+                MediaStore.Audio.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY),
+                arrayOf(MediaStore.Audio.Media.DATA),
+                "${MediaStore.Audio.Media.DISPLAY_NAME} LIKE ?",
+                arrayOf("blissleftover${stamp}_%.m4a"), null
+            )!!.use { c ->
+                val data = c.getColumnIndexOrThrow(MediaStore.Audio.Media.DATA)
+                var under = 0
+                var total = 0
+                while (c.moveToNext()) {
+                    total++
+                    if ((c.getString(data) ?: "").contains("/BlissPlayer/")) under++
+                }
+                assertEquals("not all leftovers moved: $under/$total", 3, under)
+            }
+        } finally {
+            // Shell rm: rows may still be foreign-owned after the move.
+            shell("rm -f /sdcard/Download/blissleftover${stamp}_*.m4a /sdcard/Music/BlissPlayer/*/*blissleftover${stamp}_*.m4a")
+            shell("rm -f /sdcard/Music/BlissPlayer/*/*/*blissleftover${stamp}_*.m4a")
+            context.contentResolver.delete(
+                MediaStore.Audio.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY),
+                "${MediaStore.Audio.Media.DISPLAY_NAME} LIKE ?",
+                arrayOf("blissleftover${stamp}_%.m4a"))
+        }
     }
 
     @Test fun crashAlertDismissedWithBackDoesNotRepeatOrExport() {

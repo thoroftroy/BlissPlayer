@@ -1,7 +1,7 @@
 package com.blissplayer.music.data
 
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.sync.withPermit
 import java.io.BufferedReader
 import java.io.InputStreamReader
 import java.net.HttpURLConnection
@@ -31,11 +31,26 @@ object WikiLookup {
 
     /** Cheap connectivity probe: one tiny search, short timeout. */
     fun reachable(): Boolean {
+        // Any HTTP answer (even 429 throttling) means the network is up.
+        // A null body from get() on a throttle must not read as "offline".
+        var conn: HttpURLConnection? = null
         return try {
-            val url = "$API?action=query&list=search&srsearch=test&format=json&srlimit=1"
-            get(url, 4000) != null
+            conn = URL("$API?action=query&list=search&srsearch=test&format=json&srlimit=1")
+                .openConnection() as HttpURLConnection
+            conn.setRequestProperty("User-Agent", UA)
+            conn.connectTimeout = 4000
+            conn.readTimeout = 4000
+            conn.instanceFollowRedirects = true
+            conn.responseCode > 0
         } catch (e: Exception) {
-            false
+            // Wikipedia down/blocked: MusicBrainz may still answer.
+            try {
+                MusicBrainzLookup.reachable()
+            } catch (e2: Exception) {
+                false
+            }
+        } finally {
+            conn?.disconnect()
         }
     }
 
@@ -43,15 +58,81 @@ object WikiLookup {
      * The album a song belongs to, from the song page infobox (section 0).
      * Returns null when the page has no readable album field.
      */
-    fun albumOf(pageId: Long): String? {
+    fun albumOf(pageId: Long): String? = infoboxOf(pageId)?.album
+
+    /** Album + genre from one section-0 wikitext fetch. */
+    data class Infobox(val album: String?, val genre: String?)
+
+    fun infoboxOf(pageId: Long): Infobox? {
         return try {
+            paceBlocking()
             val url = "$API?action=query&prop=revisions&rvprop=content&rvslots=main" +
                 "&rvsection=0&pageids=$pageId&format=json"
             val body = get(url, 9000) ?: return null
-            parseAlbum(body)
+            Infobox(parseAlbum(body), parseGenre(body))
         } catch (e: Exception) {
             null
         }
+    }
+
+    // Blocking twin of [paced] for the blocking infobox path: its own small
+    // permit pool so blocking callers never deadlock the coroutine bucket.
+    private val blockingPermits = java.util.concurrent.Semaphore(2)
+
+    fun paceBlocking() {
+        blockingPermits.acquire()
+        try {
+            Thread.sleep(600L)
+        } catch (e: InterruptedException) {
+            Thread.currentThread().interrupt()
+        } finally {
+            blockingPermits.release()
+        }
+    }
+
+    /** First "| genre = ..." line in wikitext: first value only, links stripped. */
+    fun parseGenre(body: String): String? {
+        val text = extractContent(body) ?: body
+        val m = Regex("(?im)^\\s*\\|\\s*genre\\s*=\\s*(.+)$").find(text) ?: return null
+        var v = m.groupValues[1].trim()
+        if (v.isBlank()) return null
+        // First of several ("Heavy metal, Hard rock", "Pop<br/>Rock").
+        // Never split link pipes: [[Rhythm and blues|R&B]] is one genre.
+        v = v.split(Regex("(?i)<br\\s*/?>|\\n|,|;"))[0].trim()
+        v = v.replace("''", "").trim()
+        v = Regex("<!--.*?-->").replace(v, "").trim()
+        v = v.trimStart('*', '#', '-', ' ', '\t').trim()
+        val link = Regex("\\[\\[([^\\]|]+)(?:\\|([^\\]]+))?\\]\\]").find(v)
+        v = if (link != null) {
+            val shown = link.groupValues[2]
+            if (shown.isNotBlank()) shown else link.groupValues[1]
+        } else {
+            v.replace("\"", "").trim()
+        }.trim()
+        v = Regex("\\s*\\([^()]*\\)\\s*$").replace(v, "").trim()
+        if (v.isBlank() || v.length > 40) return null
+        return v
+    }
+
+    /**
+     * Album named in the article prose: "…song … from their fifth studio
+     * album, Rattle and Hum" or "…for her third studio album, 25 (2015)".
+     * Many song pages never fill the infobox album field but say it here.
+     */
+    fun snippetAlbum(snippet: String): String? {
+        val plain = plainSnippet(snippet)
+        val m = Regex(
+            "\\b(?:from|for)\\s+(?:the|their|his|her|its|a)\\s+(?:[A-Za-z-]+\\s+){0,4}?(?:studio\\s+)?album[,:]?\\s+([^.,;()]{2,60})",
+            RegexOption.IGNORE_CASE
+        ).find(plain) ?: return null
+        var v = m.groupValues[1].trim().trim('"', '\'')
+        // "25 (2015)" already lost its parens above; drop trailing years.
+        v = Regex("\\s+\\d{4}\\s*$").replace(v, "").trim()
+        if (v.isBlank() || v.length < 2) return null
+        val low = v.lowercase()
+        if (low in setOf("era", "cycle", "trilogy", "series", "project", "the same name", "of the same name")) return null
+        if (!v[0].isUpperCase() && !v[0].isDigit()) return null
+        return v
     }
 
     /** First "| album = ..." line in wikitext, cleaned of links and markup. */
@@ -80,6 +161,29 @@ object WikiLookup {
         return v
     }
 
+    /**
+     * Page id of the best song-article match, without fetching categories.
+     * Used for genre backfill when another source already confirmed the
+     * title: one search call, details follow only on a match.
+     */
+    suspend fun searchPageId(title: String, artist: String): Long? {
+        val q = listOf(title, artist).filter { it.isNotBlank() }.joinToString(" ")
+        if (q.isBlank()) return null
+        return try {
+            val searchUrl = "$API?action=query&list=search&srsearch=" +
+                URLEncoder.encode(q, "UTF-8") +
+                "&format=json&srlimit=8&srnamespace=0"
+            val body = getPatient(searchUrl) ?: return null
+            val hits = parseSearch(body)
+            if (hits.isEmpty()) return null
+            if (!coroutineContext.isActive) return null
+            pickBest(hits, title)?.first
+        } catch (e: Exception) {
+            if (e is kotlinx.coroutines.CancellationException) throw e
+            null
+        }
+    }
+
     /** Pull the revisions content string out of an API response, unescaped. */
     fun extractContent(body: String): String? {
         for (key in listOf("\"content\":\"", "\"*\":\"")) {
@@ -91,6 +195,27 @@ object WikiLookup {
         return null
     }
 
+    // Wikipedia throttles concurrent bulk callers, so fetches go through a
+    // token bucket: at most PERMITS overlap, each holding its permit for
+    // HOLD_MS. iTunes-first keeps this path's volume low.
+    private val bucket = kotlinx.coroutines.sync.Semaphore(2)
+    private const val HOLD_MS = 500L
+
+    suspend fun <T> paced(block: suspend () -> T): T {
+        bucket.acquire()
+        try {
+            return block()
+        } finally {
+            kotlinx.coroutines.delay(HOLD_MS)
+            bucket.release()
+        }
+    }
+
+    class Throttled : Exception()
+
+    private val throttles = java.util.concurrent.atomic.AtomicLong(0)
+    fun throttleCount(): Long = throttles.get()
+
     suspend fun lookup(title: String, artist: String): Hit? {
         val q = listOf(title, artist).filter { it.isNotBlank() }.joinToString(" ")
         if (q.isBlank()) return null
@@ -98,29 +223,76 @@ object WikiLookup {
             val searchUrl = "$API?action=query&list=search&srsearch=" +
                 URLEncoder.encode(q, "UTF-8") +
                 "&format=json&srlimit=8&srnamespace=0"
-            val body = get(searchUrl) ?: return null
+            val body = getPatient(searchUrl) ?: return null
             val hits = parseSearch(body)
             if (hits.isEmpty()) return null
-            delay(250)
             if (!coroutineContext.isActive) return null
             val top = pickBest(hits, title) ?: return null
-            val cats = categories(top.first) ?: emptyList()
-            Hit(top.first, top.second, top.third, cats)
+            // Categories ride along later in one combined pageDetails call,
+            // only for title-confirmed hits: unconfirmed guesses cannot
+            // complete, so fetching their categories is pure overhead.
+            Hit(top.first, top.second, top.third, emptyList())
         } catch (e: Exception) {
             if (e is kotlinx.coroutines.CancellationException) throw e
             null
         }
     }
 
-    private suspend fun categories(pageId: Long): List<String>? {
+    /**
+     * Categories + infobox (genre, album) for one page in a single request.
+     * Used only for title-confirmed hits, so the bulk run pays one call
+     * instead of two. Null on any trouble.
+     */
+    suspend fun pageDetails(pageId: Long): Pair<List<String>, Infobox?>? {
         return try {
-            val url = "$API?action=query&prop=categories&pageids=$pageId" +
-                "&format=json&cllimit=100"
-            val body = get(url) ?: return null
-            parseCategories(body)
+            val url = "$API?action=query&prop=categories|revisions&pageids=$pageId" +
+                "&format=json&cllimit=100&rvprop=content&rvslots=main&rvsection=0"
+            val body = getPatient(url, 9000) ?: return null
+            parseCategories(body) to
+                Infobox(parseAlbum(body), parseGenre(body)).takeIf { it.album != null || it.genre != null }
         } catch (e: Exception) {
             if (e is kotlinx.coroutines.CancellationException) throw e
             null
+        }
+    }
+
+    /**
+     * Paced fetch with one immediate retry on 429. Returns null on plain
+     * network trouble or a second throttle: the song simply stays
+     * unresolved for this pass rather than stalling the whole bulk run.
+     */
+    private suspend fun getPatient(url: String, timeout: Int = TIMEOUT): String? {
+        try {
+            return paced { getThrowing(url, timeout) }
+        } catch (e: Throttled) {
+            throttles.incrementAndGet()
+            return try {
+                paced { getThrowing(url, timeout) }
+            } catch (e2: Exception) {
+                if (e2 is kotlinx.coroutines.CancellationException) throw e2
+                if (e2 is Throttled) throttles.incrementAndGet()
+                null
+            }
+        }
+    }
+
+    private fun getThrowing(url: String, timeout: Int = TIMEOUT): String? {
+        var conn: HttpURLConnection? = null
+        return try {
+            conn = URL(url).openConnection() as HttpURLConnection
+            conn.setRequestProperty("User-Agent", UA)
+            conn.connectTimeout = timeout
+            conn.readTimeout = timeout
+            conn.instanceFollowRedirects = true
+            if (conn.responseCode == 429) throw Throttled()
+            if (conn.responseCode != 200) return null
+            BufferedReader(InputStreamReader(conn.inputStream, Charsets.UTF_8)).use { it.readText() }
+        } catch (e: Throttled) {
+            throw e
+        } catch (e: Exception) {
+            null
+        } finally {
+            conn?.disconnect()
         }
     }
 
@@ -308,12 +480,27 @@ object WikiLookup {
         return name
     }
 
+    /**
+     * Song-page title reduced for comparison and display. Trailing brackets
+     * go except real version markers: "(Adele song)" and "(A Man After
+     * Midnight)" are index/subtitle noise, but "(Taylor's Version)" names
+     * the recording the file might actually be.
+     */
+    private val keepParen = Regex(
+        "\\b(version|remix|remixes|live|acoustic|unplugged|explicit|clean|demo|edit|mix|cover|extended|original|radio|re-recorded|re-record)\\b",
+        RegexOption.IGNORE_CASE
+    )
+
     /** "Title (Artist song)" -> "Title". Only strips song-disambiguation brackets. */
     fun canonicalTitle(pageTitle: String): String {
         var t = pageTitle.trim()
         while (true) {
             val m = Regex("\\s*\\(([^()]*)\\)\\s*$").find(t) ?: break
-            if (!m.groupValues[1].contains("song", ignoreCase = true)) break
+            val inner = m.groupValues[1]
+            if (!inner.contains("song", ignoreCase = true) &&
+                !inner.contains("single", ignoreCase = true) &&
+                keepParen.containsMatchIn(inner)
+            ) break
             t = t.removeRange(m.range).trim()
         }
         return t

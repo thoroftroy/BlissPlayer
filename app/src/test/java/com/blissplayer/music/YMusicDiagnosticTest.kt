@@ -14,9 +14,7 @@ class YMusicDiagnosticTest {
         var withArtist = 0
         var withProposal = 0
         var high = 0
-        var unknownArtist = 0
         val noProposal = mutableListOf<String>()
-        val unknownAfter = mutableListOf<String>()
         for (f in files) {
             total++
             val base = f.nameWithoutExtension
@@ -33,22 +31,17 @@ class YMusicDiagnosticTest {
             val title = tagTitle ?: base
             val artist = tagArtist ?: "Unknown artist"
             val c = SongAnalyzer.cleanLocal(title, artist, base)
-            if (!SongAnalyzer.isUnknownArtist(c.artist)) withArtist++ else {
-                unknownArtist++
-                if (unknownAfter.size < 40) unknownAfter.add("FILE=${f.name} | titleTag=$title | artistTag=$artist => cleanedTitle=${c.title} | cleanedArtist=${c.artist} | reasons=${c.reasons}")
-            }
+            if (!SongAnalyzer.isUnknownArtist(c.artist)) withArtist++
             if (c.reasons.isNotEmpty()) {
                 withProposal++
                 if (c.safe) high++
-            } else {
-                if (noProposal.size < 60) noProposal.add("FILE=${f.name} | titleTag=$title | artistTag=$artist => cleanedTitle=${c.title} | cleanedArtist=${c.artist}")
+            } else if (noProposal.size < 30) {
+                noProposal.add("FILE=${f.name} | titleTag=$title | artistTag=$artist => cleanedTitle=${c.title} | cleanedArtist=${c.artist}")
             }
         }
-        println("YMUSIC_DIAG total=$total withArtist=$withArtist unknownArtist=$unknownArtist withProposal=$withProposal high=$high")
+        println("YMUSIC_DIAG total=$total withArtist=$withArtist withProposal=$withProposal high=$high")
         println("YMUSIC_DIAG artistCoverage=${withArtist * 100.0 / total} proposalCoverage=${withProposal * 100.0 / total}")
         println("YMUSIC_DIAG --- NO PROPOSAL SAMPLE (${noProposal.size}) ---")
         noProposal.forEach { println("YMUSIC_DIAG NOPROP $it") }
-        println("YMUSIC_DIAG --- UNKNOWN ARTIST SAMPLE (${unknownAfter.size}) ---")
-        unknownAfter.forEach { println("YMUSIC_DIAG UNK $it") }
     }
 }
