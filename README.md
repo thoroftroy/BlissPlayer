@@ -113,11 +113,24 @@ ambient motion settles to a heartbeat when idle.
 
 ## Linux status
 
-The old Rust port is gone (removed outright, 6GB of target/ included). The
-plan is to make the Linux build run the normal Android build instead of a
-separate port — that work has not started yet, so there is no Linux binary
-in this tree right now. This README will say so plainly until it is done
-and verified.
+One project builds both: `:core` holds the shared brains (analyzer rules,
+loudness math, shuffle/stats, portable playlists, platform contracts) and
+`desktopApp` is the native Linux UI (Swing) on top of it. No Rust, no bundled
+native player — playback is system VLC (`cvlc --intf rc`), tags are
+jaudiotagger, the DB is the same schema via sqlite-jdbc.
+
+- Run from source: `./gradlew :desktopApp:run --args="--music-dir ~/Music"`
+- Headless parity smoke (scan, tags, playlist round-trip + relink, offline
+  analyzer rules, loudness sample, real VLC play/pause/seek): `./gradlew
+  :desktopApp:run --args="--headless-smoke --music-dir <dir>"`
+- Release: `./build-linux.sh` produces `BlissPlayer-linux-v<ver>.tar.gz` and
+  `BlissPlayer-x86_64.AppImage` (both ~18–20 MB, committed at the repo root).
+- Needs on the host: Java 17+, VLC (`cvlc`), ffmpeg (loudness measuring only).
+- Same 4 themes with per-theme fonts, phone/desktop layout toggle, system tray
+  with controls, desktop notifications. MPRIS/media keys come from VLC itself.
+- Known gaps vs Android: no segment editor UI yet, mixer bands are state-only
+  on VLC's engine, gapless is VLC best-effort. See `TESTING.md` for evidence
+  and `Multiplatform_Instructions.md` for the remaining checklist.
 
 ## For developers
 

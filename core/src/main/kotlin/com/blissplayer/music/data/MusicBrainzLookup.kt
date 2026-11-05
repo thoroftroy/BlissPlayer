@@ -1,5 +1,6 @@
 package com.blissplayer.music.data
 
+import com.blissplayer.core.AnalyzerRules
 import kotlinx.coroutines.delay
 import java.io.BufferedReader
 import java.io.InputStreamReader
@@ -261,7 +262,7 @@ object MusicBrainzLookup {
         val eligible = groups.filter { g ->
             val s = secondary(g)
             val title = field(g, "\"title\"")
-            !title.isNullOrBlank() && !SongAnalyzer.isBadAlbumTitle(title) &&
+            !title.isNullOrBlank() && !AnalyzerRules.isBadAlbumTitle(title) &&
                 listOf("Live", "Compilation", "Soundtrack", "Remix").none { "\"$it\"" in s }
         }
         for (kind in listOf("Album", "Single")) {
@@ -347,7 +348,7 @@ object MusicBrainzLookup {
         var fallback: String? = null
         for (o in objs) {
             val t = field(o, "\"title\"") ?: continue
-            if (SongAnalyzer.isBadAlbumTitle(t)) continue
+            if (AnalyzerRules.isBadAlbumTitle(t)) continue
             if (fallback == null) fallback = t
             if (field(o, "\"status\"") == "Official") return t
         }

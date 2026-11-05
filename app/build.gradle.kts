@@ -92,6 +92,9 @@ dependencies {
     // Tag read/write for edit-metadata (pure Java, no native deps).
     implementation("net.jthink:jaudiotagger:3.0.1")
 
+    // Shared domain/rules/backend contracts (pure JVM, no Android APIs).
+    implementation(project(":core"))
+
     // JVM unit tests for analyzer + shuffle math (run with testDebugUnitTest).
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.8.1")

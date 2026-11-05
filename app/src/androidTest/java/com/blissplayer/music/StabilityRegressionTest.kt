@@ -26,6 +26,7 @@ import androidx.test.uiautomator.UiDevice
 import androidx.test.uiautomator.UiScrollable
 import androidx.test.uiautomator.UiSelector
 import androidx.test.uiautomator.Until
+import com.blissplayer.core.AnalyzerRules
 import com.blissplayer.music.data.BlissDb
 import com.blissplayer.music.data.MusicScanner
 import com.blissplayer.music.data.SongAnalyzer
@@ -267,7 +268,7 @@ class StabilityRegressionTest {
         scenario = ActivityScenario.launch(MainActivity::class.java)
         val fake = Song(424242L, "content://fake/424242", null, "Fake Song", "Fake Artist",
             "Fake Album", 1000L, 100L, "audio/mp4", 1L)
-        val proposal = SongAnalyzer.Proposal(
+        val proposal = AnalyzerRules.Proposal(
             fake, "Real Song", "Real Artist", "Real Album", "Rock", "Check", "test")
         scenario!!.onActivity { a ->
             val m = MainActivity::class.java.getDeclaredMethod("showConfirmList", List::class.java)

@@ -843,10 +843,10 @@ class PlayerService : MediaSessionService() {
     private var eqJob: Job? = null
 
     /** Finished analyzer proposals waiting for review (cleared on take). */
-    var pendingProposals: List<SongAnalyzer.Proposal>? = null
+    var pendingProposals: List<com.blissplayer.core.AnalyzerRules.Proposal>? = null
         private set
 
-    fun takeProposals(): List<SongAnalyzer.Proposal>? {
+    fun takeProposals(): List<com.blissplayer.core.AnalyzerRules.Proposal>? {
         val p = pendingProposals
         pendingProposals = null
         return p

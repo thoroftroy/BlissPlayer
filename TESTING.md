@@ -223,3 +223,33 @@ FFmpeg/AAC, not a user music file. Test reports are in `app/build/reports/`.
 - Proof: JVM green incl. SongStatsTest 9/9; lint clean; installed 0.10.58
   launches crash-free; kept artifact BlissPlayer-v0.10.57-debug.apk
   (code-identical to the .58 install; only APK in tree).
+
+## 0.11 multiplatform cut (Nov 5, 2026)
+- `:core` (pure JVM, no Android imports): ShuffleMath, model (Song/SongNames/
+  SongStats/Seg/FolderTreeIndex), MusicBrainzLookup, WikiLookup, AnalyzerRules
+  (verbatim-extracted cleanup/grouping/album/genre rules; SongAnalyzer delegates),
+  LoudnessMath (LoudnessScanner delegates), PlaylistPortable v1, platform
+  contracts (PlayerEngine/LibraryAccess/TagGateway/AudioFx/NotificationGateway/
+  SettingsStore/AppPaths/PlaybackSession/PlaybackRules).
+- `:core:test` 12/12 green; `:app:testDebugUnitTest` 98 pass (6 network-gated
+  skipped) against the delegates — extraction is behavior-preserving.
+- `:desktopApp` (Swing, JVM 17): filesystem scan (same exts/sys-dirs rules),
+  sqlite-jdbc DB on the identical schema, jaudiotagger tags, VLC `cvlc --intf rc`
+  engine (queue/play/pause/seek/next/prev/speed/loop/volume/segments/resume),
+  tray + notify-send notifications (MPRIS comes from VLC itself when a session
+  bus exists), 4 themes with per-theme fonts, auto/phone/desktop layout toggle,
+  folders/analyzer/loudness/boost/mixer/playlists/portable-import-export/stats.
+- Headless parity smoke green on the full `~/Downloads/YMusic` library too
+  (1177 files — the same corpus as the Android bulk runs): scan 1177/1177,
+  tag read, playlist v1 round-trip + keep-missing + fuzzy relink
+  (Truck Drivin Song.m4a), loudness rms 0.329, real VLC play (pos 1000ms),
+  seek to 30s, pause holds. The same smoke on a 2-file fixture first found +
+  fixed a real bug: quoted paths were passed to VLC rc verbatim (rest-of-line
+  protocol), so nothing played; unquoted + state-aware play/pause fixed it.
+- `:desktopApp:test` 2/2 green (playlist/favorites/organize id migration;
+  scan skips system sounds + organize end-to-end on generated AAC fixtures).
+- `BlissPlayer-linux-v0.11.14.tar.gz` (18 MB) + `BlissPlayer-x86_64.AppImage`
+  (~19.6 MB) built via `./build-linux.sh` + appimagetool; both committed.
+- NOT verified: desktop UI visually (no Xvfb on this box — launch manually);
+  real-car Bluetooth/aux, long handset playback, acoustic safety (unchanged
+  standing gaps); full 1177-file desktop scan timing.

@@ -5165,7 +5165,7 @@ class MainActivity : AppCompatActivity() {
         toast(if (online) "Analyzing ${inScope.size} songs in the background." else "Cleaning ${inScope.size} names in the background.")
     }
 
-    private fun showProposals(proposals: List<com.blissplayer.music.data.SongAnalyzer.Proposal>) {
+    private fun showProposals(proposals: List<com.blissplayer.core.AnalyzerRules.Proposal>) {
         if (proposals.isEmpty()) {
             toast("No metadata changes were found. No files were changed.")
             return
@@ -5189,7 +5189,7 @@ class MainActivity : AppCompatActivity() {
             .setNegativeButton("Cancel", null))
     }
 
-    private fun showConfirmList(list: List<com.blissplayer.music.data.SongAnalyzer.Proposal>) {
+    private fun showConfirmList(list: List<com.blissplayer.core.AnalyzerRules.Proposal>) {
         val selected = mutableSetOf<Int>()
         val boxes = mutableListOf<android.widget.CheckBox>()
         val box = LinearLayout(this).apply {
@@ -5239,7 +5239,7 @@ class MainActivity : AppCompatActivity() {
         else runCatching { b.show(); b }.getOrNull()
 
     private fun applyProposals(
-        list: List<com.blissplayer.music.data.SongAnalyzer.Proposal>,
+        list: List<com.blissplayer.core.AnalyzerRules.Proposal>,
         previousDone: Int = 0,
         previousErrors: List<String> = emptyList(),
         after: (() -> Unit)? = null,
