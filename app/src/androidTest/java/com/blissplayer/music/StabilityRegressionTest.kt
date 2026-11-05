@@ -536,6 +536,109 @@ class StabilityRegressionTest {
         }
     }
 
+    @Test fun backButtonWalksTabsAndStatusStripOpensBoost() {
+        scenario = ActivityScenario.launch(MainActivity::class.java)
+        assertTrue("library never loaded", device.wait(Until.hasObject(By.textContains("songs. Tap a song")), 60000))
+        // Songs -> More -> Back -> Songs (not out of the app).
+        device.findObject(By.text("More")).click()
+        assertTrue(device.wait(Until.hasObject(By.text("Control Panel")), 10000))
+        scenario!!.onActivity { a -> assertTrue("goBack refused", a.goBack()) }
+        assertTrue(device.wait(Until.hasObject(By.textContains("songs. Tap a song")), 5000))
+        // Status strip tap is a quick boost action.
+        val strip = device.wait(Until.findObject(By.textContains("songs | Boost")), 5000)
+        assertNotNull("no status strip", strip)
+        strip!!.click()
+        assertTrue("boost dialog missing",
+            device.wait(Until.hasObject(By.text("Exact boost percent")), 5000))
+        device.pressBack()
+    }
+
+    @Test fun pausedNotificationPersists() {
+        val song = sample()
+        val binder = serviceRule.bindService(
+            Intent(context, PlayerService::class.java).setAction("com.blissplayer.music.PLAYER_UI"))
+        val svc = (binder as PlayerService.LocalBinder).service().also { service = it }
+        main {
+            svc.player.setMediaItem(MediaItem.Builder().setMediaId(song.mediaId.toString()).setUri(song.contentUri).build())
+            svc.player.repeatMode = Player.REPEAT_MODE_ONE
+            svc.player.prepare()
+            svc.player.play()
+        }
+        awaitState("Playback never started") { svc.player.isPlaying }
+        main { svc.player.pause() }
+        awaitState("Pause never landed") { !svc.player.isPlaying }
+        val nm = context.getSystemService(NotificationManager::class.java)
+        fun blissNotification() = nm.activeNotifications.any { it.packageName == context.packageName }
+        assertTrue("no notification while paused", blissNotification())
+        if (scenario == null) scenario = ActivityScenario.launch(MainActivity::class.java)
+        scenario!!.close()
+        scenario = null
+        SystemClock.sleep(3000)
+        assertTrue("paused notification disappeared on its own", blissNotification())
+    }
+
+    @Test fun notificationStylesDiffer() {
+        val song = sample()
+        val binder = serviceRule.bindService(
+            Intent(context, PlayerService::class.java).setAction("com.blissplayer.music.PLAYER_UI"))
+        val svc = (binder as PlayerService.LocalBinder).service().also { service = it }
+        main {
+            svc.player.setMediaItem(MediaItem.Builder().setMediaId(song.mediaId.toString()).setUri(song.contentUri).build())
+            svc.player.repeatMode = Player.REPEAT_MODE_ONE
+            svc.player.prepare()
+            svc.player.play()
+        }
+        awaitState("Playback never started") { svc.player.isPlaying }
+        val prefs = context.getSharedPreferences("bliss", Context.MODE_PRIVATE)
+        val nm = context.getSystemService(NotificationManager::class.java)
+        assertTrue("no playback notification at all",
+            nm.activeNotifications.any { it.packageName == context.packageName })
+        val shotDir = context.getExternalFilesDir(null)!!
+        for ((style, shot) in listOf("Full" to "notif_full.png", "Simple" to "notif_simple.png")) {
+            prefs.edit().putString("notif_style", style).commit()
+            main { svc.repostNotif() }
+            SystemClock.sleep(1500)
+            device.wakeUp()
+            shell("wm dismiss-keyguard")
+            shell("cmd statusbar expand-notifications")
+            // Media notifications render in the media carousel: wait for the
+            // song title (the app-name string is not exposed there).
+            assertTrue("shade never opened for $style",
+                device.wait(Until.hasObject(By.textContains("Regression")), 8000))
+            device.takeScreenshot(java.io.File(shotDir, shot))
+            device.pressBack()
+            SystemClock.sleep(500)
+        }
+        main { svc.player.pause() }
+    }
+
+    @Test fun themeCycleAppliesAllFour() {
+        scenario = ActivityScenario.launch(MainActivity::class.java)
+        assertTrue("library never loaded", device.wait(Until.hasObject(By.textContains("songs. Tap a song")), 60000))
+        val prefs = context.getSharedPreferences("bliss", Context.MODE_PRIVATE)
+        // The Super clock never idles on purpose (ambient drift), so settle
+        // with sleeps instead of waitForIdleSync, which would hang forever.
+        for (id in listOf("bliss", "dark", "aqua", "super")) {
+            prefs.edit().putString("theme", id).commit()
+            scenario!!.recreate()
+            SystemClock.sleep(2500)
+            assertTrue("library gone under $id",
+                device.wait(Until.hasObject(By.textContains("songs. Tap a song")), 15000))
+            val shotDir = context.getExternalFilesDir(null)!!
+            assertTrue("screenshot failed for $id",
+                device.takeScreenshot(java.io.File(shotDir, "theme_$id.png")))
+        }
+        // Super Bliss must visibly animate: two frames 800ms apart differ.
+        val shotDir = context.getExternalFilesDir(null)!!
+        val a = java.io.File(shotDir, "theme_super_a.png")
+        val b = java.io.File(shotDir, "theme_super_b.png")
+        assertTrue(device.takeScreenshot(a))
+        SystemClock.sleep(800)
+        assertTrue(device.takeScreenshot(b))
+        assertTrue("super theme looks frozen", !a.readBytes().contentEquals(b.readBytes()))
+        prefs.edit().putString("theme", "bliss").commit()
+    }
+
     @Test fun crashAlertDismissedWithBackDoesNotRepeatOrExport() {
         fun downloadCount(): Int = context.contentResolver.query(MediaStore.Downloads.EXTERNAL_CONTENT_URI,
             arrayOf(MediaStore.Downloads._ID), "${MediaStore.Downloads.DISPLAY_NAME} LIKE ?",

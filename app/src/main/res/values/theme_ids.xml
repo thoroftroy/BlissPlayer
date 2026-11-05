@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <item name="theme_role" type="id" />
+    <item name="theme_material" type="id" />
+    <item name="theme_header_badge" type="id" />
+    <item name="theme_identity" type="id" />
+</resources>

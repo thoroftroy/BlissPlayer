@@ -12,7 +12,7 @@ import android.database.sqlite.SQLiteOpenHelper
  *  playlists(id, name) + playlist_songs(playlist_id, media_id, position)
  *  boost(device_name PRIMARY KEY, gain_mult)  , per-device amp memory (car vs headphones)
  */
-class BlissDb(context: Context) : SQLiteOpenHelper(context, "bliss.db", null, 9) {
+class BlissDb(context: Context) : SQLiteOpenHelper(context, "bliss.db", null, 13) {
 
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL("CREATE TABLE gains(media_id INTEGER PRIMARY KEY, gain_mult REAL NOT NULL)")
@@ -29,6 +29,11 @@ class BlissDb(context: Context) : SQLiteOpenHelper(context, "bliss.db", null, 9)
         db.execSQL("CREATE TABLE song_genre(media_id INTEGER PRIMARY KEY, genre TEXT NOT NULL)")
         db.execSQL("CREATE TABLE song_album(media_id INTEGER PRIMARY KEY, album TEXT NOT NULL)")
         db.execSQL("CREATE TABLE lookup_cache(key TEXT PRIMARY KEY, title TEXT NOT NULL, artist TEXT NOT NULL, genre TEXT NOT NULL DEFAULT '', album TEXT NOT NULL DEFAULT '', pageid INTEGER NOT NULL DEFAULT 0, hittitle TEXT NOT NULL DEFAULT '', high INTEGER NOT NULL DEFAULT 0, confirmed INTEGER NOT NULL DEFAULT 0, found INTEGER NOT NULL DEFAULT 0)")
+        db.execSQL("CREATE TABLE song_state(media_id INTEGER PRIMARY KEY, fingerprint TEXT NOT NULL DEFAULT '', analyzed INTEGER NOT NULL DEFAULT 0, analyzed_at INTEGER NOT NULL DEFAULT 0, eq INTEGER NOT NULL DEFAULT 0, eq_at INTEGER NOT NULL DEFAULT 0)")
+        db.execSQL("CREATE TABLE favorites(media_id INTEGER PRIMARY KEY)")
+        db.execSQL("CREATE TABLE song_stats(media_id INTEGER PRIMARY KEY, skips INTEGER NOT NULL DEFAULT 0, completions INTEGER NOT NULL DEFAULT 0, listen_ms INTEGER NOT NULL DEFAULT 0, last_played INTEGER NOT NULL DEFAULT 0)")
+        db.execSQL("CREATE TABLE stat_events(media_id INTEGER NOT NULL, kind TEXT NOT NULL, at INTEGER NOT NULL, ms INTEGER NOT NULL DEFAULT 0)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_stat_events ON stat_events(kind, at)")
     }
 
     override fun onUpgrade(db: SQLiteDatabase, old: Int, new: Int) {
@@ -51,8 +56,18 @@ class BlissDb(context: Context) : SQLiteOpenHelper(context, "bliss.db", null, 9)
         if (old < 8) {
             db.execSQL("CREATE TABLE IF NOT EXISTS song_album(media_id INTEGER PRIMARY KEY, album TEXT NOT NULL)")
         }
-        if (old < 9) {
-            db.execSQL("CREATE TABLE IF NOT EXISTS lookup_cache(key TEXT PRIMARY KEY, title TEXT NOT NULL, artist TEXT NOT NULL, genre TEXT NOT NULL DEFAULT '', album TEXT NOT NULL DEFAULT '', pageid INTEGER NOT NULL DEFAULT 0, hittitle TEXT NOT NULL DEFAULT '', high INTEGER NOT NULL DEFAULT 0, confirmed INTEGER NOT NULL DEFAULT 0, found INTEGER NOT NULL DEFAULT 0)")
+        if (old < 10) {
+            db.execSQL("CREATE TABLE IF NOT EXISTS song_state(media_id INTEGER PRIMARY KEY, fingerprint TEXT NOT NULL DEFAULT '', analyzed INTEGER NOT NULL DEFAULT 0, analyzed_at INTEGER NOT NULL DEFAULT 0, eq INTEGER NOT NULL DEFAULT 0, eq_at INTEGER NOT NULL DEFAULT 0)")
+        }
+        if (old < 11) {
+            db.execSQL("CREATE TABLE IF NOT EXISTS favorites(media_id INTEGER PRIMARY KEY)")
+        }
+        if (old < 12) {
+            db.execSQL("CREATE TABLE IF NOT EXISTS song_stats(media_id INTEGER PRIMARY KEY, skips INTEGER NOT NULL DEFAULT 0, completions INTEGER NOT NULL DEFAULT 0, listen_ms INTEGER NOT NULL DEFAULT 0, last_played INTEGER NOT NULL DEFAULT 0)")
+        }
+        if (old < 13) {
+            db.execSQL("CREATE TABLE IF NOT EXISTS stat_events(media_id INTEGER NOT NULL, kind TEXT NOT NULL, at INTEGER NOT NULL, ms INTEGER NOT NULL DEFAULT 0)")
+            db.execSQL("CREATE INDEX IF NOT EXISTS idx_stat_events ON stat_events(kind, at)")
         }
     }
 
@@ -77,6 +92,66 @@ class BlissDb(context: Context) : SQLiteOpenHelper(context, "bliss.db", null, 9)
     }
 
     fun clearGains() = writableDatabase.delete("gains", null, null)
+
+    // ---- song_state (incremental analyze/equalize) ----
+    data class SongState(
+        val fingerprint: String, val analyzed: Boolean, val eq: Boolean
+    )
+
+    /** Fingerprint that changes when the file changes: size + MediaStore mtime. */
+    fun fingerprint(sizeBytes: Long, modified: Long) = "$sizeBytes:$modified"
+
+    fun songState(mediaId: Long): SongState? {
+        return readableDatabase.rawQuery(
+            "SELECT fingerprint, analyzed, eq FROM song_state WHERE media_id = $mediaId", null
+        )?.use { c ->
+            if (c.moveToNext()) SongState(c.getString(0), c.getInt(1) != 0, c.getInt(2) != 0)
+            else null
+        }
+    }
+
+    fun markAnalyzed(mediaId: Long, fingerprint: String) {
+        val v = ContentValues().apply {
+            put("media_id", mediaId)
+            put("fingerprint", fingerprint)
+            put("analyzed", 1)
+            put("analyzed_at", System.currentTimeMillis())
+        }
+        writableDatabase.insertWithOnConflict("song_state", null, v, SQLiteDatabase.CONFLICT_IGNORE)
+        writableDatabase.execSQL(
+            "UPDATE song_state SET fingerprint = ?, analyzed = 1, analyzed_at = ? WHERE media_id = ?",
+            arrayOf(fingerprint, System.currentTimeMillis(), mediaId))
+    }
+
+    fun markEq(mediaId: Long, fingerprint: String) {
+        val v = ContentValues().apply {
+            put("media_id", mediaId)
+            put("fingerprint", fingerprint)
+            put("eq", 1)
+            put("eq_at", System.currentTimeMillis())
+        }
+        writableDatabase.insertWithOnConflict("song_state", null, v, SQLiteDatabase.CONFLICT_IGNORE)
+        writableDatabase.execSQL(
+            "UPDATE song_state SET fingerprint = ?, eq = 1, eq_at = ? WHERE media_id = ?",
+            arrayOf(fingerprint, System.currentTimeMillis(), mediaId))
+    }
+
+    /** States for ids (missing = never touched). Callers compare fingerprints. */
+    fun stateMap(mediaIds: List<Long>): Map<Long, SongState> {
+        val out = mutableMapOf<Long, SongState>()
+        for (chunk in mediaIds.chunked(400)) {
+            if (chunk.isEmpty()) continue
+            val ids = chunk.joinToString(",")
+            readableDatabase.rawQuery(
+                "SELECT media_id, fingerprint, analyzed, eq FROM song_state WHERE media_id IN ($ids)", null
+            )?.use { c ->
+                while (c.moveToNext()) {
+                    out[c.getLong(0)] = SongState(c.getString(1), c.getInt(2) != 0, c.getInt(3) != 0)
+                }
+            }
+        }
+        return out
+    }
 
     // ---- playlists ----
     fun createPlaylist(name: String): Long {
@@ -154,6 +229,53 @@ class BlissDb(context: Context) : SQLiteOpenHelper(context, "bliss.db", null, 9)
         writableDatabase.delete("playlist_songs", "playlist_id=? AND media_id=?", arrayOf(playlistId.toString(), mediaId.toString()))
     }
 
+    // ---- favorites (exempt from cycle rarity; mirrored into a playlist) ----
+    fun isFavorite(mediaId: Long): Boolean {
+        readableDatabase.rawQuery("SELECT 1 FROM favorites WHERE media_id=?", arrayOf(mediaId.toString()))?.use { c ->
+            if (c.moveToFirst()) return true
+        }
+        return false
+    }
+
+    fun favoriteIds(): Set<Long> {
+        val out = mutableSetOf<Long>()
+        readableDatabase.rawQuery("SELECT media_id FROM favorites", null)?.use { c ->
+            while (c.moveToNext()) out.add(c.getLong(0))
+        }
+        return out
+    }
+
+    /** The pre-built Favorites playlist row, created on first use. Never deleted by the app. */
+    fun favoritesPlaylistId(): Long {
+        readableDatabase.rawQuery("SELECT id FROM playlists WHERE name=?", arrayOf("Favorites"))?.use { c ->
+            if (c.moveToFirst()) return c.getLong(0)
+        }
+        return createPlaylist("Favorites")
+    }
+
+    /** Toggle favorite + mirror membership in the Favorites playlist. Returns the new state. */
+    fun setFavorite(mediaId: Long, on: Boolean): Boolean {
+        if (on) {
+            writableDatabase.insertWithOnConflict(
+                "favorites", null,
+                ContentValues().apply { put("media_id", mediaId) },
+                SQLiteDatabase.CONFLICT_IGNORE
+            )
+            val pid = favoritesPlaylistId()
+            val already = readableDatabase.rawQuery(
+                "SELECT 1 FROM playlist_songs WHERE playlist_id=? AND media_id=?",
+                arrayOf(pid.toString(), mediaId.toString())
+            )?.use { it.moveToFirst() } ?: false
+            if (!already) addToPlaylist(pid, listOf(mediaId))
+        } else {
+            writableDatabase.delete("favorites", "media_id=?", arrayOf(mediaId.toString()))
+            readableDatabase.rawQuery("SELECT id FROM playlists WHERE name=?", arrayOf("Favorites"))?.use { c ->
+                if (c.moveToFirst()) removeFromPlaylist(c.getLong(0), mediaId)
+            }
+        }
+        return on
+    }
+
     /** Persist a user drag-reordered playlist. */
     fun reorderPlaylist(playlistId: Long, mediaIds: List<Long>) {
         val db = writableDatabase
@@ -223,6 +345,82 @@ class BlissDb(context: Context) : SQLiteOpenHelper(context, "bliss.db", null, 9)
         }
         return m
     }
+
+    // ---- fun per-song stats (skips, completions, listening, last played) ----
+    data class SongStat(
+        val mediaId: Long,
+        val skips: Int,
+        val completions: Int,
+        val listenMs: Long,
+        val lastPlayed: Long
+    )
+
+    private fun ensureStatRow(mediaId: Long) {
+        writableDatabase.execSQL(
+            "INSERT INTO song_stats(media_id) VALUES(?) ON CONFLICT(media_id) DO NOTHING",
+            arrayOf(mediaId)
+        )
+    }
+
+    fun bumpSkip(mediaId: Long) {
+        ensureStatRow(mediaId)
+        writableDatabase.execSQL("UPDATE song_stats SET skips=skips+1 WHERE media_id=?", arrayOf(mediaId))
+    }
+
+    fun bumpCompletion(mediaId: Long) {
+        ensureStatRow(mediaId)
+        writableDatabase.execSQL("UPDATE song_stats SET completions=completions+1 WHERE media_id=?", arrayOf(mediaId))
+    }
+
+    fun addListen(mediaId: Long, ms: Long) {
+        if (ms <= 0) return
+        ensureStatRow(mediaId)
+        writableDatabase.execSQL("UPDATE song_stats SET listen_ms=listen_ms+? WHERE media_id=?", arrayOf(ms, mediaId))
+    }
+
+    fun touchPlayed(mediaId: Long, atMs: Long) {
+        ensureStatRow(mediaId)
+        writableDatabase.execSQL("UPDATE song_stats SET last_played=? WHERE media_id=?", arrayOf(atMs, mediaId))
+    }
+
+    fun songStats(): Map<Long, SongStat> {
+        val m = mutableMapOf<Long, SongStat>()
+        readableDatabase.rawQuery("SELECT media_id, skips, completions, listen_ms, last_played FROM song_stats", null)?.use { c ->
+            while (c.moveToNext()) {
+                val id = c.getLong(0)
+                m[id] = SongStat(id, c.getInt(1), c.getInt(2), c.getLong(3), c.getLong(4))
+            }
+        }
+        return m
+    }
+
+    fun clearSongStats() = writableDatabase.delete("song_stats", null, null)
+
+    // ---- timestamped stat events (month / year buckets + shareable export) ----
+    // kinds: play, skip, completion, listen (ms = listened milliseconds).
+    data class StatEvent(val mediaId: Long, val kind: String, val at: Long, val ms: Long)
+
+    /** Two years of history; older rows are pruned on every write. */
+    fun recordEvent(mediaId: Long, kind: String, atMs: Long, ms: Long = 0) {
+        writableDatabase.execSQL(
+            "INSERT INTO stat_events(media_id, kind, at, ms) VALUES(?,?,?,?)",
+            arrayOf(mediaId, kind, atMs, ms)
+        )
+        writableDatabase.delete("stat_events", "at<?", arrayOf((atMs - 730L * 86400000L).toString()))
+    }
+
+    fun eventsSince(sinceMs: Long): List<StatEvent> {
+        val out = mutableListOf<StatEvent>()
+        readableDatabase.rawQuery(
+            "SELECT media_id, kind, at, ms FROM stat_events WHERE at>=? ORDER BY at ASC",
+            arrayOf(sinceMs.toString())
+        )?.use { c ->
+            while (c.moveToNext()) out.add(StatEvent(c.getLong(0), c.getString(1), c.getLong(2), c.getLong(3)))
+        }
+        return out
+    }
+
+    fun clearEvents() = writableDatabase.delete("stat_events", null, null)
 
     // ---- skip segments (per song, milliseconds) ----
     fun segmentsFor(mediaId: Long): List<com.blissplayer.music.model.Seg> {

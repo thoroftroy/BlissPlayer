@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Hot violet base -->
+    <item>
+        <shape android:shape="rectangle">
+            <gradient android:angle="0"
+                android:startColor="@color/sp_title_top"
+                android:endColor="@color/sp_title_bot" />
+            <corners android:topLeftRadius="12dp" android:topRightRadius="12dp"
+                android:bottomLeftRadius="0dp" android:bottomRightRadius="0dp" />
+        </shape>
+    </item>
+    <!-- Neon gloss -->
+    <item android:bottom="16dp">
+        <shape android:shape="rectangle">
+            <gradient android:angle="-90"
+                android:startColor="#AAFFFFFF"
+                android:endColor="#00FFFFFF" />
+            <corners android:topLeftRadius="12dp" android:topRightRadius="12dp"
+                android:bottomLeftRadius="0dp" android:bottomRightRadius="0dp" />
+        </shape>
+    </item>
+    <!-- Neon outline -->
+    <item>
+        <shape android:shape="rectangle">
+            <solid android:color="@android:color/transparent" />
+            <stroke android:width="2dp" android:color="@color/sp_neon" />
+            <corners android:topLeftRadius="12dp" android:topRightRadius="12dp"
+                android:bottomLeftRadius="0dp" android:bottomRightRadius="0dp" />
+        </shape>
+    </item>
+</layer-list>

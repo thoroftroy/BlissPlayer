@@ -34,4 +34,12 @@ object ShuffleMath {
 
     fun weight(count: Int, strength: Double): Double =
         (1.0 / Math.pow((1 + count).toDouble(), strength)).coerceAtLeast(1e-9)
+
+    /**
+     * Favorites ignore lifetime counts (they never get rarer no matter how
+     * often they play). The rarity slider then scales them: 1.0 = normal
+     * odds, higher = deliberately more common.
+     */
+    fun favoriteWeight(favRarity: Double): Double =
+        favRarity.coerceIn(0.05, 3.0).coerceAtLeast(1e-9)
 }

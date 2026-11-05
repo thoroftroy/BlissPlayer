@@ -13,3 +13,7 @@ local.properties
 !/BlissPlayer-*.apk
 # Round work trackers are scratch paper, never shipped.
 TODO_ROUND*.md
+
+# build outputs
+rust/target/
+BlissPlayer.AppDir/usr/

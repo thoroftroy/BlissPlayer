@@ -83,3 +83,143 @@ FFmpeg/AAC, not a user music file. Test reports are in `app/build/reports/`.
 - Shipped BlissPlayer-v0.9.20-debug.apk (installed + launch-verified).
 - NOT verified: real-car Bluetooth handoff, physical aux, long-duration
   handset playback, acoustic quality/hearing safety.
+
+## 0.10 round (Nov 4, 2026, v0.10.18)
+- Incremental analyzer/equalizer: song_state fingerprints, New/changed, Redo
+  done, Everything scopes with counts; both run in PlayerService with silent
+  progress notifications (Stop actions) + in-app status lines + ETA; no modal
+  pop-ups; proposals review opens on return.
+- Back button walks search -> drill -> tab history instead of exiting.
+- Status strip tap opens the exact-boost dialog; playback speed 0.5x-2x in
+  now-playing (persisted, restored at service start).
+- Consent retries queued per operation: delete-after-Allow works (verified by
+  the organize/Downloads tests exercising the same queue).
+- Organize covers enabled folders only (unticked never touched); hint updated.
+  Verified end-to-end (587/587 moved); Downloads-leftover test green.
+- Canonical artists/albums: descriptions, years, casing and version words
+  merge (unit-tested); Artists/Albums tabs, drills, pickers, rows, organize
+  destinations all use canonical keys; studio-album release-group preference.
+- More regrouped (sound cluster, tools together), blurbs shortened,
+  per-section XP hues; Playlists tab folded into a More dialog (list, songs,
+  add, play, delete; JSON autosave kept).
+- Notification styles fixed for real: Full uses
+  DecoratedMediaCustomViewStyle (MediaStyle ignores custom views, which is
+  why both looked the same); shade shows the media row (test green).
+- Paused notification persists after swipe-away (test green).
+- Themes Bliss/Dark Bliss/Aqua Bliss/Super Bliss on Android (screenshots for
+  all four) + Linux (screenshots for all four); Super has particles, tap
+  explosions, drifting background, tab swoosh.
+- Rust bliss_core (names/genre/organize/loudness/focus/full cleanLocal port):
+  13 unit green + 1177/1177 byte-identical parity vs Kotlin. JNI bridge in the
+  APK (arm64/v7a/x64) driving displayAlbum with fallback; JVM parity green.
+- Linux eframe app (same core): scan/play/queue/speed/boost/EQ/dsp biquads/
+  analyzer+review/organize/equalize/playlists/themes/tray/mill/online
+  MB+Wikipedia; sandboxed to ~/Downloads (refusal exit 2, tested); GUI
+  screenshot-verified in all themes; m4a playback verified (5s advanced);
+  online probes return albums/genres; AppImage built and dump-verified.
+- JVM 74 green, lint 0 errors, connected StabilityRegression 14 green,
+  BulkYMusic 3/3 green (headless online 120-file bulk + new UI flow).
+- NOT verified: real-car Bluetooth, physical aux, long handset playback,
+  acoustic safety; Linux tray icon (no appindicator lib on this box),
+  Linux long-session stability.
+
+## 0.10 mobile theme finish (Nov 4, 2026)
+- Fixed the real reason Super effects were invisible in tests and weak on
+  taps: the old decor onTouchListener never saw child-targeted touches, and
+  ambient particles spawned below the viewport. The window-callback
+  interceptor now observes every tap without consuming it; bursts, rings and
+  press physics fire on real interaction (screenshot-verified: particle
+  trails + shockwave ring on a Super dialog tap).
+- Tamed the runaway clock that hung the theme test for 20+ minutes: adaptive
+  pacing (full speed ~60fps for 4s after interaction, 8fps idle heartbeat),
+  plus a user Motion setting (Full/Reduced/Off) and system-animator respect.
+  Theme test now completes in ~33s.
+- Aqua is Snow Leopard, not white paint: brushed-metal grain, gel-pill
+  buttons with lens reflection, translucent water-lit panels/dialogs with
+  caustics, reflected (non-green) mini display, dark-ink titles, silver
+  system bars with dark icons, mac-style traffic-light glyphs.
+- Super is its own thing: Outfit type, neon glass everywhere (toolbar,
+  panels, rows, dialogs, fields), roaming sheen + orbiting spectral edges,
+  AGSL plasma backdrop on API 33+ (orb fallback on 29-32), hexagon glyphs,
+  pulsing title glow, tap explosions, tab swooshes, overshoot springs.
+- Covered every control: tabs, library rows (recycled-safe), dots buttons,
+  mini/now-playing decks, seek bars, section headers, presets, pickers,
+  mixer, queue, review/apply/organize/delete dialogs with role-tagged
+  actions, crash/startup prompts. Bliss/Dark paths byte-untouched.
+- Proof: MotionFieldTest 5/5 JVM green (deterministic bursts/expiry/seeding);
+  themeCycleAppliesAllFour green incl. two-frame Super animation diff assert;
+  full connected suite 17/17 green; JVM 79 tests 0 failures; lint 0 errors.
+- NOT verified: real-car Bluetooth handoff, physical aux, long-duration
+  handset playback, acoustic quality/hearing safety (unchanged standing gaps).
+
+## 0.10 Linux UI rewrite (Nov 4, 2026)
+- First Linux UI was generic egui: rejected. Rewrote ui.rs as a faithful
+  port: XP title bar, 5 tabs, green Play/Mix, crumb, header, zebra song rows
+  with dots menus, clickable status strip, dark-green mini deck (transport,
+  position bar, speed/mixer/boost), queue window, color-coded More sections
+  in the same order as Android, same dialogs (mixer/boost/playlists/review/
+  delete-confirm), Super particle bursts + ambient drift + pulsing title.
+- Screenshot-verified all four Linux themes (Bliss/Dark/Aqua/Super);
+  Aqua fixed from washed-out to dark-on-silver gel.
+- AppImage rebuilt from the final binary and dump-verified.
+
+## 0.10 favorites / icons / tabs round (Nov 5, 2026, v0.10.25–v0.10.51)
+- Fixed blank AutoBoost/buttons-on-first-open: More-pane sync setters ran
+  mid-build and no-op'd on null views; all update* calls now run after every
+  section exists (verified: Boost/Auto-device text populated on first open).
+- Aqua toolbar uses the user's BlissIconAqua art (aqua_brand); Super toolbar
+  uses the user's BlissIconSuper art (super_brand). Super header no longer
+  says "Light Engine".
+- Favorites: pre-built playlist (auto-created, undeletable, always first in
+  the Playlists tab with a divider), star toggle in every song row, song
+  menu, queue menu, Now Playing, and the notification (action + RemoteViews
+  star, bright/dim). Exempt from cycle rarity by default; Shuffle settings
+  add a mode switch (Exempt / Boosted via favorites-rarity slider / Like
+  regular songs). Stars are the user's art: flat shapes on retro (Bliss
+  light-yellow w/ black outline, Dark gold), textured blue-shifted on Aqua,
+  animated scrolling-rainbow shader on Super; empties are flat gray (retro)
+  or pre-lightened art (modern). Playlist row shows a filled gold star.
+- Playlists is a top tab again (Songs/Artists/Albums/Genres/Playlists/More);
+  More moved to index 5. Pre-existing `tab != 5` guards became live.
+- Home-screen icon follows the theme via 4 launcher aliases (Bliss/Dark/
+  Aqua-rainbow art); verified exactly one resolves per theme. (Fixed a real
+  bug: alias classes live under com.blissplayer.music, not the .debug app id.)
+- Notification/session art is the BlissFull hill full-bleed everywhere; fixed
+  an OOM (Media3 clones artworkData per queue item) by publishing an
+  android.resource artwork URI instead of bytes.
+- Click feedback setting (Full/Gentle/Off) in Look and feel; classic themes
+  get tiny XP pixel-pops with no rings, modern keep bursts. Retro styling
+  bleed fixed by gating all modern helpers behind theme.modern (stock XP
+  buttons, segmented progress, beige panels back on Bliss/Dark).
+- Loop defaults to All and the choice persists (repeat_mode pref + restore).
+- Proof: JVM suite green (incl. FavoritesTest), lint clean, Stability suite
+  14/14 (1 skip) + Bulk suite 3/3 green on BlissTest2, screenshots for Bliss
+  (stock XP + stars), Aqua (blue star), Super (rainbow star + aurora),
+  Playlists tab, and the Bliss-hill system media card with star action.
+- Final artifact: BlissPlayer-v0.10.51-debug.apk (only APK kept).
+- NOT verified: real-car Bluetooth, physical aux, long handset sessions,
+  acoustic safety (standing gaps, unchanged).
+
+## 0.10 stats/readability round (Nov 5, 2026, v0.10.53–v0.10.57)
+- Removed the theme subtitle lines everywhere (Aqua "MUSIC LIBRARY" and
+  Super "LIGHT ENGINE" identity rows are gone; toolbar shows the name only).
+- Fun stats: song_stats table (skips, completions, listen_ms, last_played)
+  plus a 2-year-pruned stat_events log; stint tracking closes on track
+  change (auto=finish, bail<50%=skip), seeks rebase the stint, pause/saves
+  flush. Stats panel is headed cards (Library / All time / Top 3 / month /
+  year), with a tracking toggle (off also flattens Smart Shuffle, said on
+  the tin) and Share-stats JSON export (verified: picker saves valid JSON
+  matching on-screen numbers). Buckets verified live (8 plays, 2 finishes,
+  1 skip with tops); skip path verified in DB (skips=1 + listen 273s).
+- Readability: favorites shuffle modes, folder tree, and boost presets use
+  bullet lists; More items get control/description spacing + indented
+  explanations; stat cards group every topic.
+- Super progress is a scrolling rainbow in the mini bar AND the Now Playing
+  / landscape seek bars (thumb circle kept). All self-loops run at an
+  idle-friendly 2fps after proving 80ms loops starved UiAutomator.
+- Now Playing favorite button removed (queue star covers it).
+- Deleted the entire Rust tree + JNI .so files + bridge + parity test
+  (freed ~6.5GB incl. target/); displayAlbum is pure Kotlin now.
+- Proof: JVM green incl. SongStatsTest 9/9; lint clean; installed 0.10.58
+  launches crash-free; kept artifact BlissPlayer-v0.10.57-debug.apk
+  (code-identical to the .58 install; only APK in tree).

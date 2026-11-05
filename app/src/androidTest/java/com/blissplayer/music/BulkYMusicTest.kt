@@ -165,9 +165,10 @@ class BulkYMusicTest {
     }
 
     @Test fun bulkApplyUiOriginals() {
-        // Best-effort full user flow on shell-owned originals (needs the
-        // system Allow tap). Blind by design: clicks + fixed waits + logcat
-        // markers, no hasObject asserts on dialogs (blind tree).
+        // New/changed-scope tap flow on shell-owned originals: verifies the
+        // 0.10 background wiring (scope menu -> service run -> proposals
+        // dialog), not the full bulk (the headless test covers the logic).
+        // Blind by design: clicks + waits, no dialog asserts (blind tree).
         scenario = ActivityScenario.launch(MainActivity::class.java)
         device.wait(Until.hasObject(By.textContains("songs. Tap a song")), 90000)
         device.findObject(By.text("More"))?.click()
@@ -187,27 +188,30 @@ class BulkYMusicTest {
         repeat(6) {
             device.findObject(By.text("Analyze songs"))?.click()
             android.os.SystemClock.sleep(2000)
-            if (device.hasObject(By.textContains("Analyze (offline)"))) return@repeat
+            if (device.hasObject(By.textContains("Analyze "))) return@repeat
         }
-        repeat(8) {
-            device.findObject(By.textContains("Analyze (offline)"))?.click()
+        // Scope menu: prefer the quick new/changed pass, else everything.
+        repeat(6) {
+            if (!device.hasObject(By.textContains("Analyze "))) return@repeat
+            (device.findObject(By.textContains("New and changed"))
+                ?: device.findObject(By.textContains("Everything")))?.click()
             android.os.SystemClock.sleep(2000)
         }
-        // Analysis of ~600 offline files takes seconds; proposals persist.
-        android.os.SystemClock.sleep(15000)
-        repeat(8) {
-            (device.findObject(By.textContains("Apply confident"))
-                ?: device.findObject(By.text("Apply all")))?.click()
-            android.os.SystemClock.sleep(2000)
-        }
-        // Consent + apply of hundreds of files takes minutes.
-        val doneAt = android.os.SystemClock.elapsedRealtime() + 900000
-        while (android.os.SystemClock.elapsedRealtime() < doneAt) {
+        // Background run starts: a silent progress notification appears and
+        // the run survives without any modal dialog.
+        val nm = context.getSystemService(android.app.NotificationManager::class.java)
+        val until = android.os.SystemClock.elapsedRealtime() + 120000
+        var progressSeen = false
+        while (android.os.SystemClock.elapsedRealtime() < until) {
             device.findObject(By.text("Allow"))?.click()
+            if (nm.activeNotifications.any { it.packageName == context.packageName }) {
+                progressSeen = true
+            }
+            if (device.hasObject(By.text("Apply analyzer?"))) break
             android.os.SystemClock.sleep(5000)
-            if (device.hasObject(By.text("Analyzer done"))) break
         }
-        assertTrue("analyzer never finished", device.hasObject(By.text("Analyzer done")))
+        assertTrue("background analyzer never started", progressSeen)
+        device.pressBack()
     }
 
     // NOTE: the tap-through dialog flow (Analyze songs -> confirm -> apply)

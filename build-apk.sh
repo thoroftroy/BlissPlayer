@@ -11,7 +11,16 @@ fi
 ./gradlew :app:assembleDebug --console=plain
 version="$(sed -n 's/^versionName=//p' app/version.properties)"
 apk="BlissPlayer-v${version}-debug.apk"
-cp app/build/outputs/apk/debug/app-debug.apk "$apk"
+cp app/build/outputs/apk/debug/app-debug.apk "$apk.tmp"
+mv -- "$apk.tmp" "$apk"
+# Keep the last working APK until its replacement has actually built and
+# copied successfully. Only prune versioned debug APKs in this directory;
+# never touch an APK the user keeps elsewhere or restore deleted old builds.
+for old in BlissPlayer-v*-debug.apk; do
+  if [[ -f "$old" && "$old" != "$apk" ]]; then
+    rm -- "$old"
+  fi
+done
 echo ""
 echo "APK -> $apk"
 ls -la "$apk"

@@ -49,6 +49,86 @@
         <item name="android:scrollbarFadeDuration">0</item>
     </style>
 
+    <style name="Theme.BlissPlayer.Aqua" parent="Theme.AppCompat.Light.NoActionBar">
+        <item name="android:windowBackground">@color/aq_face</item>
+        <item name="android:textColor">@color/aq_text</item>
+        <item name="android:textColorSecondary">@color/aq_text_dim</item>
+        <item name="android:fontFamily">@font/ptsans</item>
+        <item name="fontFamily">@font/ptsans</item>
+        <item name="android:buttonStyle">@style/XpButton</item>
+        <item name="buttonStyle">@style/XpButton</item>
+        <item name="android:buttonBarButtonStyle">@style/XpButton.Borderless</item>
+        <item name="android:editTextStyle">@style/XpField.Aqua</item>
+        <item name="editTextStyle">@style/XpField.Aqua</item>
+        <item name="android:scrollbarThumbVertical">@drawable/xp_scroll_thumb</item>
+        <item name="android:scrollbarSize">6dp</item>
+        <item name="android:scrollbarFadeDuration">0</item>
+        <item name="alertDialogTheme">@style/Theme.BlissPlayer.Dialog.Aqua</item>
+        <item name="colorAccent">#2E86D4</item>
+        <item name="retroFace">#E8E8EC</item>
+        <item name="retroWell">#FFFFFF</item>
+        <item name="retroLight">#FFFFFF</item>
+        <item name="retroShadow">#8A8F98</item>
+        <item name="android:statusBarColor">#A8ADB6</item>
+        <item name="android:navigationBarColor">#A8ADB6</item>
+        <item name="android:windowLightStatusBar">true</item>
+    </style>
+
+    <style name="Theme.BlissPlayer.Super" parent="Theme.AppCompat.NoActionBar">
+        <item name="android:windowBackground">@color/sp_face</item>
+        <item name="android:textColor">@color/sp_text</item>
+        <item name="android:textColorSecondary">@color/sp_text_dim</item>
+        <item name="android:fontFamily">@font/ptsans</item>
+        <item name="fontFamily">@font/ptsans</item>
+        <item name="android:buttonStyle">@style/XpButton</item>
+        <item name="buttonStyle">@style/XpButton</item>
+        <item name="android:buttonBarButtonStyle">@style/XpButton.Borderless</item>
+        <item name="android:editTextStyle">@style/XpField.Super</item>
+        <item name="editTextStyle">@style/XpField.Super</item>
+        <item name="android:scrollbarThumbVertical">@drawable/xp_scroll_thumb</item>
+        <item name="android:scrollbarSize">6dp</item>
+        <item name="android:scrollbarFadeDuration">0</item>
+        <item name="alertDialogTheme">@style/Theme.BlissPlayer.Dialog.Super</item>
+        <item name="colorAccent">#00F0FF</item>
+        <item name="retroFace">#1A1230</item>
+        <item name="retroWell">#0A0618</item>
+        <item name="retroLight">#2A1B4E</item>
+        <item name="retroShadow">#050310</item>
+        <item name="android:statusBarColor">#0D0A1A</item>
+        <item name="android:navigationBarColor">#0D0A1A</item>
+        <item name="android:windowLightStatusBar">false</item>
+    </style>
+
+    <style name="Theme.BlissPlayer.Dialog.Aqua" parent="Theme.AppCompat.Light.Dialog.Alert">
+        <item name="android:windowBackground">@drawable/xp_workspace_aqua</item>
+        <item name="android:colorBackground">#E8E8EC</item>
+        <item name="android:fontFamily">@font/ptsans</item>
+        <item name="fontFamily">@font/ptsans</item>
+        <item name="buttonStyle">@style/XpButton</item>
+        <item name="buttonBarButtonStyle">@style/XpButton</item>
+        <item name="editTextStyle">@style/XpField.Aqua</item>
+        <item name="colorAccent">#2E86D4</item>
+        <item name="retroFace">#E8E8EC</item>
+        <item name="retroWell">#FFFFFF</item>
+        <item name="retroLight">#FFFFFF</item>
+        <item name="retroShadow">#8A8F98</item>
+    </style>
+
+    <style name="Theme.BlissPlayer.Dialog.Super" parent="Theme.AppCompat.Dialog.Alert">
+        <item name="android:windowBackground">@drawable/xp_workspace_super</item>
+        <item name="android:colorBackground">#0D0A1A</item>
+        <item name="android:fontFamily">@font/ptsans</item>
+        <item name="fontFamily">@font/ptsans</item>
+        <item name="buttonStyle">@style/XpButton</item>
+        <item name="buttonBarButtonStyle">@style/XpButton</item>
+        <item name="editTextStyle">@style/XpField.Super</item>
+        <item name="colorAccent">#00F0FF</item>
+        <item name="retroFace">#1A1230</item>
+        <item name="retroWell">#0A0618</item>
+        <item name="retroLight">#2A1B4E</item>
+        <item name="retroShadow">#050310</item>
+    </style>
+
     <!-- Every button in sentence case, like real XP. No shouty caps. -->
     <style name="XpButton" parent="Widget.AppCompat.Button">
         <item name="android:textAllCaps">false</item>
@@ -117,6 +197,24 @@
         <item name="android:background">@drawable/xp_field_dark</item>
         <item name="android:textColor">@color/xp_n_text</item>
         <item name="android:textColorHint">@color/xp_n_text_dim</item>
+        <item name="android:fontFamily">@font/ptsans</item>
+        <item name="fontFamily">@font/ptsans</item>
+        <item name="android:padding">8dp</item>
+    </style>
+
+    <style name="XpField.Aqua" parent="Widget.AppCompat.EditText">
+        <item name="android:background">@drawable/xp_field_aqua</item>
+        <item name="android:textColor">@color/aq_text</item>
+        <item name="android:textColorHint">@color/aq_text_dim</item>
+        <item name="android:fontFamily">@font/ptsans</item>
+        <item name="fontFamily">@font/ptsans</item>
+        <item name="android:padding">8dp</item>
+    </style>
+
+    <style name="XpField.Super" parent="Widget.AppCompat.EditText">
+        <item name="android:background">@drawable/xp_field_super</item>
+        <item name="android:textColor">@color/sp_text</item>
+        <item name="android:textColorHint">@color/sp_text_dim</item>
         <item name="android:fontFamily">@font/ptsans</item>
         <item name="fontFamily">@font/ptsans</item>
         <item name="android:padding">8dp</item>

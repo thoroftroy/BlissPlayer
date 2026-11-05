@@ -295,6 +295,75 @@ object SongAnalyzer {
         WikiLookup.norm(s).replace(" ", "").replace(".", "").replace("_", "")
 
     /**
+     * One performer, one name: "Eminem from 8 Mile", "Beyonce for her third
+     * studio album", "SomeBand - Topic" all collapse to the performer.
+     * Pure string work, never a lookup: grouping and display only.
+     */
+    fun canonicalArtist(raw: String): String {
+        var a = raw.trim().trim('_', ' ', '-', '.')
+        if (a.isBlank()) return a
+        // YouTube auto-channels and label tails are distributors, not artists.
+        a = Regex("\\s+-\\s+topic\\s*$", RegexOption.IGNORE_CASE).replace(a, "").trim()
+        // "X for his/her/their Nth studio album ..." is a description.
+        val forAlbum = Regex("\\s+for\\s+(?:his|her|their|the)\\s+.*$", RegexOption.IGNORE_CASE)
+        if (forAlbum.containsMatchIn(a)) a = a.replace(forAlbum, "").trim()
+        // "X from <movie/film/soundtrack/show> ..." tails.
+        val fromMedia = Regex(
+            "\\s+from\\s+(?:the\\s+)?.*\\b(movie|film|motion\\s+picture|soundtrack|\\bost\\b|show|series|game|musical|cover|tribute|commercial)\\b.*$",
+            RegexOption.IGNORE_CASE)
+        if (fromMedia.containsMatchIn(a)) a = a.replace(fromMedia, "").trim()
+        // Parenthetical movie/label/channel/year tags: "Eminem (8 Mile)".
+        a = Regex("\\s*\\([^()]*\\b(movie|film|soundtrack|ost|records|tv|vevo|topic|official|19\\d{2}|20\\d{2})\\b[^()]*\\)\\s*$",
+            RegexOption.IGNORE_CASE).replace(a, "").trim()
+        // Trailing " - <movie>" style tails.
+        val dashMedia = Regex(
+            "\\s+-\\s+.*\\b(movie|film|soundtrack|ost|records|tv)\\b.*$",
+            RegexOption.IGNORE_CASE)
+        if (dashMedia.containsMatchIn(a) && " - " in a) {
+            val cut = a.replace(dashMedia, "").trim()
+            if (cut.length >= 2) a = cut
+        }
+        return a.ifBlank { raw.trim() }
+    }
+
+    /** Grouping key: canonical, case- and accent-blind. */
+    fun artistKey(raw: String): String = WikiLookup.norm(canonicalArtist(raw))
+
+    private val albumVersionWords = Regex(
+        "\\s*[\\(\\[][^\\(\\)\\[\\]]*\\b(live|unplugged|unpluged|remix|remixes|remixed|remaster|remastered|deluxe|expanded|anniversary|bonus|acoustic|demo|instrumental|version|edition|reissue|re-recorded|rerecorded|single|ep)\\b[^\\(\\)\\[\\]]*[\\)\\]]\\s*$",
+        RegexOption.IGNORE_CASE)
+
+    /**
+     * One album, one entry: years ("Album (1999)"), casing ("ALBUM" merges
+     * via the key, not here) and version words ("Album (Live)", "X
+     * Remastered", "Deluxe Edition") collapse to the original album name.
+     * Compilation names stay as they are (different releases).
+     */
+    fun canonicalAlbum(raw: String): String {
+        var a = raw.trim().trim('_', ' ', '-', '.')
+        if (a.isBlank() || a.equals("Unknown album", true)) return raw.trim()
+        // Year wrappers: "(1999)", "[2004]", " - 2004", "2004 - ".
+        a = Regex("\\s*[\\(\\[]\\s*(?:19|20)\\d{2}\\s*[\\)\\]]").replace(a, " ").trim()
+        a = Regex("\\s*-\\s*(?:19|20)\\d{2}\\s*$").replace(a, "").trim()
+        a = Regex("^\\s*(?:19|20)\\d{2}\\s*-\\s*").replace(a, "").trim()
+        // Trailing bare version words: "X Remastered", "X Deluxe".
+        a = Regex("\\s+\\b(remastered|remaster|deluxe)\\s*$", RegexOption.IGNORE_CASE).replace(a, "").trim()
+        // Trailing parenthetical version words, repeatedly: "(Live) (Remaster)".
+        var prev: String
+        do {
+            prev = a
+            a = albumVersionWords.replace(a, "").trim()
+        } while (a != prev && a.isNotBlank())
+        // "Deluxe Edition" style tails without parens.
+        a = Regex("\\s+\\b(deluxe\\s+edition|expanded\\s+edition|anniversary\\s+edition|bonus\\s+edition)\\s*$",
+            RegexOption.IGNORE_CASE).replace(a, "").trim()
+        return a.ifBlank { raw.trim() }
+    }
+
+    /** Grouping key: canonical, case- and accent-blind. */
+    fun albumKey(raw: String): String = WikiLookup.norm(canonicalAlbum(raw))
+
+    /**
      * One song, several artists: "A & B" browses under both A and B.
      * Commas split "A, B, C" but never "Earth, Wind & Fire".
      */    fun splitArtists(displayArtist: String): List<String> {
@@ -776,6 +845,12 @@ object SongAnalyzer {
             if ("removed surrounding quotes" !in reasons) reasons.add("removed surrounding quotes")
         }
         if (reasons.isEmpty() && (title != rawTitle || artist != rawArtist)) reasons.add("trimmed names")
+        // Descriptions are not performers: "X for her third studio album".
+        val canon = canonicalArtist(artist)
+        if (canon != artist && canon.isNotBlank()) {
+            artist = canon
+            if ("kept the performer only" !in reasons) reasons.add("kept the performer only")
+        }
         return Cleaned(title, artist, reasons, safe, versioned)
     }
 

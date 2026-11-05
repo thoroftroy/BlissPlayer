@@ -6,6 +6,7 @@ import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.recyclerview.widget.RecyclerView
 import com.blissplayer.music.R
+import com.blissplayer.music.ui.theme.ThemeRenderers
 
 /** Rows for the Add songs picker: headers plus checkable artists, albums, songs. */
 sealed interface PickRow {
@@ -74,6 +75,7 @@ class PickAdapter(
                 }
             }
         }
+        ThemeRenderers.get(h.itemView.context)?.styleTree(h.itemView)
     }
 
     fun submit(newRows: List<PickRow>) {

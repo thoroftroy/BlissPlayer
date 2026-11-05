@@ -13,6 +13,7 @@ import android.os.IBinder
 import android.os.Looper
 import android.widget.RemoteViews
 import androidx.core.app.NotificationCompat
+import androidx.media.app.NotificationCompat.DecoratedMediaCustomViewStyle
 import androidx.media.app.NotificationCompat.MediaStyle
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
@@ -27,11 +28,16 @@ import androidx.media3.session.MediaSessionService
 import com.blissplayer.music.MainActivity
 import com.blissplayer.music.R
 import com.blissplayer.music.data.BlissDb
+import com.blissplayer.music.data.SongAnalyzer
 import com.blissplayer.music.model.Seg
+import com.blissplayer.music.model.Song
+import com.blissplayer.music.playback.LoudnessScanner
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlin.math.log10
@@ -61,8 +67,14 @@ class PlayerService : MediaSessionService() {
         const val ACTION_NEXT = "bliss.next"
         const val ACTION_PREV = "bliss.prev"
         const val ACTION_STOP = "bliss.stop"
+        const val ACTION_FAV = "bliss.fav"
+        const val ACTION_ANALYZER_STOP = "bliss.analyzer_stop"
+        const val ACTION_EQ_STOP = "bliss.eq_stop"
         private const val CHANNEL = "bliss_playback"
         private const val NOTIF_ID = 1001
+        private const val PROGRESS_CHANNEL = "bliss_progress"
+        private const val ANALYZER_NOTIF_ID = 1002
+        private const val EQ_NOTIF_ID = 1003
     }
 
     lateinit var player: ExoPlayer
@@ -447,6 +459,7 @@ class PlayerService : MediaSessionService() {
             .setHandleAudioBecomingNoisy(false) // own noisy receiver, so pauses attribute correctly
             .build()
         player.addListener(listener)
+        player.setPlaybackSpeed(getSharedPreferences("bliss", MODE_PRIVATE).getFloat("speed", 1f))
 
         audioManager = getSystemService(android.media.AudioManager::class.java)
         if (!noisyRegistered) {
@@ -530,9 +543,10 @@ class PlayerService : MediaSessionService() {
                 val index = found.indexOfFirst { it.mediaId == ids[savedIndex] }.coerceAtLeast(0)
                 val items = found.map { song -> MediaItem.Builder().setMediaId(song.mediaId.toString())
                     .setUri(song.contentUri).setMediaMetadata(androidx.media3.common.MediaMetadata.Builder()
-                        .setTitle(song.title).setArtist(song.artist).setAlbumTitle(song.album).build()).build() }
+                        .setTitle(song.title).setArtist(song.artist).setAlbumTitle(song.album)
+                        .apply { setArtworkUri(com.blissplayer.music.data.DefaultArt.artworkUri(this@PlayerService)) }.build()).build() }
                 player.setMediaItems(items, index, position)
-                player.repeatMode = prefs.getInt("resume_repeat", Player.REPEAT_MODE_OFF).coerceIn(0, 2)
+                player.repeatMode = prefs.getInt("resume_repeat", Player.REPEAT_MODE_ALL).coerceIn(0, 2)
                 player.prepare()
                 if (play) startPlayback() else player.pause()
             } catch (e: Exception) {
@@ -590,6 +604,9 @@ class PlayerService : MediaSessionService() {
                 ACTION_TOGGLE -> if (player.playWhenReady) player.pause() else startPlayback()
                 ACTION_NEXT -> player.seekToNextMediaItem()
                 ACTION_PREV -> player.seekToPreviousMediaItem()
+                ACTION_FAV -> toggleFavoriteNow()
+                ACTION_ANALYZER_STOP -> cancelAnalyzer()
+                ACTION_EQ_STOP -> cancelEqualizer()
                 // Swiping the notification away means done with music: stop it all.
                 ACTION_STOP -> {
                     focusPolicy.onEvent(FocusPolicy.Event.STOPPED, respectFocus(), false)
@@ -649,6 +666,11 @@ class PlayerService : MediaSessionService() {
             md?.albumTitle?.toString()
         ).joinToString(" | ").ifBlank { "Ready" }
         val playIcon = if (playing) R.drawable.ic_pause_w else R.drawable.ic_play_w
+        val curId = player.currentMediaItem?.mediaId?.toLongOrNull()
+        val loved = curId?.let { runCatching { db.isFavorite(it) }.getOrDefault(false) } ?: false
+        // The user's star: white art, bright when loved, dimmed when not.
+        val favAlpha = if (loved) 255 else 110
+        val favLabel = if (loved) "Unfavorite" else "Favorite"
 
         val b = NotificationCompat.Builder(this, CHANNEL)
             .setSmallIcon(R.mipmap.ic_launcher)
@@ -672,22 +694,30 @@ class PlayerService : MediaSessionService() {
                 actionIntent(ACTION_TOGGLE, 2)
             )
             .addAction(android.R.drawable.ic_media_next, "Next", actionIntent(ACTION_NEXT, 3))
+            .addAction(if (loved) android.R.drawable.star_on else android.R.drawable.star_off, favLabel, actionIntent(ACTION_FAV, 6))
             .setStyle(
-                MediaStyle()
+                if (simple) MediaStyle()
+                    .setMediaSession(session?.sessionCompatToken)
+                    .setShowActionsInCompactView(0, 1, 2)
+                else DecoratedMediaCustomViewStyle()
                     .setMediaSession(session?.sessionCompatToken)
                     .setShowActionsInCompactView(0, 1, 2)
             )
             .setColor(0xFF0058E6.toInt())
+        // Default art in both styles: the full Bliss hill, full-bleed.
+        b.setLargeIcon(notifArt())
         if (!simple) {
-            b.setLargeIcon(notifArt())
             b.setSubText("BlissPlayer")
             val small = RemoteViews(packageName, R.layout.xp_notif_small).apply {
                 setTextViewText(R.id.n_title, title)
                 setTextViewText(R.id.n_artist, artist)
                 setImageViewResource(R.id.n_play, playIcon)
                 setImageViewResource(R.id.n_next, R.drawable.ic_next_w)
+                setImageViewResource(R.id.n_fav, R.drawable.notif_star_w)
+                setInt(R.id.n_fav, "setImageAlpha", favAlpha)
                 setOnClickPendingIntent(R.id.n_play, actionIntent(ACTION_TOGGLE, 2))
                 setOnClickPendingIntent(R.id.n_next, actionIntent(ACTION_NEXT, 3))
+                setOnClickPendingIntent(R.id.n_fav, actionIntent(ACTION_FAV, 6))
             }
             val big = RemoteViews(packageName, R.layout.xp_notif_big).apply {
                 setTextViewText(R.id.n_title, title)
@@ -695,9 +725,12 @@ class PlayerService : MediaSessionService() {
                 setImageViewResource(R.id.n_play, playIcon)
                 setImageViewResource(R.id.n_next, R.drawable.ic_next_w)
                 setImageViewResource(R.id.n_prev, R.drawable.ic_prev_w)
+                setImageViewResource(R.id.n_fav, R.drawable.notif_star_w)
+                setInt(R.id.n_fav, "setImageAlpha", favAlpha)
                 setOnClickPendingIntent(R.id.n_play, actionIntent(ACTION_TOGGLE, 2))
                 setOnClickPendingIntent(R.id.n_next, actionIntent(ACTION_NEXT, 3))
                 setOnClickPendingIntent(R.id.n_prev, actionIntent(ACTION_PREV, 1))
+                setOnClickPendingIntent(R.id.n_fav, actionIntent(ACTION_FAV, 6))
                 setTextViewText(R.id.n_time, "${fmt(pos)} / ${fmt(dur)}")
                 if (dur > 0) setProgressBar(R.id.n_progress, 1000, ((pos * 1000) / dur).toInt().coerceIn(0, 1000), false)
             }
@@ -708,10 +741,18 @@ class PlayerService : MediaSessionService() {
         return b.build()
     }
 
-    /** XP artwork for the notification: blue gradient, app icon, name strip. */
+    /** Default notification art: the full Bliss hill, center-cropped full-bleed
+     * (cover, never stretched). Falls back to the painted gradient if missing. */
     private fun notifArt(): android.graphics.Bitmap = cachedNotifArt
 
     private val cachedNotifArt: android.graphics.Bitmap by lazy {
+        fullBleedArt() ?: gradientArt()
+    }
+
+    private fun fullBleedArt(): android.graphics.Bitmap? =
+        com.blissplayer.music.data.DefaultArt.bitmap(this)
+
+    private fun gradientArt(): android.graphics.Bitmap {
         val size = 512
         val bmp = android.graphics.Bitmap.createBitmap(size, size, android.graphics.Bitmap.Config.ARGB_8888)
         val c = android.graphics.Canvas(bmp)
@@ -741,12 +782,32 @@ class PlayerService : MediaSessionService() {
             color = 0xFFFFFFFF.toInt()
         }
         c.drawRect(5f, 5f, (size - 5).toFloat(), (size - 5).toFloat(), frame)
-        bmp
+        return bmp
     }
 
     private fun fmt(ms: Long): String {
         val s = (ms / 1000).toInt().coerceAtLeast(0)
         return "%d:%02d".format(s / 60, s % 60)
+    }
+
+    /** Notification heart: favorite/unfavorite the playing song from anywhere. */
+    private fun toggleFavoriteNow() {
+        val id = player.currentMediaItem?.mediaId?.toLongOrNull() ?: return
+        scope.launch(Dispatchers.IO) {
+            val on = try {
+                val cur = db.isFavorite(id)
+                db.setFavorite(id, !cur)
+                !cur
+            } catch (e: Exception) { return@launch }
+            withContext(Dispatchers.Main) {
+                android.widget.Toast.makeText(
+                    this@PlayerService,
+                    if (on) "Added to Favorites." else "Removed from Favorites.",
+                    android.widget.Toast.LENGTH_SHORT
+                ).show()
+                postNotif()
+            }
+        }
     }
 
     private fun postNotif() {
@@ -757,6 +818,226 @@ class PlayerService : MediaSessionService() {
     fun repostNotif() {
         if (!::player.isInitialized || player.mediaItemCount == 0) return
         postNotif()
+    }
+
+    // ---------- background library jobs (analyzer + equalizer) ----------
+    // Both run here (not in the activity) so swiping the app away, rotating,
+    // or pressing back never interrupts them. Progress shows only as a
+    // silent notification plus an in-app status line: no pop-ups.
+
+    /** In-app progress observer: (kind, done, total, status line). */
+    var progressListener: ((kind: String, done: Int, total: Int, text: String) -> Unit)? = null
+
+    private var analyzerJob: Job? = null
+    private var eqJob: Job? = null
+
+    /** Finished analyzer proposals waiting for review (cleared on take). */
+    var pendingProposals: List<SongAnalyzer.Proposal>? = null
+        private set
+
+    fun takeProposals(): List<SongAnalyzer.Proposal>? {
+        val p = pendingProposals
+        pendingProposals = null
+        return p
+    }
+
+    val analyzerRunning: Boolean get() = analyzerJob?.isActive == true
+    val eqRunning: Boolean get() = eqJob?.isActive == true
+
+    private fun ensureProgressChannel() {
+        if (Build.VERSION.SDK_INT >= 26) {
+            val ch = NotificationChannel(PROGRESS_CHANNEL, "Library work", NotificationManager.IMPORTANCE_LOW)
+            ch.description = "Silent analyzer/equalizer progress"
+            ch.setSound(null, null)
+            notifManager.createNotificationChannel(ch)
+        }
+    }
+
+    private fun progressNotif(
+        id: Int, title: String, text: String, done: Int, total: Int, stopAction: String, stopCode: Int
+    ) {
+        ensureProgressChannel()
+        val open = PendingIntent.getActivity(
+            this, 40 + id, Intent(this, MainActivity::class.java),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+        val n = NotificationCompat.Builder(this, PROGRESS_CHANNEL)
+            .setSmallIcon(R.mipmap.ic_launcher)
+            .setContentTitle(title)
+            .setContentText(text)
+            .setContentIntent(open)
+            .setSilent(true)
+            .setOngoing(true)
+            .setOnlyAlertOnce(true)
+            .setProgress(total.coerceAtLeast(1), done.coerceIn(0, total.coerceAtLeast(1)), false)
+            .addAction(0, "Stop", actionIntent(stopAction, stopCode))
+            .build()
+        runCatching { notifManager.notify(id, n) }
+    }
+
+    private fun doneNotif(id: Int, title: String, text: String) {
+        ensureProgressChannel()
+        val open = PendingIntent.getActivity(
+            this, 50 + id, Intent(this, MainActivity::class.java),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+        val n = NotificationCompat.Builder(this, PROGRESS_CHANNEL)
+            .setSmallIcon(R.mipmap.ic_launcher)
+            .setContentTitle(title)
+            .setContentText(text)
+            .setContentIntent(open)
+            .setSilent(true)
+            .setAutoCancel(true)
+            .build()
+        runCatching { notifManager.notify(id, n) }
+    }
+
+    private fun fmtEta(done: Int, total: Int, elapsedMs: Long): String {
+        if (done <= 0 || total <= 0) return "starting"
+        val rate = done / (elapsedMs.coerceAtLeast(1) / 1000.0)
+        if (rate <= 0) return "starting"
+        val left = ((total - done) / rate).toLong()
+        return when {
+            left < 5 -> "finishing up"
+            left < 90 -> "about $left sec left"
+            else -> "about ${left / 60} min left"
+        }
+    }
+
+    /** Analyzer in the service: survives UI death, silent progress only. */
+    fun startAnalyzer(
+        songs: List<Song>, online: Boolean,
+        genres: Map<Long, String>, albums: Map<Long, String>
+    ) {
+        analyzerJob?.cancel()
+        pendingProposals = null
+        val total = songs.size
+        if (total == 0) return
+        val t0 = System.currentTimeMillis()
+        progressNotif(ANALYZER_NOTIF_ID, "Analyzing $total songs",
+            "Starting.", 0, total, ACTION_ANALYZER_STOP, 11)
+        progressListener?.invoke("analyzer", 0, total, "Starting.")
+        analyzerJob = scope.launch(Dispatchers.Default) {
+            try {
+                val cache = object : SongAnalyzer.LookupCache {
+                    override fun get(title: String, artist: String) =
+                        runCatching { db.getLookup(SongAnalyzer.cacheKey(title, artist)) }.getOrNull()
+
+                    override fun put(title: String, artist: String, hit: SongAnalyzer.CachedLookup) {
+                        runCatching { db.putLookup(SongAnalyzer.cacheKey(title, artist), hit) }
+                    }
+                }
+                val proposals = try {
+                    SongAnalyzer.analyze(
+                        songs, { genres[it] ?: "Uncategorized" },
+                        { albums[it] ?: "Unknown album" },
+                        online,
+                        onProgress = { done, tot, phase ->
+                            val eta = fmtEta(done, tot, System.currentTimeMillis() - t0)
+                            val text = when (phase) {
+                                "names" -> "Cleaning names ($done of $tot, $eta)."
+                                "lookup" -> "Checking online index ($done of $tot, $eta)."
+                                else -> "Finishing up."
+                            }
+                            progressNotif(ANALYZER_NOTIF_ID, "Analyzing $tot songs",
+                                text, done, tot, ACTION_ANALYZER_STOP, 11)
+                            progressListener?.invoke("analyzer", done, tot, text)
+                        },
+                        lookupCache = cache
+                    )
+                } catch (e: SongAnalyzer.OfflineException) {
+                    pendingProposals = e.partial
+                    doneNotif(ANALYZER_NOTIF_ID, "Analyzer done (offline)",
+                        "No internet: cleaned names only, ${e.partial.size} to review.")
+                    progressListener?.invoke("analyzer", total, total, "Done offline.")
+                    return@launch
+                }
+                for (s in songs) {
+                    if (!isActive) break
+                    runCatching { db.markAnalyzed(s.mediaId, db.fingerprint(s.sizeBytes, s.modified)) }
+                }
+                runCatching { notifManager.cancel(ANALYZER_NOTIF_ID) }
+                if (proposals.isEmpty()) {
+                    doneNotif(ANALYZER_NOTIF_ID, "Analyzer done", "Nothing to fix.")
+                    progressListener?.invoke("analyzer", total, total, "Done: nothing to fix.")
+                } else {
+                    pendingProposals = proposals
+                    doneNotif(ANALYZER_NOTIF_ID, "Analyzer done",
+                        "${proposals.size} songs to review. Tap to open.")
+                    progressListener?.invoke("analyzer", total, total,
+                        "Done: ${proposals.size} to review.")
+                }
+            } catch (e: Exception) {
+                if (e is kotlinx.coroutines.CancellationException) throw e
+                runCatching { notifManager.cancel(ANALYZER_NOTIF_ID) }
+                doneNotif(ANALYZER_NOTIF_ID, "Analyzer stopped", "What finished is kept.")
+                progressListener?.invoke("analyzer", 0, total, "Stopped.")
+            }
+        }
+    }
+
+    fun cancelAnalyzer() {
+        analyzerJob?.cancel()
+        runCatching { notifManager.cancel(ANALYZER_NOTIF_ID) }
+        progressListener?.invoke("analyzer", 0, 0, "Stopped.")
+    }
+
+    /** Equalizer in the service: silent progress, gains to db, no pop-ups. */
+    fun startEqualizer(songs: List<Song>, strength: Float) {
+        eqJob?.cancel()
+        val total = songs.size
+        if (total == 0) return
+        val t0 = System.currentTimeMillis()
+        progressNotif(EQ_NOTIF_ID, "Equalizing $total songs",
+            "Starting.", 0, total, ACTION_EQ_STOP, 12)
+        progressListener?.invoke("equalizer", 0, total, "Starting.")
+        eqJob = scope.launch(Dispatchers.Default) {
+            try {
+                val cached = db.getMeasures().mapValues { LoudnessScanner.Cached(it.value.first, it.value.second) }
+                val res = LoudnessScanner.equalizeAll(
+                    this@PlayerService, songs,
+                    cached = cached,
+                    strength = strength,
+                    putGain = { id, mult -> db.putGain(id, mult) },
+                    putCache = { id, rms, mod -> db.putMeasure(id, rms, mod) },
+                    onProgress = { done, tot, title, _ ->
+                        val eta = fmtEta(done, tot, System.currentTimeMillis() - t0)
+                        val text = "Listening ($done of $tot, $eta): $title"
+                        progressNotif(EQ_NOTIF_ID, "Equalizing $tot songs",
+                            text, done, tot, ACTION_EQ_STOP, 12)
+                        progressListener?.invoke("equalizer", done, tot, text)
+                    }
+                )
+                for (s in songs) {
+                    if (!isActive) break
+                    runCatching { db.markEq(s.mediaId, db.fingerprint(s.sizeBytes, s.modified)) }
+                }
+                runCatching { refreshGains() }
+                val prefs = getSharedPreferences("bliss", MODE_PRIVATE)
+                prefs.edit()
+                    .putLong("eq_last", System.currentTimeMillis())
+                    .putInt("eq_measured", res.measured)
+                    .putInt("eq_up", res.raised)
+                    .putInt("eq_down", res.lowered)
+                    .putFloat("eq_strength_used", strength)
+                    .apply()
+                runCatching { notifManager.cancel(EQ_NOTIF_ID) }
+                val reused = if (res.reused > 0) " ${res.reused} reused." else ""
+                doneNotif(EQ_NOTIF_ID, "Equalize done",
+                    "Up ${res.raised}, down ${res.lowered}.$reused Tap to open.")
+                progressListener?.invoke("equalizer", total, total,
+                    "Done: up ${res.raised}, down ${res.lowered}.")
+            } catch (e: Exception) {
+                if (e is kotlinx.coroutines.CancellationException) throw e
+                runCatching { notifManager.cancel(EQ_NOTIF_ID) }
+                doneNotif(EQ_NOTIF_ID, "Equalize stopped", "What finished is kept.")
+                progressListener?.invoke("equalizer", 0, total, "Stopped.")
+            }
+        }
+    }
+
+    fun cancelEqualizer() {
+        eqJob?.cancel()
+        runCatching { notifManager.cancel(EQ_NOTIF_ID) }
+        progressListener?.invoke("equalizer", 0, 0, "Stopped.")
     }
 
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? = session

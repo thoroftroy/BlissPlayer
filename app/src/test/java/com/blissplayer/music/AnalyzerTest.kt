@@ -522,6 +522,26 @@ class AnalyzerTest {
     }
 
     @Test
+    fun canonicalNamesMerge() {
+        assertEquals("Eminem", SongAnalyzer.canonicalArtist("Eminem from 8 Mile (Movie Soundtrack)"))
+        assertEquals("Beyonce", SongAnalyzer.canonicalArtist("Beyonce for her third studio album I Am..."))
+        assertEquals("SomeBand", SongAnalyzer.canonicalArtist("SomeBand - Topic"))
+        assertEquals("EMINEM", SongAnalyzer.canonicalArtist("EMINEM"))
+        assertEquals("eminem", SongAnalyzer.artistKey("Eminem from the 8 Mile soundtrack"))
+        assertEquals("eminem", SongAnalyzer.artistKey("EMINEM"))
+        assertEquals("Back in Black", SongAnalyzer.canonicalAlbum("Back in Black (1991)"))
+        assertEquals("Back In Black", SongAnalyzer.canonicalAlbum("Back In Black (Live)"))
+        assertEquals("Back in Black", SongAnalyzer.canonicalAlbum("Back in Black Remastered"))
+        assertEquals("Back in Black", SongAnalyzer.canonicalAlbum("Back in Black Deluxe Edition"))
+        assertEquals("back in black", SongAnalyzer.albumKey("BACK IN BLACK (Live)"))
+        assertEquals("Unknown album", SongAnalyzer.canonicalAlbum("Unknown album"))
+        // Cleaning keeps the performer only.
+        val c = SongAnalyzer.cleanLocal(
+            "Beyonce for her third studio album - Halo (Video)", "Beyonce for her third studio album", "")
+        assertEquals("Beyonce", c.artist)
+    }
+
+    @Test
     fun albumParseShapes() {
         assertEquals("25", WikiLookup.parseAlbum("| album = [[25 (Adele album)|25]]"))
         assertEquals("Whenever You Need Somebody", WikiLookup.parseAlbum("|album=[[Whenever You Need Somebody]]"))

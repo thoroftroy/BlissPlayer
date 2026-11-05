@@ -32,12 +32,63 @@
             android:exported="true"
             android:launchMode="singleTask"
             android:configChanges="uiMode">
+        </activity>
+
+        <!-- Theme-matched home-screen icons. Exactly one alias is enabled at a
+             time (see MainActivity.syncLauncherIcon); the activity itself has
+             no launcher filter so explicit intents always resolve. -->
+        <activity-alias
+            android:name=".LauncherBliss"
+            android:targetActivity=".MainActivity"
+            android:exported="true"
+            android:enabled="true"
+            android:icon="@drawable/ic_launch_bliss"
+            android:roundIcon="@drawable/ic_launch_bliss"
+            android:label="BlissPlayer">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
-        </activity>
-
+        </activity-alias>
+        <activity-alias
+            android:name=".LauncherDark"
+            android:targetActivity=".MainActivity"
+            android:exported="true"
+            android:enabled="false"
+            android:icon="@drawable/ic_launch_dark"
+            android:roundIcon="@drawable/ic_launch_dark"
+            android:label="BlissPlayer">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
+        <activity-alias
+            android:name=".LauncherAqua"
+            android:targetActivity=".MainActivity"
+            android:exported="true"
+            android:enabled="false"
+            android:icon="@drawable/ic_launch_aqua"
+            android:roundIcon="@drawable/ic_launch_aqua"
+            android:label="BlissPlayer">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
+        <activity-alias
+            android:name=".LauncherSuper"
+            android:targetActivity=".MainActivity"
+            android:exported="true"
+            android:enabled="false"
+            android:icon="@drawable/ic_launch_super"
+            android:roundIcon="@drawable/ic_launch_super"
+            android:label="BlissPlayer">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
         <service
             android:name=".playback.PlayerService"
             android:foregroundServiceType="mediaPlayback"

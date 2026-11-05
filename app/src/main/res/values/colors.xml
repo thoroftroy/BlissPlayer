@@ -27,4 +27,31 @@
     <color name="xp_n_button_top">#3A4048</color>
     <color name="xp_n_button_bottom">#26292F</color>
     <color name="xp_n_select">#1E4FA3</color>
+
+    <!-- Aqua Bliss (OSX snow leopard): brushed silver, gel blue, linen -->
+    <color name="aq_face">#E8E8EC</color>
+    <color name="aq_face2">#D8D8DE</color>
+    <color name="aq_title_top">#F4F6F8</color>
+    <color name="aq_title_mid">#C9CDD4</color>
+    <color name="aq_title_bot">#A8ADB6</color>
+    <color name="aq_gel_top">#7DB9E8</color>
+    <color name="aq_gel_mid">#2E86D4</color>
+    <color name="aq_gel_bot">#1A5FA8</color>
+    <color name="aq_text">#1A1A1A</color>
+    <color name="aq_text_dim">#6E6E72</color>
+    <color name="aq_border">#8A8F98</color>
+    <color name="aq_select">#2E86D4</color>
+    <color name="aq_select_text">#FFFFFF</color>
+
+    <!-- Super Bliss (animated neon joke theme): near-black base, hot accents -->
+    <color name="sp_face">#0D0A1A</color>
+    <color name="sp_face2">#1A1230</color>
+    <color name="sp_title_top">#5B2EE5</color>
+    <color name="sp_title_bot">#B01EFF</color>
+    <color name="sp_neon">#00F0FF</color>
+    <color name="sp_pink">#FF2E9A</color>
+    <color name="sp_text">#F2ECFF</color>
+    <color name="sp_text_dim">#9D8FD0</color>
+    <color name="sp_border">#B01EFF</color>
+    <color name="sp_select">#5B2EE5</color>
 </resources>

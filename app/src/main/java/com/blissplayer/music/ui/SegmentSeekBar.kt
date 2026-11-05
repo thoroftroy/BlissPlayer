@@ -3,10 +3,14 @@ package com.blissplayer.music.ui
 import android.content.Context
 import android.graphics.Canvas
 import android.graphics.Paint
+import android.graphics.LinearGradient
+import android.graphics.RectF
+import android.graphics.Shader
 import android.util.AttributeSet
 import android.view.MotionEvent
 import android.view.View
 import com.blissplayer.music.model.Seg
+import com.blissplayer.music.ui.theme.MobileTheme
 
 /**
  * XP style seek bar that paints skip segments red. Touch to seek.
@@ -24,6 +28,43 @@ class SegmentSeekBar @JvmOverloads constructor(
     var selectedId: Long? = null
     var dark: Boolean = false
     var onSeek: ((ms: Long) -> Unit)? = null
+    private val theme = MobileTheme.read(context)
+
+    /** Scrolling rainbow phase for Super; advanced by a 2fps self-loop (idle-friendly). */
+    private var rainbowPhase = 0f
+    private var rainbowRunning = false
+    private val rainbowStep = Runnable {
+        rainbowRunning = false
+        if (!android.animation.ValueAnimator.areAnimatorsEnabled()) return@Runnable
+        if (theme == MobileTheme.SUPER && motionFull() && isAttachedToWindow) {
+            rainbowPhase = (rainbowPhase + 0.12f) % 1f
+            invalidate()
+            rainbowLoop()
+        }
+    }
+
+    private fun motionFull(): Boolean {
+        val motion = context.getSharedPreferences("bliss", Context.MODE_PRIVATE)
+            .getString("theme_motion", "full") ?: "full"
+        return motion == "full" && android.animation.ValueAnimator.areAnimatorsEnabled()
+    }
+
+    private fun rainbowLoop() {
+        if (rainbowRunning) return
+        rainbowRunning = true
+        postDelayed(rainbowStep, 500)
+    }
+
+    override fun onAttachedToWindow() {
+        super.onAttachedToWindow()
+        if (theme == MobileTheme.SUPER) rainbowLoop()
+    }
+
+    override fun onDetachedFromWindow() {
+        removeCallbacks(rainbowStep)
+        rainbowRunning = false
+        super.onDetachedFromWindow()
+    }
 
     private var dragging = false
     private var dragMs: Long = 0L
@@ -56,10 +97,14 @@ class SegmentSeekBar @JvmOverloads constructor(
 
     override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
         val h = (30 * resources.displayMetrics.density).toInt()
-        setMeasuredDimension(widthMeasureSpec, MeasureSpec.makeMeasureSpec(h, MeasureSpec.EXACTLY))
+        setMeasuredDimension(MeasureSpec.getSize(widthMeasureSpec), h)
     }
 
     override fun onDraw(c: Canvas) {
+        if (theme.modern) {
+            drawModern(c)
+            return
+        }
         val w = width.toFloat()
         val h = height.toFloat()
         val pad = 4f * resources.displayMetrics.density
@@ -99,6 +144,55 @@ class SegmentSeekBar @JvmOverloads constructor(
         val tw = 9f * resources.displayMetrics.density
         c.drawRect(tx - tw, pad, tx + tw, h - pad, thumb)
         c.drawRect(tx - tw, pad, tx + tw, h - pad, thumbEdge)
+    }
+
+    private fun drawModern(c: Canvas) {
+        val d = resources.displayMetrics.density
+        val pad = 10f * d
+        val cy = height / 2f
+        val track = RectF(pad, cy - 3.5f * d, width - pad, cy + 3.5f * d)
+        val frac = ((if (dragging) dragMs else posMs).toDouble() / maxMs.coerceAtLeast(1)).coerceIn(0.0, 1.0).toFloat()
+        face.color = if (theme == MobileTheme.AQUA) 0xFF93ADBD.toInt() else 0xFF1B3147.toInt()
+        c.drawRoundRect(track, 4f * d, 4f * d, face)
+        val fill = RectF(track).apply { right = left + width() * frac }
+        if (theme == MobileTheme.SUPER) {
+            // Scrolling rainbow: bands travel the bar as it plays.
+            val n = 7
+            val colors = IntArray(n + 1)
+            for (i in 0..n) {
+                val hue = ((rainbowPhase * 360f + i * (360f / n)) % 360f + 360f) % 360f
+                colors[i] = android.graphics.Color.HSVToColor(255, floatArrayOf(hue, 0.85f, 1f))
+            }
+            val span = track.width().coerceAtLeast(1f)
+            played.shader = LinearGradient(
+                track.left - span * rainbowPhase, 0f,
+                track.left + span * (1.6f - rainbowPhase), 0f,
+                colors, null, Shader.TileMode.MIRROR
+            )
+        } else {
+            played.shader = LinearGradient(0f, track.top, 0f, track.bottom,
+                if (theme == MobileTheme.AQUA) intArrayOf(0xFFB4EEFF.toInt(), 0xFF187DE2.toInt(), 0xFF074DA1.toInt())
+                else intArrayOf(0xFFDEFFF2.toInt(), 0xFF76FFDA.toInt(), 0xFF80BBFF.toInt()), null, Shader.TileMode.CLAMP)
+        }
+        c.drawRoundRect(fill, 4f * d, 4f * d, played); played.shader = null
+        skip.color = if (theme == MobileTheme.AQUA) 0xFFDB5252.toInt() else 0xFFFF729D.toInt()
+        segments.forEach { s ->
+            val a = track.left + track.width() * (s.startMs.toDouble() / maxMs.coerceAtLeast(1)).coerceIn(0.0, 1.0).toFloat()
+            val b = track.left + track.width() * (s.endMs.toDouble() / maxMs.coerceAtLeast(1)).coerceIn(0.0, 1.0).toFloat()
+            if (b > a) {
+                val rect = RectF(a, track.top, b, track.bottom)
+                c.drawRoundRect(rect, 2f * d, 2f * d, skip)
+                if (s.id == selectedId) c.drawRoundRect(rect, 2f * d, 2f * d, selectFrame)
+            }
+        }
+        val tx = track.left + track.width() * frac
+        thumb.shader = LinearGradient(0f, cy - 9f * d, 0f, cy + 9f * d,
+            if (theme == MobileTheme.AQUA) intArrayOf(0xFFFFFFFF.toInt(), 0xFFA9CBDD.toInt(), 0xFFF8FDFF.toInt())
+            else intArrayOf(0xFFFFFFFF.toInt(), 0xFF9CFFE4.toInt()), null, Shader.TileMode.CLAMP)
+        c.drawCircle(tx, cy, 9f * d, thumb); thumb.shader = null
+        thumbEdge.color = if (theme == MobileTheme.AQUA) 0xFF648EAF.toInt() else 0xFF6AB8C9.toInt()
+        thumbEdge.strokeWidth = d
+        c.drawCircle(tx, cy, 9f * d, thumbEdge)
     }
 
     override fun onTouchEvent(e: MotionEvent): Boolean {
