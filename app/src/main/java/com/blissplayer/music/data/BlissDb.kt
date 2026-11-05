@@ -12,7 +12,7 @@ import android.database.sqlite.SQLiteOpenHelper
  *  playlists(id, name) + playlist_songs(playlist_id, media_id, position)
  *  boost(device_name PRIMARY KEY, gain_mult)  , per-device amp memory (car vs headphones)
  */
-class BlissDb(context: Context) : SQLiteOpenHelper(context, "bliss.db", null, 13) {
+class BlissDb(context: Context) : SQLiteOpenHelper(context, "bliss.db", null, 14) {
 
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL("CREATE TABLE gains(media_id INTEGER PRIMARY KEY, gain_mult REAL NOT NULL)")
@@ -34,6 +34,7 @@ class BlissDb(context: Context) : SQLiteOpenHelper(context, "bliss.db", null, 13
         db.execSQL("CREATE TABLE song_stats(media_id INTEGER PRIMARY KEY, skips INTEGER NOT NULL DEFAULT 0, completions INTEGER NOT NULL DEFAULT 0, listen_ms INTEGER NOT NULL DEFAULT 0, last_played INTEGER NOT NULL DEFAULT 0)")
         db.execSQL("CREATE TABLE stat_events(media_id INTEGER NOT NULL, kind TEXT NOT NULL, at INTEGER NOT NULL, ms INTEGER NOT NULL DEFAULT 0)")
         db.execSQL("CREATE INDEX IF NOT EXISTS idx_stat_events ON stat_events(kind, at)")
+        db.execSQL("CREATE TABLE learned_artists(alias_key TEXT PRIMARY KEY, name TEXT NOT NULL)")
     }
 
     override fun onUpgrade(db: SQLiteDatabase, old: Int, new: Int) {
@@ -68,6 +69,9 @@ class BlissDb(context: Context) : SQLiteOpenHelper(context, "bliss.db", null, 13
         if (old < 13) {
             db.execSQL("CREATE TABLE IF NOT EXISTS stat_events(media_id INTEGER NOT NULL, kind TEXT NOT NULL, at INTEGER NOT NULL, ms INTEGER NOT NULL DEFAULT 0)")
             db.execSQL("CREATE INDEX IF NOT EXISTS idx_stat_events ON stat_events(kind, at)")
+        }
+        if (old < 14) {
+            db.execSQL("CREATE TABLE IF NOT EXISTS learned_artists(alias_key TEXT PRIMARY KEY, name TEXT NOT NULL)")
         }
     }
 
@@ -421,6 +425,33 @@ class BlissDb(context: Context) : SQLiteOpenHelper(context, "bliss.db", null, 13
     }
 
     fun clearEvents() = writableDatabase.delete("stat_events", null, null)
+
+    /** Delete history from a bucket start onward (clear this month/year). */
+    fun clearEventsSince(sinceMs: Long) {
+        writableDatabase.delete("stat_events", "at>=?", arrayOf(sinceMs.toString()))
+    }
+
+    // ---- learned artist aliases (thebandred -> Red, remembered forever) ----
+    /** file-tag key -> lookup-resolved display name. */
+    fun learnArtist(aliasKey: String, name: String) {
+        if (aliasKey.isBlank() || name.isBlank()) return
+        writableDatabase.insertWithOnConflict(
+            "learned_artists", null,
+            ContentValues().apply {
+                put("alias_key", aliasKey)
+                put("name", name)
+            },
+            SQLiteDatabase.CONFLICT_REPLACE
+        )
+    }
+
+    fun learnedArtists(): Map<String, String> {
+        val m = mutableMapOf<String, String>()
+        readableDatabase.rawQuery("SELECT alias_key, name FROM learned_artists", null)?.use { c ->
+            while (c.moveToNext()) m[c.getString(0)] = c.getString(1)
+        }
+        return m
+    }
 
     // ---- skip segments (per song, milliseconds) ----
     fun segmentsFor(mediaId: Long): List<com.blissplayer.music.model.Seg> {

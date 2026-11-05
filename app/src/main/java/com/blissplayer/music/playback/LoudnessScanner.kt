@@ -94,13 +94,14 @@ object LoudnessScanner {
         if (rms.isEmpty()) return@coroutineScope Result(0, reused, 0, 0, skipped)
         val avg = rms.values.average()
         // Strength blends full correction toward doing nothing: 100 percent
-        // lands every song on the average, 0 percent leaves volumes alone.
-        val k = strength.coerceIn(0f, 1f).toDouble()
+        // lands every song on the average, 0 percent leaves volumes alone,
+        // past 100 percent pushes past the average for stubborn libraries.
+        val k = strength.coerceIn(0f, 2f).toDouble()
         var raised = 0
         var lowered = 0
         rms.forEach { (id, r) ->
             val full = avg / r
-            val mult = (1.0 + (full - 1.0) * k).coerceIn(0.25, 4.0) // 12 dB window either way
+            val mult = (1.0 + (full - 1.0) * k).coerceIn(0.125, 8.0) // 18 dB window either way
             runCatching { putGain(id, mult) }
             if (mult > 1.03) raised++ else if (mult < 0.97) lowered++
         }

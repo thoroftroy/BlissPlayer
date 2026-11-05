@@ -577,6 +577,27 @@ class StabilityRegressionTest {
         assertTrue("paused notification disappeared on its own", blissNotification())
     }
 
+    @Test fun pausedTaskRemovalKeepsControlsUsable() {
+        val song = sample()
+        val binder = serviceRule.bindService(
+            Intent(context, PlayerService::class.java).setAction("com.blissplayer.music.PLAYER_UI"))
+        val svc = (binder as PlayerService.LocalBinder).service().also { service = it }
+        main {
+            svc.player.setMediaItem(MediaItem.Builder().setMediaId(song.mediaId.toString()).setUri(song.contentUri).build())
+            svc.player.repeatMode = Player.REPEAT_MODE_ONE
+            svc.player.prepare()
+            svc.player.play()
+        }
+        awaitState("playback never started") { svc.player.isPlaying }
+        main { svc.player.pause() }
+        awaitState("pause never landed") { !svc.player.isPlaying }
+        main { svc.onTaskRemoved(null) }
+        val nm = context.getSystemService(NotificationManager::class.java)
+        assertTrue("notification disappeared on task removal", nm.activeNotifications.any { it.packageName == context.packageName })
+        main { svc.player.play() }
+        awaitState("playback could not resume after task removal") { svc.player.isPlaying }
+    }
+
     @Test fun notificationStylesDiffer() {
         val song = sample()
         val binder = serviceRule.bindService(

@@ -12,6 +12,8 @@ import androidx.recyclerview.widget.RecyclerView
 import com.blissplayer.music.R
 import com.blissplayer.music.model.Song
 import com.blissplayer.music.ui.theme.ThemeRenderers
+import com.blissplayer.music.ui.theme.ThemeFonts
+import com.blissplayer.music.ui.theme.MobileTheme
 
 /** One row in library lists: either a song or a group header (artist/album/playlist). */
 sealed interface Row {
@@ -191,6 +193,10 @@ class LibraryAdapter(
         if (renderer != null && renderer.theme.modern) {
             renderer.row(h.box, h.title, h.sub, h.dur, h.more, h.icon, selected, row is Row.Group, h.fav)
         } else {
+        val theme = MobileTheme.from(themeId)
+        ThemeFonts.apply(h.title, theme, true)
+        ThemeFonts.apply(h.sub, theme, false)
+        ThemeFonts.apply(h.dur, theme, false)
         // Selected rows keep white icons; unselected follow the theme.
         val tc = if (dark) 0xFFE8E8E8.toInt() else 0xFF000000.toInt()
         val sc = if (dark) 0xFFA8ADB5.toInt() else 0xFF5A5A5A.toInt()

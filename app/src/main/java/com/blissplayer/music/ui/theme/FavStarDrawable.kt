@@ -41,7 +41,7 @@ class FavStarDrawable(
         if (!animated || callback == null) return@Runnable
         // System animators off means stop everything, like the layer clock.
         if (!android.animation.ValueAnimator.areAnimatorsEnabled()) return@Runnable
-        phase = (phase + 0.15f) % 1f
+        phase = (phase + 0.4f) % 1f
         invalidateSelf()
     }
 
@@ -53,7 +53,7 @@ class FavStarDrawable(
     private fun kick() {
         if (scheduled || !animated || callback == null) return
         scheduled = true
-        scheduleSelf(stepper, SystemClock.uptimeMillis() + 500)
+        scheduleSelf(stepper, SystemClock.uptimeMillis() + 350)
     }
 
     override fun draw(canvas: Canvas) {

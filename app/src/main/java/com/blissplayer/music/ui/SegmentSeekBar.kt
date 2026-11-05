@@ -37,7 +37,7 @@ class SegmentSeekBar @JvmOverloads constructor(
         rainbowRunning = false
         if (!android.animation.ValueAnimator.areAnimatorsEnabled()) return@Runnable
         if (theme == MobileTheme.SUPER && motionFull() && isAttachedToWindow) {
-            rainbowPhase = (rainbowPhase + 0.12f) % 1f
+            rainbowPhase = (rainbowPhase + 0.4f) % 1f
             invalidate()
             rainbowLoop()
         }
@@ -52,7 +52,7 @@ class SegmentSeekBar @JvmOverloads constructor(
     private fun rainbowLoop() {
         if (rainbowRunning) return
         rainbowRunning = true
-        postDelayed(rainbowStep, 500)
+        postDelayed(rainbowStep, 350)
     }
 
     override fun onAttachedToWindow() {

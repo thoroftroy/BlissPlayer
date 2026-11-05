@@ -24,6 +24,7 @@ import android.text.InputType
 import android.view.View
 import android.view.ViewGroup
 import android.widget.Button
+import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.ImageButton
 import android.widget.LinearLayout
@@ -106,7 +107,37 @@ class MainActivity : AppCompatActivity() {
         return migrated
     }
 
-    /** Home-screen icon follows the theme: exactly one launcher alias enabled. */
+    /** Theme switch: warn, fade to black, then a real restart (not a die). */
+    private fun restartForTheme(id: String) {
+        prefs.edit().putString("theme", id).apply()
+        theme = id
+        // Home-screen icon swaps with the theme; the launcher picks it up
+        // on its next refresh.
+        syncLauncherIcon()
+        saveResume()
+        persistListenTime()
+        val root = findViewById<LinearLayout>(R.id.root)
+        val fade = View(this).apply {
+            setBackgroundColor(0xFF000000.toInt())
+            alpha = 0f
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.MATCH_PARENT
+            )
+        }
+        // Cover the whole window above everything else.
+        (root.parent as? android.view.ViewGroup)?.addView(fade)
+            ?: root.addView(fade)
+        fade.animate().alpha(1f).setDuration(280).withEndAction {
+            val launch = packageManager.getLaunchIntentForPackage(packageName)?.apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
+            } ?: Intent(this, MainActivity::class.java).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
+            }
+            startActivity(launch)
+            finish()
+        }.start()
+    }
     private fun syncLauncherIcon() {
         try {
             val pm = packageManager
@@ -145,14 +176,43 @@ class MainActivity : AppCompatActivity() {
     // Refreshed after scan, after every counted play, and after resets.
     private var cachedCounts: Map<Long, Int> = emptyMap()
     private var cachedTotals: Map<Long, Int> = emptyMap()
+    /** Render caches: display albums + stat lines recompute only on change. */
+    private var albumCacheFor: List<Song>? = null
+    private var albumCache: Map<Long, String> = emptyMap()
+    private var statCacheKey: String? = null
+    private var statCache: Map<Long, String> = emptyMap()
     /** Favorite ids: exempt from cycle rarity, mirrored into the Favorites playlist. */
     private var favoriteIds: Set<Long> = emptySet()
+    /** Lookup-learned artist aliases: file-tag key -> resolved name. */
+    private var learnedArtists: Map<String, String> = emptyMap()
 
     /** Stamp theme/motion onto a list adapter so stars match the theme. */
     private fun stampFav(a: LibraryAdapter): LibraryAdapter {
         a.themeId = theme
         a.motionFull = mobileThemeUi?.fullMotion ?: true
         return a
+    }
+
+    /** Stats lines recompute only when an input actually changed. */
+    private fun refreshStats() {
+        val wantStats = prefs.getBoolean("show_total", false) ||
+            prefs.getBoolean("show_cycle", false) ||
+            prefs.getBoolean("show_chance", false)
+        adapter.showStats = wantStats
+        if (!wantStats) {
+            adapter.statLines = emptyMap()
+            return
+        }
+        val key = "${cachedCounts.hashCode()}|${cachedTotals.hashCode()}|" +
+            "${favoriteIds.hashCode()}|${prefs.getString("fav_mode", "exempt")}|" +
+            "${prefs.getFloat("fav_rarity", 1.0f)}|${prefs.getFloat("shuffle_strength", 1.0f)}|" +
+            "${prefs.getBoolean("shuffle_smart", true)}|${prefs.getBoolean("shuffle_artist", false)}|" +
+            "${prefs.getBoolean("show_total", false)}${prefs.getBoolean("show_cycle", false)}${prefs.getBoolean("show_chance", false)}"
+        if (key != statCacheKey) {
+            statCache = statLines()
+            statCacheKey = key
+        }
+        adapter.statLines = statCache
     }
 
     /** Reload count caches in the background, then refresh visible stats. */
@@ -164,16 +224,18 @@ class MainActivity : AppCompatActivity() {
                 // Pre-built Favorites playlist: always exists, even when empty.
                 runCatching { db.favoritesPlaylistId() }
                 val f = runCatching { db.favoriteIds() }.getOrDefault(emptySet())
+                val learned = runCatching { db.learnedArtists() }.getOrDefault(emptyMap())
                 launch(Dispatchers.Main) {
                     cachedCounts = c
                     cachedTotals = t
                     favoriteIds = f
+                    learnedArtists = learned
                     stampFav(adapter)
                     adapter.favoriteIds = f
                     queueAdapter?.let { stampFav(it); it.favoriteIds = f }
                     landQueueAdapter?.let { stampFav(it); it.favoriteIds = f }
                     if (wantStats() && tab != 5) {
-                        adapter.statLines = statLines()
+                        refreshStats()
                         adapter.notifyDataSetChanged()
                     } else {
                         adapter.notifyDataSetChanged()
@@ -205,7 +267,7 @@ class MainActivity : AppCompatActivity() {
                 queueAdapter?.notifyDataSetChanged()
                 landQueueAdapter?.notifyDataSetChanged()
                 if (wantStats()) {
-                    adapter.statLines = statLines()
+                    refreshStats()
                     adapter.notifyDataSetChanged()
                 }
                 svc?.repostNotif()
@@ -314,13 +376,32 @@ class MainActivity : AppCompatActivity() {
         return com.blissplayer.music.data.SongAnalyzer.canonicalAlbum(raw)
     }
 
+    /** Credited names for grouping, drills and menus. Blank tags become
+     * "Unknown artist" here AND in the drill, so the folder is never empty.
+     * Lookup-learned aliases resolve first (thebandred -> Red). */
+    private fun resolveArtist(raw: String): String {
+        val canon = com.blissplayer.music.data.SongAnalyzer.canonicalArtist(raw)
+        return learnedArtists[com.blissplayer.music.data.SongAnalyzer.artistKey(canon)] ?: canon
+    }
+
+    private fun creditNames(s: Song): List<String> =
+        com.blissplayer.music.data.SongAnalyzer.splitArtists(s.artist)
+            .map { resolveArtist(it) }
+            .filter { it.isNotBlank() }
+            .ifEmpty { listOf("Unknown artist") }
+
+    private fun artistMatchesKey(s: Song, key: String): Boolean =
+        creditNames(s).any {
+            com.blissplayer.music.data.SongAnalyzer.artistMergeKey(it) == key
+        }
+
     /** Play counts credited to every artist name on the song. */
     private fun creditArtists(counts: Map<Long, Int>): Map<String, Int> {
         val m = mutableMapOf<String, Int>()
         for (s in songs) {
             val c = counts[s.mediaId] ?: 0
             if (c <= 0) continue
-            for (a in com.blissplayer.music.data.SongAnalyzer.splitArtists(s.artist).ifEmpty { listOf("Unknown artist") }) {
+            for (a in creditNames(s)) {
                 m[a] = (m[a] ?: 0) + c
             }
         }
@@ -460,6 +541,39 @@ class MainActivity : AppCompatActivity() {
                 toast("Could not save stats: ${e.message}")
             }
         }
+    }
+
+    /** Pick which stat cards show. Toggles apply instantly. */
+    private fun visibleStatsDialog() {
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(16), dp(8), dp(16), dp(8))
+        }
+        val items = listOf(
+            "stats_show_top3" to "Top 3 leaders",
+            "stats_show_month" to "This month",
+            "stats_show_year" to "This year"
+        )
+        for ((key, label) in items) {
+            box.addView(CheckBox(this).apply {
+                text = label
+                textSize = 15f
+                isChecked = prefs.getBoolean(key, true)
+                setOnCheckedChangeListener { _, on ->
+                    prefs.edit().putBoolean(key, on).apply()
+                    buildMorePane()
+                }
+            })
+        }
+        box.addView(TextView(this).apply {
+            text = "Library and All time always show."
+            textSize = 12f
+        })
+        ThemeDialogBuilder(this)
+            .setCustomTitle(xpTitle("Visible stats"))
+            .setView(box)
+            .setPositiveButton("Done", null)
+            .show()
     }
 
     /** Shareable stats JSON: all-time aggregates plus month/year buckets. */
@@ -1368,6 +1482,7 @@ class MainActivity : AppCompatActivity() {
             tabHistory.addLast(tab)
             while (tabHistory.size > 20) tabHistory.removeFirst()
         }
+        saveListPos()
         tab = t
         clearDrill(silent = true)
         titleBar.text = "BlissPlayer: ${listOf("Songs", "Artists", "Albums", "Genres", "Playlists", "More")[t]}"
@@ -1384,6 +1499,7 @@ class MainActivity : AppCompatActivity() {
         headerBar.visibility = View.GONE
         updateTabs()
         if (t == 5) buildMorePane() else render()
+        if (t != 5) restoreListPos()
         mobileThemeUi?.animateReveal(if (t == 5) morePane else list)
     }
 
@@ -1412,7 +1528,45 @@ class MainActivity : AppCompatActivity() {
         drillGenre = null
         drillPlaylist = null
         drillPlaylistName = null
-        if (!silent) render()
+        if (!silent) {
+            render()
+            restoreListPos()
+        }
+    }
+
+    /** List scroll memory: leaving a drill or tab never loses your place. */
+    private val listScroll = mutableMapOf<String, Int>()
+
+    private fun listKey(): String = when {
+        drillArtist != null -> "ar:$drillArtist"
+        drillAlbum != null -> "al:$drillAlbum"
+        drillGenre != null -> "ge:$drillGenre"
+        drillPlaylist != null -> "pl:$drillPlaylist"
+        isSearchActive() -> "search"
+        else -> "tab:$tab"
+    }
+
+    private fun saveListPos() {
+        if (!::list.isInitialized) return
+        val lm = list.layoutManager as? androidx.recyclerview.widget.LinearLayoutManager ?: return
+        listScroll[listKey()] = lm.findFirstVisibleItemPosition().coerceAtLeast(0)
+    }
+
+    private fun restoreListPos() {
+        if (!::list.isInitialized) return
+        val lm = list.layoutManager as? androidx.recyclerview.widget.LinearLayoutManager ?: return
+        val pos = listScroll[listKey()] ?: 0
+        if (pos > 0) lm.scrollToPositionWithOffset(pos, 0) else lm.scrollToPosition(0)
+    }
+
+    /**Brief settle fade so list swaps never pop in raw. Skipped when motion is off. */
+    private fun settleList() {
+        if (!::list.isInitialized) return
+        if (prefs.getString("theme_motion", "full") == "off") return
+        if (!android.animation.ValueAnimator.areAnimatorsEnabled()) return
+        list.animate().cancel()
+        list.alpha = 0.45f
+        list.animate().alpha(1f).setDuration(140).start()
     }
 
     private fun showingSongs(): Boolean =
@@ -1511,6 +1665,7 @@ class MainActivity : AppCompatActivity() {
                 playlistAdd.visibility = View.GONE
                 searchClear.visibility = View.VISIBLE
                 rebuildChips()
+                settleList()
             } else {
                 searchClear.visibility = if (isSearchActive()) View.VISIBLE else View.GONE
                 if (!isSearchActive()) render()
@@ -1655,25 +1810,21 @@ class MainActivity : AppCompatActivity() {
         if (!prefs.contains("show_total") && prefs.getBoolean("show_counts", false)) {
             prefs.edit().putBoolean("show_total", true).putBoolean("show_cycle", true).putBoolean("show_chance", true).apply()
         }
-        val wantStats = prefs.getBoolean("show_total", false) ||
-            prefs.getBoolean("show_cycle", false) ||
-            prefs.getBoolean("show_chance", false)
-        adapter.showStats = wantStats
-        adapter.statLines = if (wantStats) statLines() else emptyMap()
-        adapter.albumLines = songs.associate { it.mediaId to displayAlbum(it) }
+        refreshStats()
+        if (albumCacheFor !== songs) {
+            albumCache = songs.associate { it.mediaId to displayAlbum(it) }
+            albumCacheFor = songs
+        }
+        adapter.albumLines = albumCache
         adapter.favoriteIds = favoriteIds
         val sortKey = currentSortKey()
         when {
             drillArtist != null -> {
                 val a = drillArtist!!
                 // Multi-artist songs appear under every credited name.
-                // Match on the canonical key so casing/description variants land together.
+                // Same merge key as grouping, so the drill can never be empty.
                 val inA = applySort(
-                    songs.filter { s ->
-                        com.blissplayer.music.data.SongAnalyzer.splitArtists(s.artist).any {
-                            com.blissplayer.music.data.SongAnalyzer.canonicalArtist(it).lowercase() == a.lowercase()
-                        }
-                    },
+                    songs.filter { artistMatchesKey(it, a) },
                     sortKey
                 )
                 crumb.text = "$a (${inA.size}) | tap here to go back"
@@ -1681,10 +1832,10 @@ class MainActivity : AppCompatActivity() {
             }
             drillAlbum != null -> {
                 // Albums come from tags and overrides, never from folder names.
-                // Match on the canonical album so years/casing/version words land together.
+                // Same key as grouping, so the drill can never be empty.
                 val a = drillAlbum!!
                 val inA = songs.filter {
-                    com.blissplayer.music.data.SongAnalyzer.canonicalAlbum(effAlbum(it)).lowercase() == a.lowercase()
+                    com.blissplayer.music.data.SongAnalyzer.albumKey(displayAlbum(it)) == a
                 }.sortedBy { it.sortTitle }
                 crumb.text = "$a (${inA.size}) | tap here to go back"
                 adapter.numbered = true
@@ -1707,14 +1858,12 @@ class MainActivity : AppCompatActivity() {
                 val groups = mutableMapOf<String, MutableList<Song>>()
                 val display = mutableMapOf<String, String>()
                 for (s in songs) {
-                    val names = com.blissplayer.music.data.SongAnalyzer.splitArtists(s.artist)
-                        .map { com.blissplayer.music.data.SongAnalyzer.canonicalArtist(it) }
-                        .filter { it.isNotBlank() }
-                        .ifEmpty { listOf("Unknown artist") }
-                    for (a in names) {
-                        val k = com.blissplayer.music.data.SongAnalyzer.artistKey(a)
+                    for (a in creditNames(s)) {
+                        val k = com.blissplayer.music.data.SongAnalyzer.artistMergeKey(a)
                         groups.getOrPut(k) { mutableListOf() }.add(s)
-                        display.putIfAbsent(k, a)
+                        val known = learnedArtists[com.blissplayer.music.data.SongAnalyzer.artistKey(a)]
+                        display[k] = known
+                            ?: com.blissplayer.music.data.SongAnalyzer.preferArtistDisplay(display[k], a)
                     }
                 }
                 val totals = cachedTotals
@@ -1779,6 +1928,7 @@ class MainActivity : AppCompatActivity() {
         }
         rebuildChips()
         updateStatus()
+        settleList()
     }
 
     private fun updateStatus() {
@@ -1821,6 +1971,8 @@ class MainActivity : AppCompatActivity() {
             else 1.0 / Math.pow((1 + (counts[id] ?: 0)).toDouble(), strength)
             if (smart && artistPenalty) {
                 val ac = com.blissplayer.music.data.SongAnalyzer.splitArtists(artist)
+                    .map { resolveArtist(it) }
+                    .filter { it.isNotBlank() }
                     .ifEmpty { listOf("Unknown artist") }
                     .sumOf { artistCounts[it] ?: 0 }
                 if (ac > 0) w /= Math.pow((1 + ac).toDouble(), strength * 0.5)
@@ -1859,28 +2011,36 @@ class MainActivity : AppCompatActivity() {
         headerBar.visibility = View.GONE
         searchClear.visibility = View.GONE
         playlistAdd.visibility = View.GONE
-        runCatching { db.favoritesPlaylistId() }
-        val all = db.playlists()
-        val (fav, rest) = all.partition { it.second == "Favorites" }
-        adapter.favoritesPlaylistId = fav.firstOrNull()?.first
-            ?: runCatching { db.favoritesPlaylistId() }.getOrNull()
-        val rows = mutableListOf<Row>(Row.Group("__new", "New playlist", "Start a mix"))
-        val favRows = (fav + rest.sortedBy { it.second.lowercase() }).map { (id, name) ->
-            val n = db.songsIn(id).size
-            Row.Group("pl:$id", name, if (n == 1) "1 song" else "$n songs")
+        crumb.text = "Playlists. Tap one to open it."
+        lifecycleScope.launch(Dispatchers.IO) {
+            runCatching { db.favoritesPlaylistId() }
+            val all = db.playlists()
+            val counts = all.associate { it.first to db.songsIn(it.first).size }
+            launch(Dispatchers.Main) {
+                if (tab != 4) return@launch
+                val (fav, rest) = all.partition { it.second == "Favorites" }
+                adapter.favoritesPlaylistId = fav.firstOrNull()?.first
+                    ?: runCatching { db.favoritesPlaylistId() }.getOrNull()
+                val rows = mutableListOf<Row>(Row.Group("__new", "New playlist", "Start a mix"))
+                val favRows = (fav + rest.sortedBy { it.second.lowercase() }).map { (id, name) ->
+                    val n = counts[id] ?: 0
+                    Row.Group("pl:$id", name, if (n == 1) "1 song" else "$n songs")
+                }
+                // Favorites rides at the top, breathing room before the rest.
+                val favTop = favRows.filter { (it as Row.Group).title == "Favorites" }
+                val others = favRows.filter { (it as Row.Group).title != "Favorites" }
+                rows += favTop
+                if (favTop.isNotEmpty() && others.isNotEmpty()) rows += Row.Sep
+                rows += others
+                crumb.text = if (rows.size <= 1) "No playlists yet. Start one above."
+                else {
+                    val n = rows.size - 1
+                    "$n ${if (n == 1) "playlist" else "playlists"}. Tap one to open it."
+                }
+                adapter.submit(rows)
+                settleList()
+            }
         }
-        // Favorites rides at the top, breathing room before the rest.
-        val favTop = favRows.filter { (it as Row.Group).title == "Favorites" }
-        val others = favRows.filter { (it as Row.Group).title != "Favorites" }
-        rows += favTop
-        if (favTop.isNotEmpty() && others.isNotEmpty()) rows += Row.Sep
-        rows += others
-        crumb.text = if (rows.size <= 1) "No playlists yet. Start one above."
-        else {
-            val n = rows.size - 1
-            "$n ${if (n == 1) "playlist" else "playlists"}. Tap one to open it."
-        }
-        adapter.submit(rows)
     }
 
     private fun visibleSongs(): List<Song> =
@@ -1939,16 +2099,22 @@ class MainActivity : AppCompatActivity() {
                 row.key.startsWith("pl:") ->
                     playlistSongsDialog(row.key.removePrefix("pl:").toLong(), row.title)
                 row.key.startsWith("ar:") -> {
+                    saveListPos()
                     drillArtist = row.key.removePrefix("ar:")
                     render()
+                    restoreListPos()
                 }
                 row.key.startsWith("al:") -> {
+                    saveListPos()
                     drillAlbum = row.key.removePrefix("al:")
                     render()
+                    restoreListPos()
                 }
                 row.key.startsWith("ge:") -> {
+                    saveListPos()
                     drillGenre = row.key.removePrefix("ge:")
                     render()
+                    restoreListPos()
                 }
             }
             is Row.Sep -> { /* divider, nothing to do */ }
@@ -2097,6 +2263,8 @@ class MainActivity : AppCompatActivity() {
             else 1.0 / Math.pow((1 + (counts[s.mediaId] ?: 0)).toDouble(), strength)
             if (artistPenalty) {
                 val ac = com.blissplayer.music.data.SongAnalyzer.splitArtists(s.artist)
+                    .map { resolveArtist(it) }
+                    .filter { it.isNotBlank() }
                     .ifEmpty { listOf("Unknown artist") }
                     .sumOf { artistCounts[it] ?: 0 }
                 if (ac > 0) w /= Math.pow((1 + ac).toDouble(), strength * 0.5)
@@ -3013,21 +3181,28 @@ class MainActivity : AppCompatActivity() {
 
     private fun refreshPlaylistsDialog() {
         val lv = playlistsDialogList ?: return
-        val rows = mutableListOf<Row>(Row.Group("__new", "New playlist", "Start a mix"))
-        val all = db.playlists()
-        (lv.adapter as? LibraryAdapter)?.favoritesPlaylistId =
-            all.firstOrNull { it.second == "Favorites" }?.first
-        val favTop = all.filter { it.second == "Favorites" }
-        val others = all.filter { it.second != "Favorites" }.sortedBy { it.second.lowercase() }
-        fun rowOf(pair: Pair<Long, String>): Row {
-            val (id, name) = pair
-            val n = db.songsIn(id).size
-            return Row.Group("pl:$id", name, if (n == 1) "1 song" else "$n songs")
+        // DB reads off the main thread: big playlist collections opened instantly.
+        lifecycleScope.launch(Dispatchers.IO) {
+            val all = db.playlists()
+            val counts = all.associate { it.first to db.songsIn(it.first).size }
+            val favId = all.firstOrNull { it.second == "Favorites" }?.first
+            launch(Dispatchers.Main) {
+                val lv2 = playlistsDialogList ?: return@launch
+                (lv2.adapter as? LibraryAdapter)?.favoritesPlaylistId = favId
+                val rows = mutableListOf<Row>(Row.Group("__new", "New playlist", "Start a mix"))
+                val favTop = all.filter { it.second == "Favorites" }
+                val others = all.filter { it.second != "Favorites" }.sortedBy { it.second.lowercase() }
+                fun rowOf(pair: Pair<Long, String>): Row {
+                    val (id, name) = pair
+                    val n = counts[id] ?: 0
+                    return Row.Group("pl:$id", name, if (n == 1) "1 song" else "$n songs")
+                }
+                rows += favTop.map(::rowOf)
+                if (favTop.isNotEmpty() && others.isNotEmpty()) rows += Row.Sep
+                rows += others.map(::rowOf)
+                (lv2.adapter as? LibraryAdapter)?.submit(rows)
+            }
         }
-        rows += favTop.map(::rowOf)
-        if (favTop.isNotEmpty() && others.isNotEmpty()) rows += Row.Sep
-        rows += others.map(::rowOf)
-        (lv.adapter as? LibraryAdapter)?.submit(rows)
     }
 
     private fun playlistSongsDialog(id: Long, name: String) {
@@ -3088,7 +3263,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun artistMenu(artist: String) {
-        val inA = songs.filter { artist in com.blissplayer.music.data.SongAnalyzer.splitArtists(it.artist) }
+        val inA = songs.filter { artistMatchesKey(it, artist) }
         xpMenuDialog(artist, listOf("Play all", "Add all to queue", "Add all to playlist")) { which ->
                 when (which) {
                     0 -> playQueue(inA, 0)
@@ -3105,7 +3280,9 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun albumMenu(album: String) {
-        val inA = songs.filter { effAlbum(it) == album }
+        val inA = songs.filter {
+            com.blissplayer.music.data.SongAnalyzer.albumKey(displayAlbum(it)) == album
+        }
         xpMenuDialog(album, listOf("Play album", "Add all to queue", "Add all to playlist")) { which ->
                 when (which) {
                     0 -> playQueue(inA, 0)
@@ -3549,13 +3726,129 @@ class MainActivity : AppCompatActivity() {
         headroom.setOnClickListener { tone.setHeadroom(!tone.headroom); refresh() }
         box.addView(toggle)
         box.addView(warning)
+        // Traditional presets + two plain knobs first; per-frequency
+        // sliders hide under Fine tune for people who want them.
+        val lows = bands.filter { it.hz < 250 }
+        val highs = bands.filter { it.hz > 4000 }
+        val mids = bands.filter { it.hz >= 250 && it.hz <= 4000 }
+        var preset = prefs.getString("mixer_preset", "Flat") ?: "Flat"
+        val presetLabel = TextView(this).apply { textSize = 14f; xpBold(); setTextColor(iconColor()) }
+        fun presetText() { presetLabel.text = "Sound: $preset" }
+        presetText()
+        box.addView(presetLabel)
+        box.addView(TextView(this).apply {
+            text = "Pick a sound. Bass and Treble tune it further."
+            textSize = 12f
+        })
+        val bandViews = mutableListOf<Pair<TextView, SeekBar>>()
+        fun refreshBandViews() {
+            val cur = tone.bands().associateBy { it.index }
+            for ((label, bar) in bandViews) {
+                val b = cur[label.tag as Int] ?: continue
+                label.text = "${if (b.hz >= 1000) "${"%.1f".format(b.hz / 1000f)} kHz" else "${b.hz} Hz"}   ${"%+.1f".format(b.level / 100f)} dB"
+                bar.progress = (b.level - b.min) / 50
+            }
+        }
+        // Plain-knob positions, refreshed whenever a preset lands.
+        val simpleRefreshers = mutableListOf<() -> Unit>()
+        fun setAll(levels: Map<Int, Int>) {
+            for (b in bands) {
+                val v = levels[b.index]?.coerceIn(b.min, b.max) ?: 0
+                tone.setBand(b.index, v)
+            }
+            tone.setEnabled(true)
+            refreshBandViews()
+            simpleRefreshers.forEach { it() }
+            refresh()
+        }
+        val presetRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        val presetLevels = mapOf(
+            "Flat" to emptyMap<Int, Int>(),
+            "Bass Booster" to lows.associate { it.index to 600 },
+            "Voice Clear" to (mids.associate { it.index to 400 } + lows.associate { it.index to -200 }),
+            "Treble Up" to highs.associate { it.index to 600 },
+            "Warm Night" to (lows.associate { it.index to 300 } + highs.associate { it.index to -300 })
+        )
+        for (name in presetLevels.keys) {
+            presetRow.addView(xpBtn(name).apply {
+                textSize = 11f
+                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
+                    if (presetRow.childCount > 0) marginStart = dp(4)
+                }
+                setOnClickListener {
+                    preset = name
+                    prefs.edit().putString("mixer_preset", name).apply()
+                    setAll(presetLevels[name] ?: emptyMap())
+                    presetText()
+                }
+            })
+        }
+        box.addView(presetRow)
+        fun simpleSlider(label: String, initialDb: Int, apply: (Int) -> Unit): LinearLayout {
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(0, dp(6), 0, 0)
+            }
+            val tv = TextView(this).apply { textSize = 13f; setTextColor(iconColor()) }
+            var bar: SeekBar? = null
+            fun show(v: Int) { tv.text = "$label   ${"%+.0f".format(v.toFloat())} dB" }
+            show(initialDb)
+            row.addView(tv)
+            row.addView(SeekBar(this).apply {
+                bar = this
+                max = 24
+                progress = (initialDb + 12).coerceIn(0, 24)
+                progressDrawable = xpProgress()
+                thumb = xpThumb()
+                contentDescription = label
+                setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                    override fun onProgressChanged(s: SeekBar?, value: Int, user: Boolean) {
+                        if (!user) return
+                        apply(value - 12)
+                        show(value - 12)
+                        preset = "Custom"
+                        prefs.edit().putString("mixer_preset", preset).apply()
+                        presetText()
+                        refreshBandViews()
+                        refresh()
+                    }
+                    override fun onStartTrackingTouch(s: SeekBar?) {}
+                    override fun onStopTrackingTouch(s: SeekBar?) {}
+                })
+            })
+            simpleRefreshers.add {
+                val cur = (tone.bands().filter { b ->
+                    (label == "Bass" && b.hz < 250) || (label == "Treble" && b.hz > 4000)
+                }.map { it.level / 100 }.average().toInt())
+                bar?.progress = (cur + 12).coerceIn(0, 24)
+                show(cur)
+            }
+            return row
+        }
+        if (lows.isNotEmpty()) box.addView(simpleSlider("Bass", lows.map { it.level / 100 }.average().toInt()) { db ->
+            setAll(lows.associate { it.index to db * 100 })
+        })
+        if (highs.isNotEmpty()) box.addView(simpleSlider("Treble", highs.map { it.level / 100 }.average().toInt()) { db ->
+            setAll(highs.associate { it.index to db * 100 })
+        })
+        val bandBox = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            visibility = View.GONE
+        }
+        box.addView(xpBtn("Fine tune each frequency").apply {
+            setOnClickListener {
+                bandBox.visibility = if (bandBox.visibility == View.VISIBLE) View.GONE else View.VISIBLE
+                text = if (bandBox.visibility == View.VISIBLE) "Hide fine tuning" else "Fine tune each frequency"
+            }
+        })
+        box.addView(bandBox)
         bands.forEach { band ->
-            val label = TextView(this).apply { textSize = 13f; setTextColor(iconColor()) }
+            val label = TextView(this).apply { textSize = 13f; setTextColor(iconColor()); tag = band.index }
             val frequency = if (band.hz >= 1000) "${"%.1f".format(band.hz / 1000f)} kHz" else "${band.hz} Hz"
             fun labelLevel(value: Int) { label.text = "$frequency   ${"%+.1f".format(value / 100f)} dB" }
             labelLevel(band.level)
-            box.addView(label)
-            box.addView(SeekBar(this).apply {
+            bandBox.addView(label)
+            bandBox.addView(SeekBar(this).apply {
                 max = (band.max - band.min) / 50
                 progress = (band.level - band.min) / 50
                 progressDrawable = xpProgress()
@@ -3567,6 +3860,9 @@ class MainActivity : AppCompatActivity() {
                         val level = band.min + value * 50
                         tone.setBand(band.index, level)
                         tone.setEnabled(true)
+                        preset = "Custom"
+                        prefs.edit().putString("mixer_preset", preset).apply()
+                        presetText()
                         labelLevel(tone.bands().firstOrNull { it.index == band.index }?.level ?: level)
                         refresh()
                     }
@@ -3575,6 +3871,7 @@ class MainActivity : AppCompatActivity() {
                         tone.problem?.let { toast(it) }
                     }
                 })
+                bandViews.add(label to this)
             })
         }
         val preampLabel = TextView(this).apply { text = "Preamp: ${tone.preampDb} dB"; textSize = 13f; setTextColor(iconColor()) }
@@ -3640,20 +3937,20 @@ class MainActivity : AppCompatActivity() {
             fun isSys(p: String) = sysKeys.any { p.contains(it, ignoreCase = true) }
             fun slash(p: String) = p.trimEnd('/')
             val allPaths = (detected + folders).filter { it.isNotBlank() }.map(::slash).toSortedSet()
-            fun parentOf(p: String): String? =
-                allPaths.filter { it != p && p.startsWith(it + "/") }.maxByOrNull { it.length }
-            val kids = mutableMapOf<String?, MutableList<String>>()
-            allPaths.forEach { p -> kids.getOrPut(parentOf(p)) { mutableListOf() }.add(p) }
+            val folderIndex = com.blissplayer.music.model.FolderTreeIndex.build(
+                allPaths, songs.mapNotNull { it.filePath })
+            val kids = folderIndex.children
+            val leafCache = mutableMapOf<String, List<String>>()
             fun leavesUnder(p: String): List<String> {
+                leafCache[p]?.let { return it }
                 val k = kids[p].orEmpty()
-                if (k.isEmpty()) return listOf(p)
-                return k.flatMap { leavesUnder(it) }
+                return (if (k.isEmpty()) listOf(p) else k.flatMap { leavesUnder(it) })
+                    .also { leafCache[p] = it }
             }
             val allLeaves = kids[null].orEmpty().flatMap { leavesUnder(it) }
             fun effectiveOn(leaf: String): Boolean {
-                val cur = prefs.getStringSet("folders", emptySet())!!
-                return if (cur.isEmpty()) !isSys(leaf)
-                else cur.any { leaf == it || leaf.startsWith(slash(it) + "/") }
+                return if (folders.isEmpty()) !isSys(leaf)
+                else folders.any { leaf == it || leaf.startsWith(slash(it) + "/") }
             }
             fun toggleNode(node: String, on: Boolean) {
                 val cur = prefs.getStringSet("folders", emptySet())!!.toMutableSet()
@@ -3695,8 +3992,7 @@ class MainActivity : AppCompatActivity() {
                     }
                 })
             })
-            fun countUnder(p: String): Int =
-                songs.count { s -> val f = s.filePath; f != null && (f == p || f.startsWith(slash(p) + "/")) }
+            fun countUnder(p: String): Int = folderIndex.songCounts[p] ?: 0
             fun addNode(p: String, depth: Int) {
                 val children = kids[p].orEmpty()
                 val short = p.substringAfterLast('/')
@@ -3911,14 +4207,15 @@ class MainActivity : AppCompatActivity() {
         val eqStrengthLabel = TextView(this).apply { textSize = 13f; setTextColor(iconColor()) }
         fun eqStrengthText(v: Int) {
             eqStrengthLabel.text = "Equalize strength: $v percent" +
-                if (v >= 100) " (maximum, every song lands on the average)"
+                if (v > 100) " (aggressive, pushes past the average)"
+                else if (v >= 100) " (full correction, every song lands on the average)"
                 else if (v <= 0) " (off, volumes stay as they are)"
                 else " (gentle, songs move partway to the average)"
         }
         moreBox.addView(eqStrengthLabel)
         moreBox.addView(SeekBar(this).apply {
-            max = 100
-            val start = (prefs.getFloat("eq_strength", 1f) * 100).roundToInt().coerceIn(0, 100)
+            max = 200
+            val start = (prefs.getFloat("eq_strength", 1f) * 100).roundToInt().coerceIn(0, 200)
             progress = start
             eqStrengthText(start)
             progressDrawable = xpProgress()
@@ -4121,15 +4418,16 @@ class MainActivity : AppCompatActivity() {
         themeBtn.setOnClickListener {
             xpMenuDialog("Theme", listOf("Bliss", "Dark Bliss", "Aqua Bliss", "Super Bliss")) { which ->
                 val id = listOf("bliss", "dark", "aqua", "super")[which]
-                prefs.edit().putString("theme", id).apply()
-                theme = id
-                // Home-screen icon swaps with the theme (no restart lag:
-                // the launcher picks it up on its next refresh).
-                syncLauncherIcon()
-                // Full recreate so every widget (including system-styled ones like
-                // text fields) picks up the theme. Tab, drill, queue, search, and
-                // playback all restore, nothing restarts from the beginning.
-                recreate()
+                if (id == theme) {
+                    toast("Already on ${themeName(theme)}.")
+                    return@xpMenuDialog
+                }
+                ThemeDialogBuilder(this)
+                    .setCustomTitle(xpTitle("Switch theme?"))
+                    .setMessage("BlissPlayer restarts to load the ${themeName(id)} look everywhere. Your music keeps playing.")
+                    .setPositiveButton("Restart now") { _, _ -> restartForTheme(id) }
+                    .setNegativeButton("Stay", null)
+                    .show()
             }
         }
         moreBox.addView(themeBtn)
@@ -4261,6 +4559,13 @@ class MainActivity : AppCompatActivity() {
             text = "Saves all-time, this year and this month as JSON you can send anywhere, like playlists and crash logs."
             textSize = 12f
         })
+        moreBox.addView(xpBtn("Choose visible stats").apply {
+            setOnClickListener { visibleStatsDialog() }
+        })
+        moreBox.addView(TextView(this).apply {
+            text = "Pick which cards show below. Hidden cards keep recording unless tracking is off."
+            textSize = 12f
+        })
         // Stat cards: one headed panel per topic instead of a wall of text.
         run {
             val totals = db.totalPlays()
@@ -4295,8 +4600,8 @@ class MainActivity : AppCompatActivity() {
             }
             val byArtist = mutableMapOf<String, Int>()
             totals.forEach { (id, c) ->
-                val names = byId[id]?.let { com.blissplayer.music.data.SongAnalyzer.splitArtists(it.artist) }
-                    .orEmpty().ifEmpty { listOf("Unknown artist") }
+                val song = byId[id]
+                val names = if (song == null) listOf("Unknown artist") else creditNames(song)
                 names.forEach { a -> byArtist[a] = (byArtist[a] ?: 0) + c }
             }
             val topArtistTxt = byArtist.maxByOrNull { it.value }?.let { "${it.key} (${it.value} plays)" } ?: "None yet"
@@ -4311,7 +4616,13 @@ class MainActivity : AppCompatActivity() {
             } ?: "None yet"
             // Month / year buckets from the timestamped event log.
             val nowMs = System.currentTimeMillis()
-            val events = runCatching { db.eventsSince(0) }.getOrDefault(emptyList())
+            val yearStart = com.blissplayer.music.model.SongStats.yearStartMs(nowMs)
+            val showMonth = prefs.getBoolean("stats_show_month", true)
+            val showYear = prefs.getBoolean("stats_show_year", true)
+            // Both visible buckets are within this year. Don't load years of
+            // historical events on the UI thread every time More is rebuilt.
+            val events = if (showMonth || showYear)
+                runCatching { db.eventsSince(yearStart) }.getOrDefault(emptyList()) else emptyList()
             fun bucket(since: Long, label: String): String {
                 val ev = events.filter { it.at >= since }
                 if (ev.isEmpty()) return "$label: nothing yet."
@@ -4327,9 +4638,8 @@ class MainActivity : AppCompatActivity() {
                 fun topArtist(): String {
                     val counts = mutableMapOf<String, Int>()
                     ev.filter { it.kind == "play" }.forEach { e ->
-                        val names = byId[e.mediaId]?.let {
-                            com.blissplayer.music.data.SongAnalyzer.splitArtists(it.artist)
-                        }.orEmpty().ifEmpty { listOf("Unknown artist") }
+                        val song = byId[e.mediaId]
+                        val names = if (song == null) listOf("Unknown artist") else creditNames(song)
                         names.forEach { a -> counts[a] = (counts[a] ?: 0) + 1 }
                     }
                     val (a, c) = counts.maxByOrNull { it.value } ?: return "—"
@@ -4368,12 +4678,41 @@ class MainActivity : AppCompatActivity() {
                 "Most played song: $topSongTxt\n" +
                 "Most played artist: $topArtistTxt\n" +
                 "Top genre: $topGenreTxt"))
-            moreBox.addView(statCard("Top 3",
-                "Most skipped:\n${top3({ it.skips.toLong() }, { "${it.skips} skip${if (it.skips == 1) "" else "s"}" })}\n" +
-                "Most completed:\n${top3({ it.completions.toLong() }, { "${it.completions} finishes" })}\n" +
-                "Longest listened:\n${top3({ it.listenMs }, { span(it.listenMs) })}"))
-            moreBox.addView(statCard(monthTxt.substringBefore(":"), monthTxt.substringAfter(": ").trim()))
-            moreBox.addView(statCard(yearTxt.substringBefore(":"), yearTxt.substringAfter(": ").trim()))
+            if (prefs.getBoolean("stats_show_top3", true)) {
+                moreBox.addView(statCard("Top 3",
+                    "Most skipped:\n${top3({ it.skips.toLong() }, { "${it.skips} skip${if (it.skips == 1) "" else "s"}" })}\n" +
+                    "Most completed:\n${top3({ it.completions.toLong() }, { "${it.completions} finishes" })}\n" +
+                    "Longest listened:\n${top3({ it.listenMs }, { span(it.listenMs) })}"))
+            }
+            val monthStart = com.blissplayer.music.model.SongStats.monthStartMs(nowMs)
+            if (showMonth) {
+                moreBox.addView(statCard(monthTxt.substringBefore(":"),
+                    monthTxt.substringAfter(": ").trim(), "Clear this month") {
+                    ThemeDialogBuilder(this)
+                        .setCustomTitle(xpTitle("Clear this month?"))
+                        .setMessage("Month and year share the same history. Clearing this month also removes it from this year's totals. All-time totals stay.")
+                        .setPositiveButton("Clear") { _, _ ->
+                            db.clearEventsSince(monthStart)
+                            buildMorePane()
+                            toast("This month's history cleared.")
+                        }
+                        .setNegativeButton("Cancel", null).show()
+                })
+            }
+            if (showYear) {
+                moreBox.addView(statCard(yearTxt.substringBefore(":"),
+                    yearTxt.substringAfter(": ").trim(), "Clear this year") {
+                    ThemeDialogBuilder(this)
+                        .setCustomTitle(xpTitle("Clear this year?"))
+                        .setMessage("Month and year share the same history. Clearing this year also clears this month's history. All-time totals stay.")
+                        .setPositiveButton("Clear") { _, _ ->
+                            db.clearEventsSince(yearStart)
+                            buildMorePane()
+                            toast("This year's history cleared.")
+                        }
+                        .setNegativeButton("Cancel", null).show()
+                })
+            }
         }
         moreBox.addView(xpBtn("Reset all stats").apply {
             setOnClickListener {
@@ -4938,6 +5277,14 @@ class MainActivity : AppCompatActivity() {
                         is com.blissplayer.music.data.TagTools.WriteResult.Ok -> {
                             db.setGenre(p.song.mediaId, p.newGenre)
                             db.setAlbum(p.song.mediaId, p.newAlbum)
+                            // Remember lookup-resolved artist names so channel
+                            // tags (thebandred) stay merged with the artist (Red).
+                            val oldKey = com.blissplayer.music.data.SongAnalyzer.artistKey(p.song.artist)
+                            val newKey = com.blissplayer.music.data.SongAnalyzer.artistKey(p.newArtist)
+                            if (oldKey != newKey && p.newArtist.isNotBlank()) {
+                                db.learnArtist(oldKey, p.newArtist)
+                                learnedArtists = learnedArtists + (oldKey to p.newArtist)
+                            }
                             done++
                         }
                         is com.blissplayer.music.data.TagTools.WriteResult.NeedsPermission -> {
@@ -5249,16 +5596,9 @@ class MainActivity : AppCompatActivity() {
 
     private fun iconColor() = modernUi()?.theme?.ink ?: if (dark) 0xFFE8E8E8.toInt() else 0xFF000000.toInt()
 
-    /** Bundled PT Sans bold (Tahoma-spirited XP face). Falls back to system bold. */
+    /** Bold face belonging to the active theme. */
     private fun TextView.xpBold() {
-        if (MobileTheme.from(theme).modern) {
-            typeface = ThemeFonts.face(this@MainActivity, MobileTheme.from(theme), true)
-            return
-        }
-        val f = runCatching {
-            androidx.core.content.res.ResourcesCompat.getFont(context, R.font.ptsans_700)
-        }.getOrNull()
-        typeface = f ?: android.graphics.Typeface.DEFAULT_BOLD
+        typeface = ThemeFonts.face(this@MainActivity, MobileTheme.from(theme), true)
     }
 
     /** Hard XP title-bar text shadow. */
@@ -5324,7 +5664,12 @@ class MainActivity : AppCompatActivity() {
     }
 
     /** A headed stat card: bold title, readable body, own panel. */
-    private fun statCard(title: String, body: String): View {
+    private fun statCard(
+        title: String,
+        body: String,
+        actionLabel: String? = null,
+        onAction: (() -> Unit)? = null
+    ): View {
         val box = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             background = xpBtnPanel()
@@ -5341,6 +5686,12 @@ class MainActivity : AppCompatActivity() {
             text = body
             textSize = 13f
         })
+        if (actionLabel != null && onAction != null) {
+            box.addView(xpBtn(actionLabel).apply {
+                textSize = 12f
+                setOnClickListener { onAction() }
+            })
+        }
         return box
     }
 
@@ -5436,6 +5787,7 @@ class MainActivity : AppCompatActivity() {
             it.styleMain(findViewById(R.id.root))
             return
         }
+        mobileThemeUi?.styleTree(findViewById(R.id.root))
         findViewById<LinearLayout>(R.id.root).setBackgroundResource(
             when (theme) {
                 "aqua" -> R.drawable.xp_workspace_aqua
@@ -5476,7 +5828,7 @@ class MainActivity : AppCompatActivity() {
                 else -> if (dark) R.drawable.xp_status_dark else R.drawable.xp_status
             })
         statusStrip.setTextColor(iconColor())
-        crumb.setTextColor(if (dark) 0xFFA8ADB5.toInt() else 0xFF5A5A5A.toInt())
+        crumb.setTextColor(if (dark) 0xFFE8E8E8.toInt() else 0xFF1A1A1A.toInt())
         (miniTitle.parent as? LinearLayout)?.apply {
             setBackgroundResource(R.drawable.xp_display)
             setPadding(dp(8), dp(8), dp(8), dp(8))

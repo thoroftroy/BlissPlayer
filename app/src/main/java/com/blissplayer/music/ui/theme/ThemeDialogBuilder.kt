@@ -14,13 +14,17 @@ class ThemeDialogBuilder(context: Context) : AlertDialog.Builder(context) {
     override fun create(): AlertDialog {
         val dialog = super.create()
         val renderer = ThemeRenderers.get(context) ?: return dialog
-        if (!renderer.theme.modern) return dialog
         val window = dialog.window ?: return dialog
         val decor = window.decorView
         decor.addOnAttachStateChangeListener(object : View.OnAttachStateChangeListener {
             override fun onViewAttachedToWindow(v: View) {
                 v.post {
                     if (!dialog.isShowing) return@post
+                    if (!renderer.theme.modern) {
+                        renderer.styleTree(v)
+                        renderer.attachWindow(window)
+                        return@post
+                    }
                     val density = v.resources.displayMetrics.density
                     window.setBackgroundDrawable(InsetDrawable(renderer.drawable(MaterialRole.DIALOG),
                         (4 * density).toInt()))

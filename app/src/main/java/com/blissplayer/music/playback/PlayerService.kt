@@ -588,16 +588,27 @@ class PlayerService : MediaSessionService() {
     }
 
     override fun onTaskRemoved(rootIntent: Intent?) {
-        // App swiped away or closed: keep playing. Only stop when idle.
-        // Do not call super when playing, or some OEMs kill the service.
-        if (::player.isInitialized && player.playWhenReady && player.mediaItemCount > 0 &&
-            player.playbackState != Player.STATE_ENDED) return
+        // Swiping the app away never stops music or its controls: pause,
+        // play and Bluetooth autoplay keep working with no UI open. Only
+        // the notification's own swipe (ACTION_STOP) or an empty queue
+        // ends the service.
+        if (::player.isInitialized && player.mediaItemCount > 0) {
+            // Re-pin foreground: the base class demotes paused sessions,
+            // and a demoted service is what the swipe would take with it.
+            runCatching { startForeground(NOTIF_ID, buildNotification()) }
+            return
+        }
         super.onTaskRemoved(rootIntent)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (intent == null && getSharedPreferences("bliss", MODE_PRIVATE).getBoolean("resume_playing", false)) {
-            restoreSavedSession(play = true)
+        if (intent == null) {
+            // Killed while swiped away: bring the queue back (paused unless
+            // it was playing) so controls and autoplay keep working.
+            val prefs = getSharedPreferences("bliss", MODE_PRIVATE)
+            if (prefs.getString("resume_queue", "").orEmpty().isNotEmpty()) {
+                restoreSavedSession(play = prefs.getBoolean("resume_playing", false))
+            }
         }
         if (::player.isInitialized) {
             when (intent?.action) {

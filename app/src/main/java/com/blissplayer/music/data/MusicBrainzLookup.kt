@@ -240,24 +240,34 @@ object MusicBrainzLookup {
         return Hit(track, artist, album, genre)
     }
 
-    /** First Official release title, else the first release title. */
+    /** Prefer a dated original album, then a single; never fall back to known live/compilation groups. */
     private fun bestRelease(obj: String): String? {
-        // Prefer a real studio album: the first release-group whose
-        // primary-type is Album. Live/soundtrack/compilation titles
-        // ("1991-03-28: Palais Omnisport...") are worse than nothing.
-        val rgTitle = bestAlbumGroup(obj)
-        if (rgTitle != null) return rgTitle
+        if (obj.contains("\"release-groups\"")) return bestAlbumGroup(obj)
+        // Older responses without group metadata can only be filtered by title.
         return bestReleaseByStatus(obj)
     }
 
-    /** Title of the first release-group with primary-type Album, if any. */
+    /** Skip concert and compilation groups even when their title looks harmless. */
     private fun bestAlbumGroup(obj: String): String? {
         val gi = obj.indexOf("\"release-groups\"")
         if (gi < 0) return null
-        for (o in splitArrayObjects(obj.substring(gi))) {
-            if (field(o, "\"primary-type\"") == "Album") {
-                return field(o, "\"title\"")?.takeIf { it.isNotBlank() }
-            }
+        val groups = splitArrayObjects(obj.substring(gi))
+        fun secondary(o: String): String {
+            val i = o.indexOf("\"secondary-types\"")
+            if (i < 0) return ""
+            val end = o.indexOf(']', i).takeIf { it >= 0 } ?: return ""
+            return o.substring(i, end + 1)
+        }
+        val eligible = groups.filter { g ->
+            val s = secondary(g)
+            val title = field(g, "\"title\"")
+            !title.isNullOrBlank() && !SongAnalyzer.isBadAlbumTitle(title) &&
+                listOf("Live", "Compilation", "Soundtrack", "Remix").none { "\"$it\"" in s }
+        }
+        for (kind in listOf("Album", "Single")) {
+            eligible.filter { field(it, "\"primary-type\"") == kind }
+                .minByOrNull { field(it, "\"first-release-date\"")?.takeIf(String::isNotBlank) ?: "9999" }
+                ?.let { return field(it, "\"title\"") }
         }
         return null
     }
@@ -268,7 +278,7 @@ object MusicBrainzLookup {
         var i = sub.indexOf('[')
         if (i < 0) return objs
         i++
-        while (i in 1 until sub.length && objs.size < 8) {
+        while (i in 1 until sub.length && objs.size < 100) {
             while (i < sub.length && sub[i] != '{' && sub[i] != ']') i++
             if (i >= sub.length || sub[i] == ']') break
             var depth = 0
@@ -337,6 +347,7 @@ object MusicBrainzLookup {
         var fallback: String? = null
         for (o in objs) {
             val t = field(o, "\"title\"") ?: continue
+            if (SongAnalyzer.isBadAlbumTitle(t)) continue
             if (fallback == null) fallback = t
             if (field(o, "\"status\"") == "Official") return t
         }

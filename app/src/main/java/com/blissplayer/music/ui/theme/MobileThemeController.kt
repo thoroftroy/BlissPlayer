@@ -150,7 +150,8 @@ class MobileThemeController(private val activity: Activity, val theme: MobileThe
             }
         }
         root.findViewById<TextView>(R.id.crumb)?.let {
-            it.setTextColor(theme.secondary)
+            // Instruction line: ink, never muted gray, on every theme.
+            it.setTextColor(theme.ink)
             it.textSize = 11f
             it.setPadding(dp(4), dp(5), dp(4), dp(3))
         }
@@ -163,8 +164,9 @@ class MobileThemeController(private val activity: Activity, val theme: MobileThe
         root.findViewById<RecyclerView>(R.id.list)?.let {
             it.background = null
             it.setPadding(dp(1), dp(4), dp(1), dp(8))
-            it.clipToPadding = false
-            it.clipChildren = false
+            // Rows stay inside the list: never paint over Play/Mix/Sort.
+            it.clipToPadding = true
+            it.clipChildren = true
         }
         listOf(R.id.miniPlayer, R.id.nowPlayingPanel).forEach { id ->
             root.findViewById<LinearLayout>(id)?.let {
@@ -211,7 +213,13 @@ class MobileThemeController(private val activity: Activity, val theme: MobileThe
     }
 
     fun styleTree(root: View) {
-        if (!theme.modern) return
+        if (!theme.modern) {
+            if (root is TextView) ThemeFonts.apply(root, theme)
+            if (root is ViewGroup && root !is RecyclerView) {
+                for (i in 0 until root.childCount) styleTree(root.getChildAt(i))
+            }
+            return
+        }
         when (root) {
             is SeekBar -> {
                 root.progressDrawable = progressDrawable()
@@ -388,9 +396,9 @@ class MobileThemeController(private val activity: Activity, val theme: MobileThe
             materials.forEach { (view, ref) -> ref.get()?.let { it.motion = false; it.phase = 0f; view.invalidate() } }
             return
         }
-        // Classic themes have no materials; the clock still drives click bursts.
+        // Retro themes have no ambient animation; start their clock on a tap.
         attachWindow(activity.window)
-        postFrame()
+        if (theme.modern || layers.any { it.effects.field.rings.isNotEmpty() || it.effects.field.sparks.isNotEmpty() }) postFrame()
     }
 
     fun pause() {
@@ -444,7 +452,12 @@ class MobileThemeController(private val activity: Activity, val theme: MobileThe
                 if (layer.decor.get()?.isShown == true) layer.effects.tick(drawDt)
             }
         }
-        postFrame()
+        if (theme.modern || layers.any { it.effects.field.rings.isNotEmpty() || it.effects.field.sparks.isNotEmpty() }) {
+            postFrame()
+        } else {
+            previousNanos = 0L
+            lastDrawNanos = 0L
+        }
     }
 
     private inner class WindowLayer(window: Window, decor: ViewGroup, val original: Window.Callback) {
@@ -500,6 +513,7 @@ class MobileThemeController(private val activity: Activity, val theme: MobileThe
                         interactionCount++
                         lastActiveNanos = SystemClock.elapsedRealtimeNanos()
                         effects.tap(x, y)
+                        postFrame()
                     }
                     target.clear()
                 }

@@ -41,6 +41,9 @@ object ThemeFonts {
     fun face(context: Context, theme: MobileTheme, bold: Boolean = false): Typeface {
         val key = "${theme.key}:$bold"
         return fonts.getOrPut(key) {
+            if (theme == MobileTheme.DARK) {
+                return@getOrPut Typeface.create("sans-serif", if (bold) Typeface.BOLD else Typeface.NORMAL)
+            }
             val resource = when (theme) {
                 MobileTheme.AQUA -> R.font.aqua_sans
                 MobileTheme.SUPER -> R.font.super_sans
@@ -48,14 +51,18 @@ object ThemeFonts {
             }
             val base = runCatching { ResourcesCompat.getFont(context, resource) }.getOrNull()
                 ?: Typeface.create("sans-serif", Typeface.NORMAL)
-            if (theme.modern) Typeface.create(base, if (bold) 650 else 450, false)
+            // Android's isBold reports false below weight 700. Use a true bold
+            // so later tree styling retains headings instead of demoting them.
+            if (theme.modern) Typeface.create(base, if (bold) 700 else 450, false)
             else base
         }
     }
 
     fun apply(view: TextView, theme: MobileTheme, bold: Boolean = view.typeface?.isBold == true) {
+        val font = face(view.context, theme, bold)
+        if (view.typeface != font) view.typeface = font
+        // Keep the XP text shadows, spacing and padding intact in retro themes.
         if (!theme.modern) return
-        view.typeface = face(view.context, theme, bold)
         view.letterSpacing = if (theme == MobileTheme.SUPER) {
             if (bold) 0.015f else 0.005f
         } else -0.015f

@@ -329,6 +329,26 @@ object SongAnalyzer {
     /** Grouping key: canonical, case- and accent-blind. */
     fun artistKey(raw: String): String = WikiLookup.norm(canonicalArtist(raw))
 
+    /**
+     * Merge key for grouping: spaceless and channel-prefix-proof, so
+     * "panicatthedisco" lands with "Panic at the disco" and "thebandred"
+     * lands with "Red". Display names are untouched; only grouping merges.
+     */
+    fun artistMergeKey(raw: String): String {
+        var k = artistKey(raw).replace(" ", "")
+        if (k.startsWith("theband") && k.length > 7) k = k.removePrefix("theband")
+        return k
+    }
+
+    /** Nicer display wins: prefer a spaced/cased variant over a glued one. */
+    fun preferArtistDisplay(old: String?, new: String): String {
+        if (old == null) return new
+        val oldGlued = ' ' !in old
+        val newGlued = ' ' !in new
+        if (oldGlued && !newGlued) return new
+        return old
+    }
+
     private val albumVersionWords = Regex(
         "\\s*[\\(\\[][^\\(\\)\\[\\]]*\\b(live|unplugged|unpluged|remix|remixes|remixed|remaster|remastered|deluxe|expanded|anniversary|bonus|acoustic|demo|instrumental|version|edition|reissue|re-recorded|rerecorded|single|ep)\\b[^\\(\\)\\[\\]]*[\\)\\]]\\s*$",
         RegexOption.IGNORE_CASE)
@@ -1047,6 +1067,41 @@ object SongAnalyzer {
         }
         report(songs.size, songs.size, "done")
 
+        // Genre backfill: a song the index left blank takes its artist's
+        // (then its album's) majority genre from categorized songs. Same
+        // discography, same shelf: data-driven, never guessed.
+        val genreByArtist = mutableMapOf<String, MutableMap<String, Int>>()
+        val genreByAlbum = mutableMapOf<String, MutableMap<String, Int>>()
+        for (m in mids) {
+            val g = m.wikiGenre ?: genreOf(m.song.mediaId)
+            if (g.isBlank() || g == "Uncategorized") continue
+            genreByArtist.getOrPut(artistMergeKey(m.artist.ifBlank { m.song.artist })) { mutableMapOf() }
+                .merge(g, 1, Int::plus)
+            val alb = m.wikiAlbum ?: albumOf(m.song.mediaId)
+            if (!isPlaceholderAlbum(alb, m.song.filePath)) {
+                genreByAlbum.getOrPut(albumKey(canonicalAlbum(alb))) { mutableMapOf() }
+                    .merge(g, 1, Int::plus)
+            }
+        }
+        for (m in mids) {
+            if (m.wikiGenre != null) continue
+            if (genreOf(m.song.mediaId).isNotBlank() && genreOf(m.song.mediaId) != "Uncategorized") continue
+            val byArtist = genreByArtist[artistMergeKey(m.artist.ifBlank { m.song.artist })]
+            val best = byArtist?.maxByOrNull { it.value }
+            if (best != null) {
+                m.wikiGenre = best.key
+                m.reasons.add("Same artist")
+                continue
+            }
+            val alb = m.wikiAlbum ?: albumOf(m.song.mediaId)
+            if (!isPlaceholderAlbum(alb, m.song.filePath)) {
+                genreByAlbum[albumKey(canonicalAlbum(alb))]?.maxByOrNull { it.value }?.let {
+                    m.wikiGenre = it.key
+                    m.reasons.add("Same album")
+                }
+            }
+        }
+
         val out = mids.mapNotNull { m ->
             val g0 = genreOf(m.song.mediaId)
             // Genre and album come only from the online index (or existing
@@ -1154,17 +1209,29 @@ object SongAnalyzer {
         return settled
     }
 
-    /** Album from the title-matching MusicBrainz hit, if any. */
+    /** Album from the title-matching MusicBrainz hits: studio releases
+     * first, so live/concert and best-of titles never win when the
+     * original album is right there. Null when everything is live. */
     private fun mbAlbum(localTitle: String, hits: List<MusicBrainzLookup.Hit>): String? {
         if (hits.isEmpty()) return null
         val want = WikiLookup.norm(MusicBrainzLookup.baseTitle(localTitle))
         if (want.isBlank()) return null
-        for (h in hits) {
-            if (WikiLookup.norm(MusicBrainzLookup.baseTitle(h.track)) == want) {
-                return h.album?.takeIf { it.isNotBlank() }
-            }
-        }
-        return null
+        val matching = hits.filter {
+            WikiLookup.norm(MusicBrainzLookup.baseTitle(it.track)) == want
+        }.mapNotNull { it.album?.takeIf { a -> a.isNotBlank() } }
+        return matching.firstOrNull { !isBadAlbumTitle(it) }
+    }
+
+    /**
+     * Live, concert and best-of titles are never albums here: the original
+     * release (or the single itself) always wins. Singles pass through
+     * untouched; only the compilation/concert packaging is rejected.
+     */
+    fun isBadAlbumTitle(title: String): Boolean {
+        val t = " $title ".lowercase()
+        if (Regex("\\b(best\\s+of|greatest\\s+hits|the\\s+very\\s+best|number\\s+ones|#1'?s|anthology|collection|essentials|compilation|greatest|hits\\s+collection)\\b").containsMatchIn(t)) return true
+        if (Regex("\\b(live\\s+(at|in|from|on)|live\\s+in\\s+concert|unplugged|mtv\\s+unplugged|in\\s+concert|live\\s+album|concert)\\b").containsMatchIn(t)) return true
+        return false
     }
 
     private suspend fun lookupOne(
@@ -1344,7 +1411,8 @@ object SongAnalyzer {
             m.wikiGenre = f.genre
             if ("Online genre" !in m.reasons) m.reasons.add("Online genre")
         }
-        if (f.album != null) {
+        // Live and best-of packaging is rejected everywhere: originals only.
+        if (f.album != null && !isBadAlbumTitle(f.album)) {
             m.wikiAlbum = f.album
             if ("Online album" !in m.reasons) m.reasons.add("Online album")
         }
