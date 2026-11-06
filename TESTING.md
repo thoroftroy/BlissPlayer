@@ -1,5 +1,48 @@
 # Testing
 
+## Tray + cleanup work (in progress, Nov 5, 2026)
+
+- Shared tray model: `:core` `TrayMenu` (ids, labels, dispatch) is used by the
+  Linux AWT fallback and the new native SNI tray; `TrayMenuTest` covers all
+  five entries, the unknown-id case, and that Quit sends no transport command
+  (the old code also fired PAUSE on Quit — fixed).
+- Native StatusNotifierItem tray (`DesktopSniTray`, dbus-java): exports
+  `/StatusNotifierItem` + `/Menu` (com.canonical.dbusmenu) and registers with
+  `org.kde.StatusNotifierWatcher`. Verified against the real Plasma panel:
+  the item appears in `RegisteredStatusNotifierItems`, its properties
+  (Category/Id/Title/Status/Menu/ItemIsMenu) introspect correctly,
+  `GetLayout` returns the 5 labeled entries over the wire, and `Event`
+  clicks for Play/Pause (TOGGLE), Show and Quit dispatch through the shared
+  model — Quit exits the full desktop app and unregisters the item.
+- `DesktopSniTrayTest` replays layout + clicks over the real session bus
+  (two connections, no watcher registration so no panel icon in tests).
+- AWT fallback kept for X11 desktops without SNI (SNI is attempted first,
+  independent of `SystemTray.isSupported()`).
+- Escape hatch: `AppImage --quit` (or `pkill -f blissplayer-desktop.jar`)
+  stops a running instance whose tray is unreachable; pid file is cleaned up
+  on quit. Verified on an isolated instance.
+- Cleanup: removed superseded `BlissPlayer-linux-v0.11.22.tar.gz`,
+  `BlissPlayer-v0.11.23-debug.apk`, legacy `BlissPlayer-x86_64.AppImage`;
+  `build-linux.sh` now prunes older versioned tarballs/AppImages and keeps
+  only the current build; the unversioned AppImage name is git-ignored.
+- Linux MPRIS: during a real `DesktopPlayer` VLC session,
+  `org.mpris.MediaPlayer2.vlc` appears on the session bus (tight 0.3 s
+  polling; the window is only a few seconds in the headless smoke).
+- Android regression: full 20-test connected run on the rebooted emulator had
+  4 failures ("library never loaded" x3 + crash-alert assert) while the
+  emulator system process was ANR'd and manual taps ran concurrently.
+  Re-running `StabilityRegressionTest` alone on the healthy emulator:
+  15/15 green, including the 4 previously failing tests. No app regression;
+  the bulk suites remain slow by design (~6 min for the class).
+- Theme screenshots, all four, both platforms, populated libraries
+  (Android 587 songs, Linux 2 songs): Bliss and Dark Bliss match closely
+  (Luna titles, stripes, LCD deck). Aqua and Super match in palette and
+  information architecture but NOT in materials: Android uses glass/rounded
+  cards, CD glyphs, round dot buttons and glass/neon decks; Linux renders
+  tinted flat XP rows with square controls. That gap stays open (native UIs
+  per D-1); no parity claimed.
+- JVM suites: core 26+3, desktop 16, app 99 (6 skipped) — green.
+
 ## Shared seek-bar work (0.11.25, Nov 5, 2026)
 
 - `:core:test`: 26 tests passed; `:desktopApp:test`: 15 passed;

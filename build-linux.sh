@@ -59,6 +59,17 @@ if [ "$(stat -c %s "$WORK/BlissPlayer.AppImage")" -ge 100000000 ]; then
   exit 1
 fi
 mv -- "$WORK/BlissPlayer.AppImage" "$APPIMAGE"
+# Prune superseded versioned distributables; only the current build ships.
+for old in BlissPlayer-linux-v*.tar.gz; do
+  if [[ -f "$old" && "$old" != "$OUT" ]]; then
+    rm -- "$old"
+  fi
+done
+for old in BlissPlayer-linux-v*-x86_64.AppImage; do
+  if [[ -f "$old" && "$old" != "$APPIMAGE" ]]; then
+    rm -- "$old"
+  fi
+done
 SIZE_MB=$(du -m "$OUT" | cut -f1)
 echo ""
 echo "Linux -> $OUT (${SIZE_MB} MB)"

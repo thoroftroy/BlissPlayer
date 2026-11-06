@@ -4,6 +4,7 @@ import com.blissplayer.core.NowPlaying
 import com.blissplayer.core.NotificationGateway
 import com.blissplayer.core.PlaybackSession
 import com.blissplayer.core.TransportCommand
+import com.blissplayer.core.TrayMenu
 import java.awt.MenuItem
 import java.awt.PopupMenu
 import java.awt.SystemTray
@@ -20,16 +21,14 @@ class DesktopNotify : NotificationGateway {
             if (tray != null) return
             val image = trayImage(tint)
             val popup = PopupMenu()
-        fun item(label: String, cmd: TransportCommand, orShow: Boolean = false) = MenuItem(label).apply {
-            addActionListener { if (orShow) show() else onCommand(cmd) }
-            popup.add(this)
-        }
-        item("Show", TransportCommand.TOGGLE, orShow = true)
-        item("Play/Pause", TransportCommand.TOGGLE)
-        item("Next", TransportCommand.NEXT)
-        item("Previous", TransportCommand.PREV)
-        item("Quit", TransportCommand.PAUSE).apply { addActionListener { quit?.invoke() } }
-        val icon = TrayIcon(image, "BlissPlayer", popup)
+            for (item in TrayMenu.ITEMS) {
+                MenuItem(item.label).apply {
+                    val id = item.id
+                    addActionListener { TrayMenu.dispatch(id, show, onCommand) { quit?.invoke() } }
+                    popup.add(this)
+                }
+            }
+            val icon = TrayIcon(image, "BlissPlayer", popup)
         icon.isImageAutoSize = true
         icon.addActionListener { show() }
         runCatching { SystemTray.getSystemTray().add(icon) }
@@ -51,6 +50,11 @@ class DesktopNotify : NotificationGateway {
     }
 
     var quit: (() -> Unit)? = null
+
+    /** Extra tray backend to stop on quit (native SNI); AWT is in [removeTray]. */
+    var trayBackend: (() -> Unit)? = null
+
+    fun tooltipText(): String = tray?.toolTip ?: "BlissPlayer"
 
     fun removeTray() {
         tray?.let { runCatching { SystemTray.getSystemTray().remove(it) } }

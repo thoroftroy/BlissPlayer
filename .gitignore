@@ -11,6 +11,8 @@ local.properties
 # Ignore stray APKs, but keep the distributable copy at repo root.
 *.apk
 !/BlissPlayer-*.apk
+# Legacy unversioned AppImage name: versioned builds are the distributables.
+BlissPlayer-x86_64.AppImage
 # Round work trackers are scratch paper, never shipped.
 TODO_ROUND*.md
 

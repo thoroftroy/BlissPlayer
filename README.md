@@ -127,10 +127,13 @@ system VLC (`cvlc --intf rc`), jaudiotagger and sqlite-jdbc.
   `./build-linux.sh` builds `BlissPlayer-linux-v<ver>.tar.gz` and a fresh
   `BlissPlayer-linux-v<ver>-x86_64.AppImage` from the same staged build.
 - Needs on the host: Java 17+, VLC (`cvlc`), ffmpeg (loudness measuring only).
-- Four desktop themes and a layout setting exist, but shared adaptive layouts,
-  feature parity, MPRIS/media keys and complete visual parity remain unverified.
-  Mixer bands are state-only on VLC's engine; gapless is VLC best-effort. See
-  `Multiplatform_Instructions.md` for the remaining work.
+- Same 4 themes with per-theme fonts, phone/desktop layout setting, native
+  StatusNotifier tray with working Show/Play/Next/Previous/Quit
+  (AWT icon fallback on X11 without SNI; `--quit` stops a running copy),
+  desktop notifications. MPRIS/media keys come from VLC itself.
+- Known gaps vs Android: no segment editor UI yet, mixer bands are state-only
+  on VLC's engine, gapless is VLC best-effort. See `TESTING.md` for evidence
+  and `Multiplatform_Instructions.md` for the remaining checklist.
 
 ## For developers
 

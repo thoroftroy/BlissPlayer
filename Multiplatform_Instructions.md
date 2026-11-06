@@ -147,7 +147,12 @@ BlissPlayer/                    (one Gradle project/repo)
 ### 3.5 Now playing / session / notifications / tray
 - [ ] Share a single “now-playing + transport commands” state/command model (incl. favorite toggle action, consistent with current notification/UI behavior).
 - [x] Android: preserve `MediaSessionService`, lockscreen/headset/car/Bluetooth controls, and playback notification (incl. the Bliss artwork/progress style) — no regressions.
-- [ ] Linux: implement **MPRIS** + media keys, regular desktop notifications, and a **system tray** icon/menu with hide-to-tray/show and basic controls. Map favorite/transport commands equivalently.
+- [ ] Linux: native StatusNotifierItem + dbusmenu tray (`DesktopSniTray`, shared
+  `TrayMenu` model) registers with the host, shows Show/Play-Pause/Next/
+  Previous/Quit, Quit exits; AWT icon is the X11-without-SNI fallback; MPRIS
+  comes from VLC itself while a session bus exists (verified visible during
+  playback). Verified live on Plasma via D-Bus (layout + clicks + quit +
+  unregister). Still open: media keys outside VLC/MPRIS, notification actions.
 
 ### 3.6 File access, scanning, organize (shared rules, platform I/O)
 - [ ] Share: which files qualify, metadata extraction rules, “enabled folders only,” organize destination scheme (`Music/BlissPlayer/Artist/Album` concept, adapted per platform root), and never-touch-unticked/disabled semantics.

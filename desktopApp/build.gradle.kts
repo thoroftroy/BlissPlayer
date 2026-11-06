@@ -27,6 +27,9 @@ dependencies {
     // Same tag engine as Android (pure Java, no native deps).
     implementation("net.jthink:jaudiotagger:3.0.1")
     implementation("org.json:json:20240303")
+    // Native KDE tray (StatusNotifierItem + dbusmenu) on the session bus.
+    implementation("com.github.hypfvieh:dbus-java-core:5.2.0")
+    implementation("com.github.hypfvieh:dbus-java-transport-junixsocket:5.2.0")
     testImplementation("junit:junit:4.13.2")
 }
 
