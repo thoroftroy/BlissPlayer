@@ -72,9 +72,8 @@ object DesktopMain {
     /** One GUI at a time: a second launch exits instead of adding a second tray icon. */
     private var lockChannel: java.nio.channels.FileChannel? = null
 
-    fun singleInstance(): Boolean {
+    fun singleInstance(lock: File = File(System.getProperty("user.home"), ".config/blissplayer/app.lock")): Boolean {
         return try {
-            val lock = File(System.getProperty("user.home"), ".config/blissplayer/app.lock")
             lock.parentFile?.mkdirs()
             val ch = java.io.FileOutputStream(lock, true).channel
             if (ch.tryLock() == null) {

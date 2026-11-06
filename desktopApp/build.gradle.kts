@@ -37,6 +37,7 @@ tasks.withType<Test> {
 // Bake the shared app version into the jar (no dirty git files).
 val writeVersion = tasks.register("writeVersion") {
     val out = layout.buildDirectory.file("generated/resources/bliss-version.txt")
+    inputs.file(rootProject.file("app/version.properties"))
     outputs.file(out)
     doLast {
         val props = Properties()

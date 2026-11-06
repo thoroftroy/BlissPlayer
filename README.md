@@ -113,24 +113,24 @@ ambient motion settles to a heartbeat when idle.
 
 ## Linux status
 
-One project builds both: `:core` holds the shared brains (analyzer rules,
-loudness math, shuffle/stats, portable playlists, platform contracts) and
-`desktopApp` is the native Linux UI (Swing) on top of it. No Rust, no bundled
-native player — playback is system VLC (`cvlc --intf rc`), tags are
-jaudiotagger, the DB is the same schema via sqlite-jdbc.
+One project builds both. Some domain rules and the segmented seek-bar drawing
+are shared in `:core`; most screens and platform integrations are still
+separate implementations and are not yet proven equivalent. Android is the
+reference while the remaining UI and behavior are migrated. Linux uses Swing,
+system VLC (`cvlc --intf rc`), jaudiotagger and sqlite-jdbc.
 
 - Run from source: `./gradlew :desktopApp:run --args="--music-dir ~/Music"`
-- Headless parity smoke (scan, tags, playlist round-trip + relink, offline
+- Headless backend smoke (scan, tags, playlist round-trip + relink, offline
   analyzer rules, loudness sample, real VLC play/pause/seek): `./gradlew
   :desktopApp:run --args="--headless-smoke --music-dir <dir>"`
-- Release: `./build-linux.sh` produces `BlissPlayer-linux-v<ver>.tar.gz` and
-  `BlissPlayer-x86_64.AppImage` (both ~18–20 MB, committed at the repo root).
+- Release: install `appimagetool` or set `APPIMAGETOOL` to its executable;
+  `./build-linux.sh` builds `BlissPlayer-linux-v<ver>.tar.gz` and a fresh
+  `BlissPlayer-linux-v<ver>-x86_64.AppImage` from the same staged build.
 - Needs on the host: Java 17+, VLC (`cvlc`), ffmpeg (loudness measuring only).
-- Same 4 themes with per-theme fonts, phone/desktop layout toggle, system tray
-  with controls, desktop notifications. MPRIS/media keys come from VLC itself.
-- Known gaps vs Android: no segment editor UI yet, mixer bands are state-only
-  on VLC's engine, gapless is VLC best-effort. See `TESTING.md` for evidence
-  and `Multiplatform_Instructions.md` for the remaining checklist.
+- Four desktop themes and a layout setting exist, but shared adaptive layouts,
+  feature parity, MPRIS/media keys and complete visual parity remain unverified.
+  Mixer bands are state-only on VLC's engine; gapless is VLC best-effort. See
+  `Multiplatform_Instructions.md` for the remaining work.
 
 ## For developers
 

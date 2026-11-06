@@ -312,11 +312,11 @@ object XpPaint {
         g2.dispose()
     }
 
-    /** Three dots, like ic_more. */
-    fun dots(g: java.awt.Graphics, x: Int, y: Int, color: Color, r: Int = 2) {
+    /** Three small dots, like ic_more. */
+    fun dots(g: java.awt.Graphics, x: Int, y: Int, color: java.awt.Color) {
         val g2 = g.create() as Graphics2D
         g2.color = color
-        repeat(3) { i -> g2.fillOval(x - r, y - r + i * (r * 2 + 2), r * 2, r * 2) }
+        for (i in -1..1) g2.fillOval(x - 1, y - 1 + i * 6, 3, 3)
         g2.dispose()
     }
 }

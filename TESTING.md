@@ -1,3 +1,22 @@
+# Testing
+
+## Shared seek-bar work (0.11.25, Nov 5, 2026)
+
+- `:core:test`: 26 tests passed; `:desktopApp:test`: 15 passed;
+  `:app:testDebugUnitTest`: 99 tests, 6 skipped, no failures.
+- Android 0.11.24 was installed on the emulator and the Bliss now-playing
+  dialog was visually inspected with the shared seek-bar renderer. The
+  0.11.25 APK was built and installed; that later build includes the shared
+  seek-position mapping as well. This is not a full Android regression run.
+- Linux: all four themes were inspected in actual isolated Xvfb windows with
+  empty libraries from the 0.11.24 desktop build. The final 0.11.25 AppImage
+  was launched and its Bliss and Dark empty-library screens inspected. Its
+  embedded jar matches the freshly built desktop jar by SHA-256. These checks
+  do not establish theme parity or verify a real-library workflow.
+- The bulk of the Android and Linux UI remains separate; adaptive shared
+  screens, end-to-end functional parity, physical Bluetooth/car behavior,
+  MPRIS and visual comparisons across all Android themes remain open.
+
 # 0.8.5 regression checks
 
 Run JVM checks with `./gradlew :app:testDebugUnitTest`.

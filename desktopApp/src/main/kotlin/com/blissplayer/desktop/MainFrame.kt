@@ -105,6 +105,7 @@ class MainFrame(private val ctx: DesktopContext) : JFrame("BlissPlayer") {
     private lateinit var playBtn: XpButton
     private lateinit var loopBtn: XpButton
     private lateinit var speedBox: JComboBox<String>
+    private lateinit var speedLabel: JLabel
     private lateinit var centerCards: JPanel
     private lateinit var moreBox: JPanel
     private lateinit var split: JSplitPane
@@ -130,6 +131,7 @@ class MainFrame(private val ctx: DesktopContext) : JFrame("BlissPlayer") {
         ctx.player.setLoop(LoopMode.valueOf(ctx.settings.getString("loop_mode", "ALL")))
         buildChrome()
         applyTheme()
+        refreshTransport()
         ctx.player.onError = { msg -> SwingUtilities.invokeLater { setStatus(msg) } }
         ctx.player.onState = { SwingUtilities.invokeLater { refreshTransport() } }
         Timer(500) { tick() }.start()
@@ -297,7 +299,8 @@ class MainFrame(private val ctx: DesktopContext) : JFrame("BlissPlayer") {
             ctx.player.setSpeed((speedBox.selectedItem as String).removeSuffix("x").toFloat())
         }
         bar.add(playBtn); bar.add(prev); bar.add(next); bar.add(queueBtn); bar.add(loopBtn)
-        bar.add(JLabel("Speed:")); bar.add(speedBox)
+        speedLabel = JLabel("Speed:")
+        bar.add(speedLabel); bar.add(speedBox)
         deck.add(bar, BorderLayout.SOUTH)
         segMini = SegBar({ theme }, motionOf = { ctx.settings.getString("theme_motion", "full") }, onSeek = { ctx.player.seekTo(it) })
         segMini.preferredSize = Dimension(100, 30)
@@ -305,175 +308,26 @@ class MainFrame(private val ctx: DesktopContext) : JFrame("BlissPlayer") {
         return deck
     }
 
-    /** Favorite star art per theme: Bliss lightened, Dark default, Aqua blue-shifted, Super animated rainbow. */
-    private fun starImage(loved: Boolean): BufferedImage? {
-        val key = "${theme.key}:$loved:$rainbowTick"
-        starCache[key]?.let { return it }
-        val img = if (!loved) {
-            XpArt.image(if (theme == DeskTheme.BLISS) "fav_star_outline_lt.png" else "fav_star_outline.png")
-        } else when (theme) {
-            DeskTheme.BLISS -> brighten(XpArt.image("fav_star_filled.png"), 1.08f)
-            DeskTheme.DARK -> XpArt.image("fav_star_filled.png")
-            DeskTheme.AQUA -> blueShift(XpArt.image("fav_star_filled.png"))
-            DeskTheme.SUPER -> rainbowStar(XpArt.image("fav_star_filled.png"), (rainbowTick % 24) / 24f)
-        }
-        if (img != null && starCache.size < 40) starCache[key] = img
-        return img
-    }
-
-    private fun brighten(src: BufferedImage?, f: Float): BufferedImage? {
-        if (src == null) return null
-        val out = BufferedImage(src.width, src.height, BufferedImage.TYPE_INT_ARGB)
-        val g = out.createGraphics()
-        g.drawImage(src, 0, 0, null)
-        g.dispose()
-        val op = java.awt.image.RescaleOp(floatArrayOf(f, f, f, 1f), floatArrayOf(0f, 0f, 0f, 0f), null)
-        return op.filter(out, null)
-    }
-
-    private fun blueShift(src: BufferedImage?): BufferedImage? {
-        if (src == null) return null
-        val out = BufferedImage(src.width, src.height, BufferedImage.TYPE_INT_ARGB)
-        for (x in 0 until src.width) for (y in 0 until src.height) {
-            val argb = src.getRGB(x, y)
-            val a = argb ushr 24
-            if (a == 0) continue
-            val hsb = Color.RGBtoHSB(argb shr 16 and 0xFF, argb shr 8 and 0xFF, argb and 0xFF, null)
-            out.setRGB(x, y, (a shl 24) or (Color.HSBtoRGB(0.58f, hsb[1].coerceAtLeast(0.5f), hsb[2]) and 0xFFFFFF))
-        }
-        return out
-    }
-
-    private fun rainbowStar(src: BufferedImage?, phase: Float): BufferedImage? {
-        if (src == null) return null
-        val w = src.width; val h = src.height
-        val grad = BufferedImage(w, h, BufferedImage.TYPE_INT_ARGB)
-        val g = grad.createGraphics() as java.awt.Graphics2D
-        val n = 7
-        val colors = Array(n + 1) { i -> Color.getHSBColor((phase + i / n.toFloat()) % 1f, 0.9f, 1f) }
-        g.paint = java.awt.LinearGradientPaint(0f, h.toFloat(), w.toFloat(), 0f,
-            (0..n).map { it / n.toFloat() }.toFloatArray(), colors)
-        g.fillRect(0, 0, w, h)
-        g.dispose()
-        // Keep the gradient only where the star is opaque (mask = star alpha).
-        val mask = BufferedImage(w, h, BufferedImage.TYPE_INT_ARGB)
-        val mg = mask.createGraphics()
-        mg.drawImage(grad, 0, 0, null)
-        mg.composite = java.awt.AlphaComposite.DstIn
-        mg.drawImage(src, 0, 0, null)
-        mg.dispose()
-        // Black halo behind the star so it reads on any background.
-        val out = BufferedImage(w + 8, h + 8, BufferedImage.TYPE_INT_ARGB)
-        val og = out.createGraphics()
-        val halo = BufferedImage(w, h, BufferedImage.TYPE_INT_ARGB)
-        val hg = halo.createGraphics()
-        hg.drawImage(src, 0, 0, null)
-        hg.composite = java.awt.AlphaComposite.SrcIn
-        hg.color = Color.BLACK
-        hg.fillRect(0, 0, w, h)
-        hg.dispose()
-        og.drawImage(halo, 5, 5, null)
-        og.drawImage(mask, 4, 4, null)
-        og.dispose()
-        return out
-    }
 
     inner class RowRenderer : ListCellRenderer<Row> {
-        private val panel = object : JPanel(BorderLayout()) {
-            var row: Row? = null
-            var selectedRow = false
-            var lovedRow = false
-            override fun paintComponent(g: Graphics) {
-                val m = XpPaint.of(theme)
-                val v = row
-                if (v == null || v is Row.Sep) {
-                    g.color = m.face
-                    g.fillRect(0, 0, width, height)
-                    return
-                }
-                if (selectedRow) {
-                    XpPaint.rowSelected(g, width, height, m)
-                } else {
-                    g.color = when {
-                        theme == DeskTheme.BLISS -> if (background == m.face) Color.WHITE else m.face
-                        theme == DeskTheme.DARK -> m.face
-                        else -> m.face
-                    }
-                    g.fillRect(0, 0, width, height)
-                }
-                // Folder / note glyph at the left.
-                g.color = if (selectedRow) m.selectText else m.dim
-                if (v is Row.Group || v is Row.NewPlaylist) {
-                    g.fillRoundRect(8, height / 2 - 9, 22, 15, 3, 3)
-                    g.fillRoundRect(8, height / 2 - 12, 12, 6, 2, 2)
-                } else {
-                    g.fillOval(8, height / 2 - 2, 11, 9)
-                    g.fillRect(17, height / 2 - 14, 3, 14)
-                }
-                // Star + dots hit zones on the right.
-                starImage(lovedRow)?.let { g.drawImage(it, width - 88, height / 2 - 14, 28, 28, null) }
-                XpPaint.dots(g, width - 22, height / 2, if (selectedRow) m.selectText else m.ink)
-                super.paintComponent(g)
-            }
-        }
-        private val center = JPanel(GridLayout(2, 1))
-        private val top = JLabel()
-        private val sub = JLabel()
-        private val right = JLabel()
+        private val panel = RowPanel({ theme }, { rainbowTick })
         override fun getListCellRendererComponent(
             list: JList<out Row>, value: Row, index: Int, selected: Boolean, focus: Boolean
         ): Component {
-            panel.removeAll(); center.removeAll()
-            panel.layout = BorderLayout()
-            val m = XpPaint.of(theme)
-            if (value is Row.Sep) {
-                panel.row = value
-                panel.background = m.face
-                panel.add(JLabel(" "), BorderLayout.CENTER)
-                return panel
-            }
-            center.isOpaque = false
-            center.add(top); center.add(sub)
-            val pad = JPanel(BorderLayout()).apply {
-                isOpaque = false
-                border = BorderFactory.createEmptyBorder(0, 40, 0, 100)
-            }
-            pad.add(center, BorderLayout.CENTER)
-            panel.add(pad, BorderLayout.CENTER)
-            panel.add(right, BorderLayout.EAST)
-            right.border = BorderFactory.createEmptyBorder(0, 0, 0, 100)
             val fav = ctx.db.favorites()
-            panel.lovedRow = (value as? Row.Song)?.let { it.row.mediaId in fav } == true
-            when (value) {
+            panel.row = when (value) {
                 is Row.Song -> {
                     val playing = queue.getOrNull(ctx.player.queueIndex)?.mediaId == value.row.mediaId && ctx.player.isPlaying
-                    top.text = (if (playing) "> " else "") + value.row.title
-                    sub.text = "${value.row.artist} | ${ctx.db.albumOf(value.row.mediaId) ?: value.row.album}"
-                    right.text = fmtDur(value.row.durationMs)
+                    RowData(value.row.title, "${value.row.artist} | ${ctx.db.albumOf(value.row.mediaId) ?: value.row.album}",
+                        fmtDur(value.row.durationMs), loved = value.row.mediaId in fav,
+                        playing = playing, selected = selected, stripe = index % 2 == 1)
                 }
-                is Row.Group -> {
-                    top.text = value.title
-                    sub.text = value.sub
-                    right.text = ""
-                }
-                is Row.NewPlaylist -> { top.text = "+ New playlist"; sub.text = ""; right.text = "" }
-                else -> {}
+                is Row.Group -> RowData(value.title, value.sub, "", isGroup = true,
+                    selected = selected, stripe = index % 2 == 1)
+                is Row.NewPlaylist -> RowData("+ New playlist", "", "", isNew = true,
+                    selected = selected, stripe = index % 2 == 1)
+                is Row.Sep -> RowData("", "", "")
             }
-            top.font = XpArt.sized(theme, 14, true)
-            sub.font = XpArt.sized(theme, 11, false)
-            right.font = XpArt.sized(theme, 11, false)
-            if (selected) {
-                panel.background = m.select
-                top.foreground = m.selectText; sub.foreground = m.selectText; right.foreground = m.selectText
-            } else {
-                panel.background = if (index % 2 == 1) m.face else m.faceLight
-                if (theme == DeskTheme.BLISS && index % 2 == 0) panel.background = Color.WHITE
-                if (theme == DeskTheme.DARK) panel.background = if (index % 2 == 0) Color(0x1B, 0x22, 0x2D) else Color(0x25, 0x2E, 0x3C)
-                val tc = if (theme == DeskTheme.BLISS || theme == DeskTheme.AQUA) Color(0x1A, 0x1A, 0x1A) else m.ink
-                top.foreground = tc; sub.foreground = m.dim; right.foreground = m.dim
-            }
-            panel.row = value
-            panel.selectedRow = selected
             return panel
         }
     }
@@ -501,6 +355,11 @@ class MainFrame(private val ctx: DesktopContext) : JFrame("BlissPlayer") {
             else -> "ic_launch_bliss.png"
         })
         contentPane.background = XpPaint.of(theme).face
+        val listBackground = if (theme == DeskTheme.BLISS) Color.WHITE else XpPaint.of(theme).face
+        list.background = listBackground
+        (list.parent as? javax.swing.JViewport)?.background = listBackground
+        speedLabel.foreground = XpPaint.of(theme).ink
+        speedLabel.font = XpArt.sized(theme, 11, false)
         tabStrip.reselect(tab)
         if (tab == 5) buildMore()
         buildSide()
@@ -925,9 +784,11 @@ class MainFrame(private val ctx: DesktopContext) : JFrame("BlissPlayer") {
         segMini.durationMs = ctx.player.durationMs
         segMini.segments = cur?.let { ctx.db.segmentsFor(it.mediaId) } ?: emptyList()
         segMini.setPosition(ctx.player.positionMs)
-        npSeg.durationMs = ctx.player.durationMs
-        npSeg.segments = segMini.segments
-        npSeg.setPosition(ctx.player.positionMs)
+        if (::npSeg.isInitialized) {
+            npSeg.durationMs = ctx.player.durationMs
+            npSeg.segments = segMini.segments
+            npSeg.setPosition(ctx.player.positionMs)
+        }
         val pos = fmtDur(ctx.player.positionMs)
         val dur = fmtDur(ctx.player.durationMs)
         deckTime.text = "$pos / $dur"

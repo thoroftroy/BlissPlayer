@@ -161,22 +161,21 @@ class SegBar(
     private val motionOf: () -> String = { "full" }
 ) : JComponent() {
     private var dragging = false
-    private var regionStart: Float? = null
+    private var regionStart: Long? = null
     private var rainbowPhase = 0f
-    private val rainbowTimer = javax.swing.Timer(66) {
-        if (themeOf() == DeskTheme.SUPER && motionOf() != "off" && isShowing) {
-            rainbowPhase = (rainbowPhase + 0.02f) % 1f
+    private val rainbowTimer = javax.swing.Timer(350) {
+        if (themeOf() == DeskTheme.SUPER && motionOf() == "full" && isShowing) {
+            rainbowPhase = (rainbowPhase + 0.4f) % 1f
             repaint()
         }
     }
 
     init {
         preferredSize = Dimension(100, 34)
-        rainbowTimer.start()
         addMouseListener(object : MouseAdapter() {
             override fun mousePressed(e: MouseEvent) {
                 if (onRegion != null && SwingUtilities.isRightMouseButton(e)) {
-                    regionStart = e.x / width.toFloat()
+                    regionStart = positionForX(e.x)
                 } else {
                     dragging = true
                     seekTo(e.x)
@@ -186,8 +185,8 @@ class SegBar(
                 val rs = regionStart
                 if (rs != null) {
                     regionStart = null
-                    val a = (rs * durationMs).toLong().coerceIn(0, durationMs)
-                    val b = (e.x / width.toFloat() * durationMs).toLong().coerceIn(0, durationMs)
+                    val a = rs
+                    val b = positionForX(e.x)
                     if (durationMs > 0 && kotlin.math.abs(b - a) > 500) onRegion?.invoke(minOf(a, b), maxOf(a, b))
                     repaint()
                 } else if (dragging) {
@@ -204,12 +203,26 @@ class SegBar(
         })
     }
 
+    override fun addNotify() {
+        super.addNotify()
+        rainbowTimer.start()
+    }
+
+    override fun removeNotify() {
+        rainbowTimer.stop()
+        super.removeNotify()
+    }
+
     private fun seekTo(x: Int) {
         if (durationMs <= 0) return
-        fraction = (x / width.toFloat()).coerceIn(0f, 1f)
-        onSeek((fraction * durationMs).toLong())
+        val position = positionForX(x)
+        fraction = position.toFloat() / durationMs
+        onSeek(position)
         repaint()
     }
+
+    private fun positionForX(x: Int): Long =
+        com.blissplayer.core.SegmentBarDrawing.positionForX(x.toFloat(), width.toFloat(), 1f, durationMs)
 
     fun setPosition(ms: Long) {
         if (!dragging && durationMs > 0) {
@@ -219,35 +232,22 @@ class SegBar(
     }
 
     override fun paintComponent(g: Graphics) {
-        val m = XpPaint.of(themeOf())
-        // sunken track
-        XpPaint.field(g, width, height, m)
-        val innerX = 3; val innerW = width - 6
-        val fillW = (innerW * fraction).toInt()
-        if (themeOf() == DeskTheme.SUPER) {
-            val gg = g.create()
-            gg.translate(innerX, 4)
-            XpPaint.rainbowFill(gg, fillW, height - 8, rainbowPhase)
-            gg.dispose()
-        } else {
-            XpPaint.segFill(g.create().also { (it as java.awt.Graphics2D).translate(innerX, 4) },
-                fillW, height - 8, XpArt.image("xp_seg_tile.png"))
+        val graphics = g.create() as java.awt.Graphics2D
+        try {
+            com.blissplayer.core.SegmentBarDrawing.draw(
+                DesktopSegmentCanvas(graphics), width.toFloat(), height.toFloat(), 1f,
+                when (themeOf()) {
+                    DeskTheme.BLISS -> com.blissplayer.core.SegmentTheme.BLISS
+                    DeskTheme.DARK -> com.blissplayer.core.SegmentTheme.DARK
+                    DeskTheme.AQUA -> com.blissplayer.core.SegmentTheme.AQUA
+                    DeskTheme.SUPER -> com.blissplayer.core.SegmentTheme.SUPER
+                },
+                (fraction.coerceIn(0f, 1f) * durationMs.coerceAtLeast(0)).toLong(), durationMs,
+                segments.map { com.blissplayer.core.SegmentRange(it.first, it.second) }, rainbowPhase
+            )
+        } finally {
+            graphics.dispose()
         }
-        // skip regions in red over the fill area
-        if (durationMs > 0) {
-            g.color = Color(255, 60, 60, 170)
-            segments.forEach { (s, e) ->
-                val x0 = innerX + (s / durationMs.toFloat() * innerW).toInt()
-                val x1 = innerX + (e / durationMs.toFloat() * innerW).toInt()
-                g.fillRect(x0, 4, (x1 - x0).coerceAtLeast(2), height - 8)
-            }
-        }
-        // white oval thumb
-        val tx = (innerX + fillW - 7).coerceIn(0, width - 15)
-        g.color = Color.WHITE
-        g.fillOval(tx, 5, 15, height - 10)
-        g.color = if (themeOf() == DeskTheme.AQUA) Color(0x5A, 0x87, 0xAC) else Color(0x68, 0xB2, 0xCE)
-        g.drawOval(tx, 5, 15, height - 11)
     }
 }
 
