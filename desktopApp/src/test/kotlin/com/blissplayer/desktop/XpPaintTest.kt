@@ -106,4 +106,27 @@ class XpPaintTest {
             near(img, 30, 10, hex, 2)
         }
     }
+
+    @Test fun palettesComeFromSharedThemeTokens() {
+        val p = com.blissplayer.core.ThemePalettes
+        // Spot-check every theme: desktop materials must equal the shared Android values.
+        assertEquals(p.XP_TITLE_START, XpPaint.BLISS.titleTop.rgb)
+        assertEquals(p.XP_TITLE_END, XpPaint.BLISS.titleBot.rgb)
+        assertEquals(p.XP_SELECT, XpPaint.BLISS.select.rgb)
+        assertEquals(p.XP_FACE, XpPaint.BLISS.face.rgb)
+        assertEquals(p.XPN_TITLE_START, XpPaint.DARK.titleTop.rgb)
+        assertEquals(p.XPN_SELECT, XpPaint.DARK.select.rgb)
+        assertEquals(p.XPN_TEXT, XpPaint.DARK.ink.rgb)
+        assertEquals(p.AQ_TITLE_MID, XpPaint.AQUA.titleMid.rgb)
+        assertEquals(p.AQ_GEL_MID, XpPaint.AQUA.btnMid.rgb)
+        assertEquals(p.AQ_SELECT, XpPaint.AQUA.select.rgb)
+        assertEquals(p.SP_TITLE_BOT, XpPaint.SUPER.titleBot.rgb)
+        assertEquals(p.SP_PINK, XpPaint.SUPER.btnTop.rgb)
+        assertEquals(p.SP_NEON, XpPaint.SUPER.titleBorder.rgb)
+        // Theme keys line up 1:1 with the shared enum.
+        DeskTheme.entries.forEach { t ->
+            assertEquals(t.key, t.bliss.key)
+            assertEquals(t.bliss.modern, t == DeskTheme.AQUA || t == DeskTheme.SUPER)
+        }
+    }
 }

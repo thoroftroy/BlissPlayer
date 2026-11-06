@@ -132,7 +132,19 @@ class RowPanel(private val themeOf: () -> DeskTheme, private val tickOf: () -> I
         }
         val w = width; val h = height
         val hl = v.selected || v.playing
-        if (hl) {
+        val modern = theme == DeskTheme.AQUA || theme == DeskTheme.SUPER
+        if (modern) {
+            // Same rounded cards Android paints (RowCardDrawing); XP stays flat.
+            g.color = m.face
+            g.fillRect(0, 0, w, h)
+            val gg = g.create() as java.awt.Graphics2D
+            try {
+                com.blissplayer.core.RowCardDrawing.draw(DesktopModernCanvas(gg),
+                    2f, 2f, (w - 2).toFloat(), (h - 2).toFloat(), 1f, theme.bliss, hl)
+            } finally {
+                gg.dispose()
+            }
+        } else if (hl) {
             XpPaint.rowSelected(g, w, h, m)
         } else {
             g.color = when {
@@ -142,10 +154,19 @@ class RowPanel(private val themeOf: () -> DeskTheme, private val tickOf: () -> I
             }
             g.fillRect(0, 0, w, h)
         }
-        val ink = if (hl) m.selectText else if (theme == DeskTheme.BLISS || theme == DeskTheme.AQUA) Color(0x1A, 0x1A, 0x1A) else m.ink
-        val dim = if (hl) m.selectText else m.dim
-        // Glyph: two-tone folder for groups, slim note for songs.
-        if (v.isGroup || v.isNew) {
+        // Android modern rows use theme ink/secondary even when selected.
+        val ink = if (hl && !modern) m.selectText else if (theme == DeskTheme.BLISS || theme == DeskTheme.AQUA) Color(0x1A, 0x1A, 0x1A) else m.ink
+        val dim = if (hl && !modern) m.selectText else m.dim
+        // Glyph: shared CD/hexagon art on modern themes, XP note/folder otherwise.
+        if (modern) {
+            val gg = g.create() as java.awt.Graphics2D
+            try {
+                com.blissplayer.core.TrackGlyphDrawing.draw(DesktopModernCanvas(gg),
+                    8f, h / 2f - 14f, 28f, theme.bliss, v.isGroup || v.isNew)
+            } finally {
+                gg.dispose()
+            }
+        } else if (v.isGroup || v.isNew) {
             g.color = if (hl) m.selectText else if (theme == DeskTheme.BLISS || theme == DeskTheme.AQUA) Color(0xD8, 0xD0, 0xB8) else m.faceLight
             g.fillRoundRect(8, h / 2 - 8, 22, 14, 3, 3)
             g.fillRoundRect(8, h / 2 - 11, 12, 6, 2, 2)
@@ -170,10 +191,29 @@ class RowPanel(private val themeOf: () -> DeskTheme, private val tickOf: () -> I
             val fm = g.fontMetrics
             g.drawString(v.dur, w - STAR_X - 12 - fm.stringWidth(v.dur), h / 2 + 4)
         }
-        // Star + dots.
+        // Star + dots (round button behind the dots on modern themes, like ICON).
         if (!v.isGroup && !v.isNew) {
             StarArt.image(theme, v.loved, tickOf())?.let { g.drawImage(it, w - STAR_X, h / 2 - 14, 28, 28, null) }
         }
-        XpPaint.dots(g, w - DOTS_W / 2, h / 2, if (hl) m.selectText else m.ink)
+        if (modern) {
+            val gg = g.create() as java.awt.Graphics2D
+            try {
+                val dc = DesktopModernCanvas(gg)
+                val cx = (w - DOTS_W / 2).toFloat(); val cy = h / 2f
+                if (theme == DeskTheme.AQUA) {
+                    dc.circle(cx, cy, 15f,
+                        com.blissplayer.core.ModernFill.Linear(
+                            com.blissplayer.core.ThemeGradients.AQUA_SILVER, y0 = cy - 15f, y1 = cy + 15f),
+                        com.blissplayer.core.ModernFill.Solid(com.blissplayer.core.ThemeGradients.AQUA_SILVER_EDGE), 1f)
+                } else {
+                    dc.circle(cx, cy, 15f,
+                        com.blissplayer.core.ModernFill.Solid(0xFF1A2340.toInt()),
+                        com.blissplayer.core.ModernFill.Solid(com.blissplayer.core.ThemePalettes.SP_BORDER), 1f)
+                }
+            } finally {
+                gg.dispose()
+            }
+        }
+        XpPaint.dots(g, w - DOTS_W / 2, h / 2, if (hl && !modern) m.selectText else m.ink)
     }
 }

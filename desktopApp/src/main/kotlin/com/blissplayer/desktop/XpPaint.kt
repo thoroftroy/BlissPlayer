@@ -6,6 +6,7 @@ import java.awt.Graphics2D
 import java.awt.LinearGradientPaint
 import java.awt.RenderingHints
 import java.awt.geom.RoundRectangle2D
+import com.blissplayer.core.ThemePalettes as P
 
 /**
  * The same 4 theme personalities as Android (Bliss/Dark Bliss/Aqua Bliss/Super Bliss).
@@ -19,6 +20,9 @@ enum class DeskTheme(val key: String, val title: String) {
     companion object {
         fun from(key: String?): DeskTheme = entries.firstOrNull { it.key == key } ?: BLISS
     }
+
+    /** Shared definition; Android reads the same values from `:core`. */
+    val bliss: com.blissplayer.core.BlissTheme get() = com.blissplayer.core.BlissTheme.from(key)
 }
 
 /**
@@ -30,6 +34,7 @@ enum class DeskTheme(val key: String, val title: String) {
  * (Aqua), neon glass (Super). Per-theme colors come from values/colors.xml.
  */
 object XpPaint {
+    private fun c(argb: Int) = Color(argb, true)
 
     data class M(
         val titleTop: Color, val titleMid: Color, val titleBot: Color,
@@ -59,31 +64,31 @@ object XpPaint {
     )
 
     val BLISS = M(
-        titleTop = Color(0x00, 0x58, 0xE6), titleMid = Color(0x2A, 0x7F, 0xFF), titleBot = Color(0x3A, 0x93, 0xFF),
-        titleGloss = 0x99, titleBorder = Color(0x00, 0x3C, 0x74), titleBorderW = 1,
-        titleText = Color.WHITE, titleShadow = Color(0x80, 0x00, 0x00, 0x00),
-        btnTop = Color.WHITE, btnMid = Color(0xEC, 0xE9, 0xD8), btnBot = Color(0xD4, 0xD0, 0xC8),
-        btnBorder = Color(0x00, 0x3C, 0x74), btnLight = Color.WHITE, btnShade = Color(0x80, 0x80, 0x80),
+        titleTop = c(P.XP_TITLE_START), titleMid = Color(0x2A, 0x7F, 0xFF), titleBot = c(P.XP_TITLE_END),
+        titleGloss = 0x99, titleBorder = c(P.XP_BORDER), titleBorderW = 1,
+        titleText = c(P.XP_TITLE_TEXT), titleShadow = Color(0x80, 0x00, 0x00, 0x00),
+        btnTop = c(P.XP_BUTTON_TOP), btnMid = c(P.XP_FACE), btnBot = c(P.XP_FACE_DARK),
+        btnBorder = c(P.XP_BORDER), btnLight = Color.WHITE, btnShade = Color(0x80, 0x80, 0x80),
         btnText = Color(0x1A, 0x1A, 0x1A),
-        face = Color(0xEC, 0xE9, 0xD8), faceLight = Color.WHITE, faceShade = Color(0x80, 0x80, 0x80),
-        well = Color.WHITE, select = Color(0x31, 0x6A, 0xC5), selectText = Color.WHITE,
-        ink = Color(0x1A, 0x1A, 0x1A), dim = Color(0x5A, 0x5A, 0x5A),
+        face = c(P.XP_FACE), faceLight = Color.WHITE, faceShade = Color(0x80, 0x80, 0x80),
+        well = Color.WHITE, select = c(P.XP_SELECT), selectText = Color.WHITE,
+        ink = Color(0x1A, 0x1A, 0x1A), dim = c(P.XP_TEXT_DIM),
         displayTop = Color(0x18, 0x2B, 0x24), displayBot = Color(0x0B, 0x17, 0x14), displayOuter = Color(0x08, 0x0C, 0x0A),
         lcdInk = Color(0xCA, 0xEF, 0x9B), lcdDim = Color(0x99, 0xC9, 0xB0),
         fieldTop = Color(0x80, 0x80, 0x80), fieldBot = Color.WHITE,
-        statusTop = Color(0xD4, 0xD0, 0xC8), statusBot = Color.WHITE
+        statusTop = c(P.XP_FACE_DARK), statusBot = Color.WHITE
     )
 
     val DARK = M(
-        titleTop = Color(0x0A, 0x24, 0x6A), titleMid = Color(0x1E, 0x4F, 0xA3), titleBot = Color(0x2A, 0x6A, 0xD4),
-        titleGloss = 0x66, titleBorder = Color(0x4A, 0x52, 0x5E), titleBorderW = 1,
+        titleTop = c(P.XPN_TITLE_START), titleMid = c(P.XPN_SELECT), titleBot = Color(0x2A, 0x6A, 0xD4),
+        titleGloss = 0x66, titleBorder = c(P.XPN_BORDER), titleBorderW = 1,
         titleText = Color.WHITE, titleShadow = Color(0x80, 0x00, 0x00, 0x00),
-        btnTop = Color(0x3A, 0x40, 0x48), btnMid = Color(0x2E, 0x33, 0x3A), btnBot = Color(0x26, 0x29, 0x2F),
-        btnBorder = Color(0x4A, 0x52, 0x5E), btnLight = Color(0x6A, 0x72, 0x80), btnShade = Color(0x14, 0x16, 0x1A),
-        btnText = Color(0xE8, 0xE8, 0xE8),
+        btnTop = c(P.XPN_BUTTON_TOP), btnMid = c(P.XPN_FACE2), btnBot = c(P.XPN_BUTTON_BOTTOM),
+        btnBorder = c(P.XPN_BORDER), btnLight = Color(0x6A, 0x72, 0x80), btnShade = Color(0x14, 0x16, 0x1A),
+        btnText = c(P.XPN_TEXT),
         face = Color(0x25, 0x2B, 0x35), faceLight = Color(0x41, 0x4D, 0x60), faceShade = Color(0x10, 0x17, 0x21),
-        well = Color(0x17, 0x1C, 0x24), select = Color(0x1E, 0x4F, 0xA3), selectText = Color.WHITE,
-        ink = Color(0xE8, 0xE8, 0xE8), dim = Color(0xA8, 0xAD, 0xB5),
+        well = Color(0x17, 0x1C, 0x24), select = c(P.XPN_SELECT), selectText = Color.WHITE,
+        ink = c(P.XPN_TEXT), dim = c(P.XPN_TEXT_DIM),
         displayTop = Color(0x18, 0x2B, 0x24), displayBot = Color(0x0B, 0x17, 0x14), displayOuter = Color(0x08, 0x0C, 0x0A),
         lcdInk = Color(0xCA, 0xEF, 0x9B), lcdDim = Color(0x99, 0xC9, 0xB0),
         fieldTop = Color(0x14, 0x16, 0x1A), fieldBot = Color(0x10, 0x12, 0x16),
@@ -91,35 +96,35 @@ object XpPaint {
     )
 
     val AQUA = M(
-        titleTop = Color(0xF4, 0xF6, 0xF8), titleMid = Color(0xC9, 0xCD, 0xD4), titleBot = Color(0xA8, 0xAD, 0xB6),
-        titleGloss = 0xCC, titleBorder = Color(0x8A, 0x8F, 0x98), titleBorderW = 1,
-        titleText = Color(0x1A, 0x1A, 0x1A), titleShadow = Color(0x80, 0xFF, 0xFF, 0xFF),
-        btnTop = Color(0x7D, 0xB9, 0xE8), btnMid = Color(0x2E, 0x86, 0xD4), btnBot = Color(0x1A, 0x5F, 0xA8),
+        titleTop = c(P.AQ_TITLE_TOP), titleMid = c(P.AQ_TITLE_MID), titleBot = c(P.AQ_TITLE_BOT),
+        titleGloss = 0xCC, titleBorder = c(P.AQ_BORDER), titleBorderW = 1,
+        titleText = c(P.AQ_TEXT), titleShadow = Color(0x80, 0xFF, 0xFF, 0xFF),
+        btnTop = c(P.AQ_GEL_TOP), btnMid = c(P.AQ_GEL_MID), btnBot = c(P.AQ_GEL_BOT),
         btnBorder = Color(0x0E, 0x3D, 0x6E), btnLight = Color(0xB3, 0xFF, 0xFF, 0xFF), btnShade = Color(0x0E, 0x3D, 0x6E),
         btnText = Color.WHITE,
-        face = Color(0xE8, 0xE8, 0xEC), faceLight = Color.WHITE, faceShade = Color(0x8A, 0x8F, 0x98),
-        well = Color.WHITE, select = Color(0x2E, 0x86, 0xD4), selectText = Color.WHITE,
+        face = c(P.AQ_FACE), faceLight = Color.WHITE, faceShade = c(P.AQ_BORDER),
+        well = Color.WHITE, select = c(P.AQ_SELECT), selectText = c(P.AQ_SELECT_TEXT),
         ink = Color(0x19, 0x2C, 0x42), dim = Color(0x4F, 0x63, 0x7A),
         displayTop = Color(0x18, 0x2B, 0x24), displayBot = Color(0x0B, 0x17, 0x14), displayOuter = Color(0x08, 0x0C, 0x0A),
         lcdInk = Color(0x19, 0x2C, 0x42), lcdDim = Color(0x4F, 0x63, 0x7A),
         fieldTop = Color(0xF2, 0xF2, 0xF5), fieldBot = Color(0xDC, 0xDE, 0xE3),
-        statusTop = Color(0xE8, 0xE8, 0xEC), statusBot = Color(0xC4, 0xC7, 0xCE)
+        statusTop = c(P.AQ_FACE), statusBot = Color(0xC4, 0xC7, 0xCE)
     )
 
     val SUPER = M(
-        titleTop = Color(0x5B, 0x2E, 0xE5), titleMid = Color(0x5B, 0x2E, 0xE5), titleBot = Color(0xB0, 0x1E, 0xFF),
-        titleGloss = 0xAA, titleBorder = Color(0x00, 0xF0, 0xFF), titleBorderW = 2,
+        titleTop = c(P.SP_TITLE_TOP), titleMid = c(P.SP_TITLE_TOP), titleBot = c(P.SP_TITLE_BOT),
+        titleGloss = 0xAA, titleBorder = c(P.SP_NEON), titleBorderW = 2,
         titleText = Color(0x6D, 0xFF, 0xE1), titleShadow = null,
-        btnTop = Color(0xFF, 0x2E, 0x9A), btnMid = Color(0x2A, 0x1B, 0x4E), btnBot = Color(0x12, 0x0B, 0x28),
-        btnBorder = Color(0x00, 0xF0, 0xFF), btnLight = Color(0x66, 0x00, 0xF0, 0xFF), btnShade = Color(0x00, 0x00, 0x00),
+        btnTop = c(P.SP_PINK), btnMid = Color(0x2A, 0x1B, 0x4E), btnBot = Color(0x12, 0x0B, 0x28),
+        btnBorder = c(P.SP_NEON), btnLight = Color(0x66, 0x00, 0xF0, 0xFF), btnShade = Color(0x00, 0x00, 0x00),
         btnText = Color(0xF4, 0xF7, 0xFF),
-        face = Color(0x1A, 0x12, 0x30), faceLight = Color(0x2A, 0x1B, 0x4E), faceShade = Color(0x05, 0x03, 0x10),
-        well = Color(0x0A, 0x06, 0x18), select = Color(0x5B, 0x2E, 0xE5), selectText = Color.WHITE,
+        face = c(P.SP_FACE2), faceLight = Color(0x2A, 0x1B, 0x4E), faceShade = Color(0x05, 0x03, 0x10),
+        well = Color(0x0A, 0x06, 0x18), select = c(P.SP_SELECT), selectText = Color.WHITE,
         ink = Color(0xF4, 0xF7, 0xFF), dim = Color(0xAF, 0xBE, 0xD7),
         displayTop = Color(0x18, 0x2B, 0x24), displayBot = Color(0x0B, 0x17, 0x14), displayOuter = Color(0x08, 0x0C, 0x0A),
-        lcdInk = Color(0x00, 0xF0, 0xFF), lcdDim = Color(0xAF, 0xBE, 0xD7),
+        lcdInk = c(P.SP_NEON), lcdDim = Color(0xAF, 0xBE, 0xD7),
         fieldTop = Color(0x0A, 0x06, 0x18), fieldBot = Color(0x0A, 0x06, 0x18),
-        statusTop = Color(0x1A, 0x12, 0x30), statusBot = Color(0x0D, 0x0A, 0x1A)
+        statusTop = c(P.SP_FACE2), statusBot = Color(0x0D, 0x0A, 0x1A)
     )
 
     fun of(theme: DeskTheme): M = when (theme) {

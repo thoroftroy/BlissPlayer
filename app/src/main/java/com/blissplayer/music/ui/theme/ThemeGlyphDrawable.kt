@@ -11,6 +11,9 @@ import android.graphics.RadialGradient
 import android.graphics.RectF
 import android.graphics.Shader
 import android.graphics.drawable.Drawable
+import com.blissplayer.core.BlissTheme
+import com.blissplayer.core.TrackGlyphDrawing
+import com.blissplayer.music.ui.AndroidModernCanvas
 import kotlin.math.cos
 import kotlin.math.sin
 
@@ -39,45 +42,11 @@ class ThemeGlyphDrawable(
                 c.drawCircle(x, h * .5f, radius, paint)
             }
             paint.shader = null
-        } else if (theme == MobileTheme.AQUA) {
-            val cx = w * .5f; val cy = h * .5f; val radius = minOf(w, h) * .45f
-            paint.shader = LinearGradient(0f, 0f, w, h,
-                intArrayOf(0xFFF9FFFF.toInt(), 0xFF6DB3E4.toInt(), 0xFFE4F6FF.toInt(), 0xFF387ABA.toInt()),
-                null, Shader.TileMode.CLAMP)
-            c.drawCircle(cx, cy, radius, paint); paint.shader = null
-            paint.style = Paint.Style.STROKE; paint.strokeWidth = maxOf(1f, w * .015f)
-            paint.color = 0x7799D6F3
-            for (i in 2..5) c.drawCircle(cx, cy, radius * i / 6f, paint)
-            paint.style = Paint.Style.FILL
-            paint.color = 0xDDFFFFFF.toInt(); c.drawCircle(cx, cy, radius * .18f, paint)
-            if (kind == Kind.GROUP) {
-                rect.set(w * .14f, h * .44f, w * .85f, h * .85f)
-                paint.color = 0xBD277DCA.toInt(); c.drawRoundRect(rect, 3f, 3f, paint)
-            }
-        } else {
-            val cx = w * .5f; val cy = h * .5f
-            paint.shader = LinearGradient(0f, 0f, w, h,
-                intArrayOf(0xFF9BFFE5.toInt(), 0xFF86B3FF.toInt(), 0xFFFFB0D0.toInt()), null, Shader.TileMode.CLAMP)
-            path.reset()
-            val radius = minOf(w, h) * .43f
-            for (i in 0..5) {
-                val a = i * 1.0471976f - 1.5707964f
-                val x = cx + cos(a) * radius; val y = cy + sin(a) * radius
-                if (i == 0) path.moveTo(x, y) else path.lineTo(x, y)
-            }
-            path.close()
-            paint.style = Paint.Style.STROKE; paint.strokeWidth = maxOf(1f, w * .035f)
-            c.drawPath(path, paint)
-            paint.style = Paint.Style.FILL
-            if (kind == Kind.GROUP) {
-                rect.set(cx - w * .16f, cy - h * .16f, cx + w * .16f, cy + h * .16f)
-                c.drawRoundRect(rect, 2f, 2f, paint)
-            } else {
-                path.reset(); path.moveTo(w * .43f, h * .31f)
-                path.lineTo(w * .69f, h * .5f); path.lineTo(w * .43f, h * .69f); path.close()
-                c.drawPath(path, paint)
-            }
-            paint.shader = null
+        } else if (kind != Kind.BRAND) {
+            // Track/group glyphs are shared with Linux (same geometry, same stops).
+            val size = minOf(w, h)
+            TrackGlyphDrawing.draw(com.blissplayer.music.ui.AndroidModernCanvas(c),
+                (w - size) / 2f, (h - size) / 2f, size, theme.bliss, kind == Kind.GROUP)
         }
         c.restoreToCount(save)
     }

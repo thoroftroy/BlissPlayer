@@ -1,5 +1,6 @@
 package com.blissplayer.music.ui.theme
 
+import com.blissplayer.core.ThemeGradients
 import android.graphics.Bitmap
 import android.graphics.BitmapShader
 import android.graphics.Canvas
@@ -131,9 +132,9 @@ class MaterialDrawable(
                 canvas.drawRoundRect(area, r, r, paint); paint.shader = null
             }
             role == MaterialRole.ROW -> {
-                rounded(canvas, r, if (selected) intArrayOf(0xFFD2EEFF.toInt(), 0xFF95CFFF.toInt())
-                    else intArrayOf(0xEAFAFDFF.toInt(), 0xD4E3EFF6.toInt()))
-                edge(canvas, r, if (selected) 0xFF4A9AE1.toInt() else 0x66FFFFFF)
+                // Stops are shared with Linux (ThemeGradients); geometry stays here.
+                rounded(canvas, r, (if (selected) ThemeGradients.AQUA_ROW_SELECTED else ThemeGradients.AQUA_ROW).toIntArray())
+                edge(canvas, r, if (selected) ThemeGradients.AQUA_ROW_SELECTED_EDGE else ThemeGradients.AQUA_ROW_EDGE)
             }
             role == MaterialRole.FIELD -> {
                 rounded(canvas, r, intArrayOf(0xE3D5E4EF.toInt(), 0xEEFFFFFF.toInt()))
@@ -182,7 +183,7 @@ class MaterialDrawable(
             role == MaterialRole.TOOLBAR -> intArrayOf(0xD51A3456.toInt(), 0xE92A2546.toInt(), 0xB51B4A55.toInt())
             role == MaterialRole.DIALOG -> intArrayOf(0xF418283B.toInt(), 0xF4131A2C.toInt())
             role == MaterialRole.DISPLAY -> intArrayOf(0xD721354E.toInt(), 0xB5192A38.toInt())
-            role == MaterialRole.ROW && selected -> intArrayOf(0xDC294956.toInt(), 0xCC373152.toInt())
+            role == MaterialRole.ROW && selected -> ThemeGradients.SUPER_ROW_SELECTED.toIntArray()
             role == MaterialRole.FIELD -> intArrayOf(0xEF0B192A.toInt(), 0xDD1B2739.toInt())
             else -> intArrayOf(0xC125344D.toInt(), 0xA619233B.toInt(), 0xB3223043.toInt())
         }

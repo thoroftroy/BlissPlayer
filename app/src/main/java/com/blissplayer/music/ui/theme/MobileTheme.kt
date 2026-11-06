@@ -8,6 +8,7 @@ import android.view.View
 import android.widget.TextView
 import androidx.core.content.res.ResourcesCompat
 import com.blissplayer.music.R
+import com.blissplayer.core.BlissTheme
 import java.lang.ref.WeakReference
 import java.util.WeakHashMap
 
@@ -15,10 +16,13 @@ import java.util.WeakHashMap
 enum class MobileTheme(val key: String) {
     BLISS("bliss"), DARK("dark"), AQUA("aqua"), SUPER("super");
 
-    val modern: Boolean get() = this == AQUA || this == SUPER
-    val ink: Int get() = if (this == AQUA) 0xFF192C42.toInt() else 0xFFF4F7FF.toInt()
-    val secondary: Int get() = if (this == AQUA) 0xFF4F637A.toInt() else 0xFFAFBED7.toInt()
-    val accent: Int get() = if (this == AQUA) 0xFF096DE1.toInt() else 0xFF67FFE0.toInt()
+    /** Shared definition; scalar values live in `:core` so Linux uses the same ones. */
+    val bliss: BlissTheme get() = BlissTheme.from(key)
+
+    val modern: Boolean get() = bliss.modern
+    val ink: Int get() = bliss.ink
+    val secondary: Int get() = bliss.secondary
+    val accent: Int get() = bliss.accent
 
     companion object {
         fun from(key: String?): MobileTheme = entries.firstOrNull { it.key == key } ?: BLISS

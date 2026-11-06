@@ -1,5 +1,27 @@
 # Testing
 
+## Shared theme tokens, cards and glyphs (in progress)
+
+- `:core` now holds the theme system both platforms read: `BlissTheme`
+  (keys, modern flags, ink/secondary/accent, bundled font assets),
+  `ThemePalettes` (verbatim `colors.xml` ARGB), `ThemeGradients` + `ThemeGlyphs`
+  (verbatim `MaterialDrawable`/`ThemeGlyphDrawable` stops). `ThemeTokensTest`
+  pins the values; Android `MobileTheme` delegates to it.
+- Linux `XpPaint` palettes are built from those tokens
+  (`palettesComeFromSharedThemeTokens` test); existing pixel tests
+  (title bars, buttons, selected row, display, sections) still pass, proving
+  no visual change from the migration.
+- Modern rows now share code: `RowCardDrawing` (rounded cards, same stops/
+  hairlines/geometry as `MaterialDrawable` ROW — Aqua delegated on Android
+  too) and `TrackGlyphDrawing` (CD/hexagon, delegated by Android's
+  `ThemeGlyphDrawable`; Super's animated sheen stays platform-side).
+  Verified by `ModernRowDrawingTest`, desktop `PolishShots`, and real Xvfb
+  windows against the Android screenshots: Aqua glass cards + CDs + round
+  dot buttons, Super dark-red cards + hexagons. Bliss/Dark XP paths
+  byte-identical (pixel tests green).
+- Remaining gaps: Super's animated sheen/sweep has no static equivalent;
+  deck/transport/buttons/dialogs still separate implementations.
+
 ## Tray + cleanup work (in progress, Nov 5, 2026)
 
 - Shared tray model: `:core` `TrayMenu` (ids, labels, dispatch) is used by the
