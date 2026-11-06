@@ -14,7 +14,8 @@ class CleanCorpusTest {
     @Test
     fun dumpCleanCorpus() {
         Assume.assumeTrue("set BLISS_CLEAN_DUMP=1", System.getenv("BLISS_CLEAN_DUMP") == "1")
-        val dir = File("/home/microwavedthebaby/Downloads/YMusic")
+        val dir = File(System.getProperty("user.home"), "Applications/Wonderdesk Applications/YMusic")
+            .takeIf { it.isDirectory } ?: File("/home/microwavedthebaby/Downloads/YMusic")
         val files = dir.listFiles { f -> f.isFile }!!.sortedBy { it.name }
         val out = StringBuilder()
         for (f in files) {

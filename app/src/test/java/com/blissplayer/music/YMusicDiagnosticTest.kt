@@ -8,7 +8,8 @@ import java.io.File
 class YMusicDiagnosticTest {
     @Test
     fun diagnoseYMusic() {
-        val dir = File("/home/microwavedthebaby/Downloads/YMusic")
+        val dir = File(System.getProperty("user.home"), "Applications/Wonderdesk Applications/YMusic")
+            .takeIf { it.isDirectory } ?: File("/home/microwavedthebaby/Downloads/YMusic")
         val files = dir.listFiles { f -> f.isFile }!!.sortedBy { it.name }
         var total = 0
         var withArtist = 0

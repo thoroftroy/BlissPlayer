@@ -10,7 +10,8 @@ import java.io.File
  */
 class CorpusThroughputTest {
     @Test fun cleanLocalKeepsUpWithThousandSongLibraries() {
-        val dir = File(System.getProperty("user.home"), "Downloads/YMusic")
+        val dir = File(System.getProperty("user.home"), "Applications/Wonderdesk Applications/YMusic")
+            .takeIf { it.isDirectory } ?: File(System.getProperty("user.home"), "Downloads/YMusic")
         assumeTrue("YMusic corpus not present", dir.isDirectory)
         val names = dir.listFiles()!!.filter { it.isFile }.map { it.nameWithoutExtension }
         assumeTrue("corpus empty", names.isNotEmpty())

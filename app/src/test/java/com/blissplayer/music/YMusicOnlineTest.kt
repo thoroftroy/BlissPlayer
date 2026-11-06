@@ -22,7 +22,8 @@ class YMusicOnlineTest {
             "set BLISS_YMUSIC_ONLINE=1 to run the live bulk measurement",
             System.getenv("BLISS_YMUSIC_ONLINE") == "1"
         )
-        val dir = File("/home/microwavedthebaby/Downloads/YMusic")
+        val dir = File(System.getProperty("user.home"), "Applications/Wonderdesk Applications/YMusic")
+            .takeIf { it.isDirectory } ?: File("/home/microwavedthebaby/Downloads/YMusic")
         val files = dir.listFiles { f -> f.isFile }!!.sortedBy { it.name }
         // Persistent tag metadata: jaudiotagger re-reads of 1177 files cost
         // minutes on every run, so file name -> [tagTitle, tagArtist] is kept
