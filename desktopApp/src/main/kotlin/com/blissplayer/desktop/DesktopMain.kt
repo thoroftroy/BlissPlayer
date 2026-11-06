@@ -30,6 +30,10 @@ object DesktopMain {
             }
         }
         if (smoke) return headlessSmoke(musicDir)
+        if (!singleInstance()) {
+            System.err.println("BlissPlayer is already running (lock held). Close the tray icon to quit it first.")
+            return
+        }
         val settings = DesktopSettings()
         val dir = musicDir?.let { File(it) }
             ?: settings.getString("music_dir", "").takeIf { it.isNotBlank() }?.let { File(it) }
@@ -43,7 +47,7 @@ object DesktopMain {
             frame.applyLayoutPublic()
             if (SystemTray.isSupported()) {
                 frame.defaultCloseOperation = javax.swing.JFrame.HIDE_ON_CLOSE
-                ctx.notify.installTray(UiTheme.palette(DeskTheme.from(ctx.settings.getString("theme", "bliss"))).accent) {
+                ctx.notify.installTray(XpPaint.of(DeskTheme.from(ctx.settings.getString("theme", "bliss"))).select) {
                     frame.isVisible = true
                     frame.toFront()
                 }
@@ -52,11 +56,36 @@ object DesktopMain {
                 frame.defaultCloseOperation = javax.swing.JFrame.EXIT_ON_CLOSE
             }
             ctx.notify.quit = {
+                ctx.notify.removeTray()
                 ctx.player.release()
                 ctx.db.close()
                 kotlin.system.exitProcess(0)
             }
-            frame.defaultCloseOperation = javax.swing.JFrame.HIDE_ON_CLOSE
+            Runtime.getRuntime().addShutdownHook(Thread {
+                runCatching { ctx.notify.removeTray() }
+                runCatching { ctx.player.release() }
+                runCatching { ctx.db.close() }
+            })
+        }
+    }
+
+    /** One GUI at a time: a second launch exits instead of adding a second tray icon. */
+    private var lockChannel: java.nio.channels.FileChannel? = null
+
+    fun singleInstance(): Boolean {
+        return try {
+            val lock = File(System.getProperty("user.home"), ".config/blissplayer/app.lock")
+            lock.parentFile?.mkdirs()
+            val ch = java.io.FileOutputStream(lock, true).channel
+            if (ch.tryLock() == null) {
+                ch.close()
+                false
+            } else {
+                lockChannel = ch
+                true
+            }
+        } catch (e: Exception) {
+            false
         }
     }
 

@@ -31,6 +31,9 @@ class DesktopSettings : SettingsStore {
     override fun getFloat(key: String, default: Float): Float =
         props.getProperty(key)?.toFloatOrNull() ?: default
     override fun putFloat(key: String, value: Float) { props.setProperty(key, value.toString()); save() }
+
+    /** All stored keys (for preset listing). */
+    fun keys(): Set<String> = props.stringPropertyNames()
 }
 
 class DesktopPaths(musicRoot: File?) : AppPaths {

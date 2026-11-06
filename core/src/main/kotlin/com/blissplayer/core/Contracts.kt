@@ -157,4 +157,14 @@ object PlaybackRules {
         }
         return pos
     }
+
+    /** Previous-button rule, identical on both platforms. */
+    enum class PrevAction { RESTART, PREVIOUS }
+
+    /**
+     * More than 3 seconds in (or already on the first song): restart the song.
+     * Otherwise go to the previous one. First song always restarts.
+     */
+    fun prevAction(positionMs: Long, index: Int): PrevAction =
+        if (positionMs > 3000 || index <= 0) PrevAction.RESTART else PrevAction.PREVIOUS
 }

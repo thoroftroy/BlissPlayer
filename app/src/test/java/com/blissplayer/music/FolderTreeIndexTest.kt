@@ -2,6 +2,7 @@ package com.blissplayer.music
 
 import com.blissplayer.music.model.FolderTreeIndex
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class FolderTreeIndexTest {
@@ -32,5 +33,24 @@ class FolderTreeIndexTest {
                 assertEquals(songs.count { it == path || it.startsWith("$path/") }, index.songCounts[path] ?: 0)
             }
         }
+    }
+
+    @Test fun scalesLinearlyToHundredThousandPaths() {
+        // The old More-pane code compared every path with every other path
+        // (quadratic); this index walks each path once. 100k paths must finish
+        // in seconds, not minutes — the number is printed for TESTING.md.
+        val random = java.util.Random(7)
+        val paths = mutableSetOf<String>()
+        while (paths.size < 100_000) {
+            val depth = 1 + random.nextInt(5)
+            paths.add((0 until depth).joinToString("", prefix = "") { "/d${random.nextInt(40)}" })
+        }
+        val songs = List(200_000) { "/d0/song$it.mp3" }
+        val t0 = System.nanoTime()
+        val index = FolderTreeIndex.build(paths, songs)
+        val ms = (System.nanoTime() - t0) / 1_000_000
+        println("FolderTreeIndex 100k paths + 200k songs: ${ms}ms, roots=${index.children[null]?.size}")
+        assertTrue("100k paths took ${ms}ms (should be seconds)", ms < 30_000)
+        assertEquals(paths.size, index.children.values.sumOf { it.size })
     }
 }

@@ -12,29 +12,12 @@ import android.database.sqlite.SQLiteOpenHelper
  *  playlists(id, name) + playlist_songs(playlist_id, media_id, position)
  *  boost(device_name PRIMARY KEY, gain_mult)  , per-device amp memory (car vs headphones)
  */
-class BlissDb(context: Context) : SQLiteOpenHelper(context, "bliss.db", null, 14) {
+class BlissDb(context: Context) : SQLiteOpenHelper(context, "bliss.db", null, com.blissplayer.core.DbSchema.VERSION) {
 
     override fun onCreate(db: SQLiteDatabase) {
-        db.execSQL("CREATE TABLE gains(media_id INTEGER PRIMARY KEY, gain_mult REAL NOT NULL)")
-        db.execSQL("CREATE TABLE playlists(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, position INTEGER NOT NULL DEFAULT 0)")
-        db.execSQL("CREATE TABLE playlist_songs(playlist_id INTEGER NOT NULL, media_id INTEGER NOT NULL, position INTEGER NOT NULL)")
-        db.execSQL("CREATE INDEX idx_ps ON playlist_songs(playlist_id, position)")
-        db.execSQL("CREATE TABLE boost(device_name TEXT PRIMARY KEY, gain_mult REAL NOT NULL)")
-        db.execSQL("CREATE TABLE plays(media_id INTEGER PRIMARY KEY, count INTEGER NOT NULL)")
-        db.execSQL("CREATE TABLE measure(media_id INTEGER PRIMARY KEY, rms REAL NOT NULL, modified INTEGER NOT NULL)")
-        db.execSQL("CREATE TABLE preset(name TEXT PRIMARY KEY, gain_mult REAL NOT NULL)")
-        db.execSQL("CREATE TABLE plays_total(media_id INTEGER PRIMARY KEY, count INTEGER NOT NULL)")
-        db.execSQL("CREATE TABLE segments(id INTEGER PRIMARY KEY AUTOINCREMENT, media_id INTEGER NOT NULL, start_ms INTEGER NOT NULL, end_ms INTEGER NOT NULL, label TEXT NOT NULL DEFAULT '')")
-        db.execSQL("CREATE INDEX idx_seg ON segments(media_id)")
-        db.execSQL("CREATE TABLE song_genre(media_id INTEGER PRIMARY KEY, genre TEXT NOT NULL)")
-        db.execSQL("CREATE TABLE song_album(media_id INTEGER PRIMARY KEY, album TEXT NOT NULL)")
-        db.execSQL("CREATE TABLE lookup_cache(key TEXT PRIMARY KEY, title TEXT NOT NULL, artist TEXT NOT NULL, genre TEXT NOT NULL DEFAULT '', album TEXT NOT NULL DEFAULT '', pageid INTEGER NOT NULL DEFAULT 0, hittitle TEXT NOT NULL DEFAULT '', high INTEGER NOT NULL DEFAULT 0, confirmed INTEGER NOT NULL DEFAULT 0, found INTEGER NOT NULL DEFAULT 0)")
-        db.execSQL("CREATE TABLE song_state(media_id INTEGER PRIMARY KEY, fingerprint TEXT NOT NULL DEFAULT '', analyzed INTEGER NOT NULL DEFAULT 0, analyzed_at INTEGER NOT NULL DEFAULT 0, eq INTEGER NOT NULL DEFAULT 0, eq_at INTEGER NOT NULL DEFAULT 0)")
-        db.execSQL("CREATE TABLE favorites(media_id INTEGER PRIMARY KEY)")
-        db.execSQL("CREATE TABLE song_stats(media_id INTEGER PRIMARY KEY, skips INTEGER NOT NULL DEFAULT 0, completions INTEGER NOT NULL DEFAULT 0, listen_ms INTEGER NOT NULL DEFAULT 0, last_played INTEGER NOT NULL DEFAULT 0)")
-        db.execSQL("CREATE TABLE stat_events(media_id INTEGER NOT NULL, kind TEXT NOT NULL, at INTEGER NOT NULL, ms INTEGER NOT NULL DEFAULT 0)")
-        db.execSQL("CREATE INDEX IF NOT EXISTS idx_stat_events ON stat_events(kind, at)")
-        db.execSQL("CREATE TABLE learned_artists(alias_key TEXT PRIMARY KEY, name TEXT NOT NULL)")
+        // Single-sourced schema (core DbSchema): identical statements, identical
+        // version — fresh installs match every other install, upgrades below untouched.
+        com.blissplayer.core.DbSchema.statements.forEach { db.execSQL(it) }
     }
 
     override fun onUpgrade(db: SQLiteDatabase, old: Int, new: Int) {

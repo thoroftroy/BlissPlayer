@@ -543,6 +543,33 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    /** Portable v1 playlist export (shared core format, links by file+metadata). */
+    private var portableExportText: String? = null
+    private var portableExportName: String = "playlist"
+    private val portableExportLauncher = registerForActivityResult(
+        ActivityResultContracts.CreateDocument("application/json")
+    ) { uri ->
+        val json = portableExportText
+        portableExportText = null
+        if (uri != null && json != null) lifecycleScope.launch {
+            try {
+                withContext(Dispatchers.IO) {
+                    checkNotNull(contentResolver.openOutputStream(uri, "wt")).use { it.write(json.toByteArray()) }
+                }
+                toast("Portable playlist saved. It opens on Linux too.")
+            } catch (e: Exception) {
+                if (e is kotlinx.coroutines.CancellationException) throw e
+                toast("Could not export playlist: ${e.message}")
+            }
+        }
+    }
+
+    private val portableImportLauncher = registerForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) importPortablePlaylist(uri)
+    }
+
     /** Pick which stat cards show. Toggles apply instantly. */
     private fun visibleStatsDialog() {
         val box = LinearLayout(this).apply {
@@ -592,6 +619,80 @@ class MainActivity : AppCompatActivity() {
             statsExportText = json
             runCatching { statsExportLauncher.launch("BlissPlayer-stats.json") }
                 .onFailure { toast("No file picker is available. Nothing was saved.") }
+        }
+    }
+
+    /** Path relative to shared storage, so the file re-links on Linux. */
+    private fun portableRel(path: String?): String {
+        val p = path ?: return ""
+        for (root in listOf("/storage/emulated/0/", "/sdcard/")) {
+            if (p.startsWith(root)) return p.removePrefix(root)
+        }
+        return p.substringAfterLast('/')
+    }
+
+    private fun portableEntry(s: Song): com.blissplayer.core.PlaylistPortable.Entry =
+        com.blissplayer.core.PlaylistPortable.Entry(
+            portableRel(s.filePath), (s.filePath ?: "").substringAfterLast('/'),
+            s.title, s.artist, effAlbum(s), s.durationMs, s.contentUri)
+
+    /** Portable v1 export: same file the Linux app reads and writes. */
+    private fun exportPortablePlaylist() {
+        val pls = db.playlists()
+        if (pls.isEmpty()) { toast("No playlists to export."); return }
+        xpMenuDialog("Export portable", pls.map { it.second }) { which ->
+            val (id, name) = pls[which]
+            val entries = db.songsIn(id).mapNotNull { byId[it] }.map(::portableEntry)
+            val favIds = if (prefs.getBoolean("share_favorites", true)) favoriteIds else emptySet()
+            val favs = favIds.mapNotNull { byId[it] }.map(::portableEntry)
+            portableExportText = com.blissplayer.core.PlaylistPortable.export(name, entries, favs)
+            portableExportName = name
+            runCatching { portableExportLauncher.launch("${name.replace('/', '_')}.bliss.json") }
+                .onFailure { toast("No file picker is available. Nothing was saved.") }
+        }
+    }
+
+    private fun importPortablePlaylist(uri: Uri) {
+        lifecycleScope.launch {
+            val text = withContext(Dispatchers.IO) {
+                runCatching { contentResolver.openInputStream(uri)?.bufferedReader()?.readText() }.getOrNull()
+            }
+            val parsed = text?.let { com.blissplayer.core.PlaylistPortable.parse(it) }
+            if (parsed == null) { toast("Not a BlissPlayer v1 playlist."); return@launch }
+            val lib = songs.map { s ->
+                com.blissplayer.core.PlaylistPortable.LibTrack(
+                    portableRel(s.filePath), (s.filePath ?: "").substringAfterLast('/'),
+                    s.title, s.artist, effAlbum(s), s.durationMs) to s.mediaId
+            }
+            val relinked = com.blissplayer.core.PlaylistPortable
+                .relink<Pair<com.blissplayer.core.PlaylistPortable.LibTrack, Long>>(parsed.entries, lib) { it.first }
+            val pid = db.createPlaylist(parsed.name)
+            if (relinked.found.isNotEmpty()) db.addToPlaylist(pid, relinked.found.map { it.second.second })
+            syncPlaylists()
+            render()
+            val base = "Imported ${parsed.name}: ${relinked.found.size} linked, " +
+                "${relinked.missing.size} kept in the file but not on this phone."
+            if (parsed.favorites.isEmpty()) { toast(base); return@launch }
+            xpMenuDialog("Favorites in file: merge, replace, or ignore?", listOf("Merge", "Replace", "Ignore")) { which ->
+                lifecycleScope.launch(Dispatchers.IO) {
+                    val favRelinked = com.blissplayer.core.PlaylistPortable
+                        .relink<Pair<com.blissplayer.core.PlaylistPortable.LibTrack, Long>>(parsed.favorites, lib) { it.first }
+                    val ids = favRelinked.found.map { it.second.second }
+                    if (which == 1) {
+                        favoriteIds.forEach { runCatching { db.setFavorite(it, false) } }
+                    }
+                    if (which != 2) ids.forEach { runCatching { db.setFavorite(it, true) } }
+                    val f = runCatching { db.favoriteIds() }.getOrDefault(favoriteIds)
+                    launch(Dispatchers.Main) {
+                        favoriteIds = f
+                        adapter.favoriteIds = f
+                        adapter.notifyDataSetChanged()
+                        syncPlaylists()
+                        render()
+                        toast("$base Favorites: ${listOf("merged", "replaced", "ignored")[which]} (${ids.size} linked).")
+                    }
+                }
+            }
         }
     }
 
@@ -2050,24 +2151,8 @@ class MainActivity : AppCompatActivity() {
         prefs.getString("sort_songs", "AZ") ?: "AZ"
 
     /** Sort songs for display and contextual play. Albums use metadata, never folders. */
-    private fun applySort(list: List<Song>, key: String): List<Song> {
-        return when (key) {
-            "ZA" -> list.sortedByDescending { it.sortTitle }
-            "Artist" -> list.sortedWith(compareBy({ SongNames.sortKey(it.artist) }, { SongNames.sortKey(it.album) }, { it.sortTitle }))
-            "Album" -> list.sortedWith(compareBy({ SongNames.sortKey(it.album) }, { it.sortTitle }))
-            "Longest" -> list.sortedByDescending { it.durationMs }
-            "Shortest" -> list.sortedBy { it.durationMs }
-            "MostPlayed" -> {
-                val t = cachedTotals
-                list.sortedByDescending { t[it.mediaId] ?: 0 }
-            }
-            "LeastPlayed" -> {
-                val t = cachedTotals
-                list.sortedBy { t[it.mediaId] ?: 0 }
-            }
-            else -> list.sortedBy { it.sortTitle }
-        }
-    }
+    private fun applySort(list: List<Song>, key: String): List<Song> =
+        com.blissplayer.core.LibraryQueries.sortSongs(list, key, cachedTotals)
 
     private fun sortDialog() {
         val options = listOf("A to Z", "Z to A", "By artist", "By album", "Most played", "Least played", "Longest", "Shortest")
@@ -2321,8 +2406,9 @@ class MainActivity : AppCompatActivity() {
             playQueue(listOf(song), 0)
             return
         }
-        val at = (p.currentMediaItemIndex + 1).coerceIn(0, queue.size)
-        queue.add(at, song)
+        val (q, at) = com.blissplayer.core.QueueOps.insertNext(queue, p.currentMediaItemIndex, song)
+        queue.clear()
+        queue.addAll(q)
         p.addMediaItem(at, toItem(song))
         refreshQueueList()
     }
@@ -2334,7 +2420,8 @@ class MainActivity : AppCompatActivity() {
             playQueue(listOf(song), 0)
             return
         }
-        queue.add(song)
+        queue.clear()
+        queue.addAll(com.blissplayer.core.QueueOps.append(queue, song))
         p.addMediaItem(toItem(song))
         refreshQueueList()
     }
@@ -2375,11 +2462,10 @@ class MainActivity : AppCompatActivity() {
         val p = svc?.player ?: return
         ensureQueueSync()
         // More than 3 seconds in: restart the song. Less: go to previous.
-        // First song in the queue always restarts.
-        if (p.currentPosition > 3000 || p.currentMediaItemIndex <= 0) {
-            p.seekTo(0)
-        } else {
-            p.seekToPreviousMediaItem()
+        // First song in the queue always restarts. (Shared rule, both platforms.)
+        when (com.blissplayer.core.PlaybackRules.prevAction(p.currentPosition, p.currentMediaItemIndex)) {
+            com.blissplayer.core.PlaybackRules.PrevAction.RESTART -> p.seekTo(0)
+            com.blissplayer.core.PlaybackRules.PrevAction.PREVIOUS -> p.seekToPreviousMediaItem()
         }
     }
 
@@ -4411,6 +4497,28 @@ class MainActivity : AppCompatActivity() {
                 com.blissplayer.music.data.PlaylistJson.exportAll(this@MainActivity, db)
                 toast("Playlists saved.")
             }
+        })
+        moreBox.addView(xpBtn("Export portable playlist").apply {
+            setOnClickListener { exportPortablePlaylist() }
+        })
+        moreBox.addView(xpBtn("Import portable playlist").apply {
+            setOnClickListener {
+                runCatching { portableImportLauncher.launch(arrayOf("application/json")) }
+                    .onFailure { toast("No file picker is available.") }
+            }
+        })
+        moreBox.addView(xpBtn("Share favorites: ${if (prefs.getBoolean("share_favorites", true)) "On" else "Off"}").apply {
+            setOnClickListener {
+                val now = !prefs.getBoolean("share_favorites", true)
+                prefs.edit().putBoolean("share_favorites", now).apply()
+                buildMorePane()
+                toast(if (now) "Favorites are included in portable exports."
+                    else "Favorites stay on this phone.")
+            }
+        })
+        moreBox.addView(TextView(this).apply {
+            text = "Portable v1 JSON links songs by file and metadata, never by device-only ids — the same file opens on Linux. Missing songs are kept in the file, never silently dropped."
+            textSize = 12f
         })
 
         moreBox.addView(section("Look and feel"))

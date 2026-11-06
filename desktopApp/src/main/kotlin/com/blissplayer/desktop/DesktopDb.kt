@@ -17,26 +17,12 @@ class DesktopDb(path: String) {
         Class.forName("org.sqlite.JDBC")
         conn = DriverManager.getConnection("jdbc:sqlite:$path")
         conn.autoCommit = true
-        exec("CREATE TABLE IF NOT EXISTS gains(media_id INTEGER PRIMARY KEY, gain_mult REAL NOT NULL)")
-        exec("CREATE TABLE IF NOT EXISTS playlists(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, position INTEGER NOT NULL DEFAULT 0)")
-        exec("CREATE TABLE IF NOT EXISTS playlist_songs(playlist_id INTEGER NOT NULL, media_id INTEGER NOT NULL, position INTEGER NOT NULL)")
-        exec("CREATE INDEX IF NOT EXISTS idx_ps ON playlist_songs(playlist_id, position)")
-        exec("CREATE TABLE IF NOT EXISTS boost(device_name TEXT PRIMARY KEY, gain_mult REAL NOT NULL)")
-        exec("CREATE TABLE IF NOT EXISTS plays(media_id INTEGER PRIMARY KEY, count INTEGER NOT NULL)")
-        exec("CREATE TABLE IF NOT EXISTS measure(media_id INTEGER PRIMARY KEY, rms REAL NOT NULL, modified INTEGER NOT NULL)")
-        exec("CREATE TABLE IF NOT EXISTS preset(name TEXT PRIMARY KEY, gain_mult REAL NOT NULL)")
-        exec("CREATE TABLE IF NOT EXISTS plays_total(media_id INTEGER PRIMARY KEY, count INTEGER NOT NULL)")
-        exec("CREATE TABLE IF NOT EXISTS segments(id INTEGER PRIMARY KEY AUTOINCREMENT, media_id INTEGER NOT NULL, start_ms INTEGER NOT NULL, end_ms INTEGER NOT NULL, label TEXT NOT NULL DEFAULT '')")
-        exec("CREATE INDEX IF NOT EXISTS idx_seg ON segments(media_id)")
-        exec("CREATE TABLE IF NOT EXISTS song_genre(media_id INTEGER PRIMARY KEY, genre TEXT NOT NULL)")
-        exec("CREATE TABLE IF NOT EXISTS song_album(media_id INTEGER PRIMARY KEY, album TEXT NOT NULL)")
-        exec("CREATE TABLE IF NOT EXISTS lookup_cache(key TEXT PRIMARY KEY, title TEXT NOT NULL, artist TEXT NOT NULL, genre TEXT NOT NULL DEFAULT '', album TEXT NOT NULL DEFAULT '', pageid INTEGER NOT NULL DEFAULT 0, hittitle TEXT NOT NULL DEFAULT '', high INTEGER NOT NULL DEFAULT 0, confirmed INTEGER NOT NULL DEFAULT 0, found INTEGER NOT NULL DEFAULT 0)")
-        exec("CREATE TABLE IF NOT EXISTS song_state(media_id INTEGER PRIMARY KEY, fingerprint TEXT NOT NULL DEFAULT '', analyzed INTEGER NOT NULL DEFAULT 0, analyzed_at INTEGER NOT NULL DEFAULT 0, eq INTEGER NOT NULL DEFAULT 0, eq_at INTEGER NOT NULL DEFAULT 0)")
-        exec("CREATE TABLE IF NOT EXISTS favorites(media_id INTEGER PRIMARY KEY)")
-        exec("CREATE TABLE IF NOT EXISTS song_stats(media_id INTEGER PRIMARY KEY, skips INTEGER NOT NULL DEFAULT 0, completions INTEGER NOT NULL DEFAULT 0, listen_ms INTEGER NOT NULL DEFAULT 0, last_played INTEGER NOT NULL DEFAULT 0)")
-        exec("CREATE TABLE IF NOT EXISTS stat_events(media_id INTEGER NOT NULL, kind TEXT NOT NULL, at INTEGER NOT NULL, ms INTEGER NOT NULL DEFAULT 0)")
-        exec("CREATE INDEX IF NOT EXISTS idx_stat_events ON stat_events(kind, at)")
-        exec("CREATE TABLE IF NOT EXISTS learned_artists(alias_key TEXT PRIMARY KEY, name TEXT NOT NULL)")
+        // Same single-sourced schema as Android (core DbSchema), idempotent
+        // so existing desktop databases open unchanged.
+        com.blissplayer.core.DbSchema.statements.forEach {
+            exec(it.replace("CREATE TABLE ", "CREATE TABLE IF NOT EXISTS ")
+                .replace("CREATE INDEX ", "CREATE INDEX IF NOT EXISTS "))
+        }
     }
 
     @Synchronized fun close() = runCatching { conn.close() }.let { }
@@ -121,6 +107,18 @@ class DesktopDb(path: String) {
     @Synchronized fun removePlaylist(pid: Long) {
         conn.prepareStatement("DELETE FROM playlist_songs WHERE playlist_id=?").use { it.setLong(1, pid); it.executeUpdate() }
         conn.prepareStatement("DELETE FROM playlists WHERE id=?").use { it.setLong(1, pid); it.executeUpdate() }
+    }
+
+    @Synchronized fun renamePlaylist(pid: Long, name: String) {
+        conn.prepareStatement("UPDATE playlists SET name=? WHERE id=?").use {
+            it.setString(1, name); it.setLong(2, pid); it.executeUpdate()
+        }
+    }
+
+    @Synchronized fun removeFromPlaylist(pid: Long, mediaId: Long) {
+        conn.prepareStatement("DELETE FROM playlist_songs WHERE playlist_id=? AND media_id=?").use {
+            it.setLong(1, pid); it.setLong(2, mediaId); it.executeUpdate()
+        }
     }
 
     // ---- favorites / genre / album ----
@@ -268,6 +266,49 @@ class DesktopDb(path: String) {
             it.executeQuery().use { rs -> while (rs.next()) out.add(rs.getLong(1) to rs.getLong(2)) }
         }
         return out
+    }
+
+    data class Seg(val id: Long, val mediaId: Long, val startMs: Long, val endMs: Long, val label: String)
+
+    @Synchronized fun segmentsFull(id: Long): List<Seg> {
+        val out = mutableListOf<Seg>()
+        conn.prepareStatement("SELECT id, start_ms, end_ms, label FROM segments WHERE media_id=? ORDER BY start_ms").use {
+            it.setLong(1, id)
+            it.executeQuery().use { rs ->
+                while (rs.next()) out.add(Seg(rs.getLong(1), id, rs.getLong(2), rs.getLong(3), rs.getString(4) ?: ""))
+            }
+        }
+        return out
+    }
+
+    @Synchronized fun addSegment(mediaId: Long, startMs: Long, endMs: Long, label: String): Long {
+        conn.prepareStatement("INSERT INTO segments(media_id, start_ms, end_ms, label) VALUES(?,?,?,?)").use {
+            it.setLong(1, mediaId); it.setLong(2, startMs); it.setLong(3, endMs); it.setString(4, label)
+            it.executeUpdate()
+        }
+        conn.createStatement().use { s ->
+            s.executeQuery("SELECT last_insert_rowid()").use { rs -> if (rs.next()) return rs.getLong(1) }
+        }
+        return -1
+    }
+
+    @Synchronized fun deleteSegment(id: Long) {
+        conn.prepareStatement("DELETE FROM segments WHERE id=?").use { it.setLong(1, id); it.executeUpdate() }
+    }
+
+    /** Forget a deleted file everywhere: playlists, favorites, tags, stats, gains. */
+    @Synchronized fun deleteSongEverywhere(id: Long) {
+        for (t in listOf("gains", "measure", "favorites", "song_genre", "song_album",
+            "song_state", "plays", "plays_total", "song_stats")) {
+            conn.prepareStatement("DELETE FROM $t WHERE media_id=?").use {
+                it.setLong(1, id); it.executeUpdate()
+            }
+        }
+        for (t in listOf("playlist_songs", "segments", "stat_events")) {
+            conn.prepareStatement("DELETE FROM $t WHERE media_id=?").use {
+                it.setLong(1, id); it.executeUpdate()
+            }
+        }
     }
 
     /**

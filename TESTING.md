@@ -231,7 +231,7 @@ FFmpeg/AAC, not a user music file. Test reports are in `app/build/reports/`.
   LoudnessMath (LoudnessScanner delegates), PlaylistPortable v1, platform
   contracts (PlayerEngine/LibraryAccess/TagGateway/AudioFx/NotificationGateway/
   SettingsStore/AppPaths/PlaybackSession/PlaybackRules).
-- `:core:test` 12/12 green; `:app:testDebugUnitTest` 98 pass (6 network-gated
+- `:core:test` 22/22 green; `:app:testDebugUnitTest` 99 pass (6 network-gated
   skipped) against the delegates — extraction is behavior-preserving.
 - `:desktopApp` (Swing, JVM 17): filesystem scan (same exts/sys-dirs rules),
   sqlite-jdbc DB on the identical schema, jaudiotagger tags, VLC `cvlc --intf rc`
@@ -243,13 +243,24 @@ FFmpeg/AAC, not a user music file. Test reports are in `app/build/reports/`.
   (1177 files — the same corpus as the Android bulk runs): scan 1177/1177,
   tag read, playlist v1 round-trip + keep-missing + fuzzy relink
   (Truck Drivin Song.m4a), loudness rms 0.329, real VLC play (pos 1000ms),
-  seek to 30s, pause holds. The same smoke on a 2-file fixture first found +
-  fixed a real bug: quoted paths were passed to VLC rc verbatim (rest-of-line
-  protocol), so nothing played; unquoted + state-aware play/pause fixed it.
-- `:desktopApp:test` 2/2 green (playlist/favorites/organize id migration;
-  scan skips system sounds + organize end-to-end on generated AAC fixtures).
-- `BlissPlayer-linux-v0.11.14.tar.gz` (18 MB) + `BlissPlayer-x86_64.AppImage`
-  (~19.6 MB) built via `./build-linux.sh` + appimagetool; both committed.
+  seek to 30s, pause holds.
+- Faithful-look cut: the desktop repaints the Android materials in Java2D
+  from the same specs and loads the same bundled TTFs (Bliss PT Sans,
+  Aqua, Super) and PNGs (stars, brand icons, launcher icons, seg tile) at
+  build time, so fonts and art are identical files on both platforms.
+  `XpPaintTest` (10 headless pixel tests) proves Luna/night/silver/purple
+  title bars, bevels, selected-row blue + focus frame, LCD deck, seg-tile
+  fill, scrolling rainbow and per-section hues. Same tabs, same More
+  sections in the same order with the same hues, same dialogs/menus
+  (segments editor, playlist picker, sort, filter, queue reorder, stats).
+- `:desktopApp:test` 13/13 green (paint, DB migrate/organize, scan/organize, single-instance lock).
+- Shared schema: `core.DbSchema` (v14, 17 tables + 3 indexes) is the single source both drivers execute — Android `BlissDb.onCreate` and desktop sqlite-jdbc run the identical statements; upgrades untouched so existing users keep their data. `DbSchemaTest` pins it.
+- Shared queries: `core.LibraryQueries` (sort orders verbatim, contains-narrow, canonical group keys) with tests; both apps delegate to it. `cleanLocal` does 1177 real YMusic filenames in 94ms (12.5k/s); the folder index builds 100k paths + 200k songs in 165ms (was quadratic before).
+- Android adapters (`music.platform.*`): PlayerEngine/LibraryAccess/TagGateway/AudioFx/NotificationGateway/SettingsStore/AppPaths/PlaybackSession thinly wrap the existing Media3/MediaStore/TagTools/ToneControl/service paths — zero behavior change, swapping in a second impl is now mechanical. dB/millibel unit mapping verified by reading ToneControl.
+- Android portable playlists: More → Export/Import portable (SAF, v1 JSON, same core code as Linux), favorites merge/replace/ignore, share-favorites toggle, missing kept in the file and reported.
+- Tray: single-instance lock (second launch exits instead of a second icon), right-click menu (Show/Play-Pause/Next/Previous/Quit), Quit tears down tray + player + DB, shutdown hook on kill.
+- `BlissPlayer-linux-v0.11.22.tar.gz` (20 MB) + `BlissPlayer-x86_64.AppImage`
+  (~20 MB) built via `./build-linux.sh` + appimagetool; both committed.
 - NOT verified: desktop UI visually (no Xvfb on this box — launch manually);
   real-car Bluetooth/aux, long handset playback, acoustic safety (unchanged
   standing gaps); full 1177-file desktop scan timing.

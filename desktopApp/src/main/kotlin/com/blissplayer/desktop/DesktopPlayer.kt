@@ -170,9 +170,14 @@ class DesktopPlayer(private val dummyAudio: Boolean = false) : PlayerEngine {
 
     override fun prev() {
         if (queue.isEmpty()) return
-        if (positionMs > 3000) { seekTo(0); return }
-        goto(if (index - 1 >= 0) index - 1 else queue.size - 1)
-        if (playing) cmd("play")
+        // Same previous-button rule as Android (shared PlaybackRules).
+        when (com.blissplayer.core.PlaybackRules.prevAction(positionMs, index)) {
+            com.blissplayer.core.PlaybackRules.PrevAction.RESTART -> seekTo(0)
+            com.blissplayer.core.PlaybackRules.PrevAction.PREVIOUS -> {
+                goto(if (index - 1 >= 0) index - 1 else queue.size - 1)
+                if (playing) cmd("play")
+            }
+        }
         onState()
     }
 

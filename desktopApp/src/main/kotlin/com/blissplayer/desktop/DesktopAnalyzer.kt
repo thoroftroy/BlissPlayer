@@ -180,4 +180,7 @@ data class SongRow(
     val durationMs: Long,
     val sizeBytes: Long,
     val modified: Long
-)
+) {
+    fun toCore() = com.blissplayer.music.model.Song(
+        mediaId, path, path, title, artist, album, durationMs, sizeBytes, null, modified)
+}

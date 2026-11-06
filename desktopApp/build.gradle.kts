@@ -48,11 +48,29 @@ val writeVersion = tasks.register("writeVersion") {
     }
 }
 
-sourceSets.main {
-    resources.srcDir(layout.buildDirectory.dir("generated/resources"))
+// Copy the Android res art + fonts verbatim (same files, both platforms).
+val syncArt = tasks.register<Copy>("syncArt") {
+    val res = rootProject.file("app/src/main/res")
+    from(res.resolve("font/aqua_sans.ttf"))
+    from(res.resolve("font/ptsans_400.ttf"))
+    from(res.resolve("font/ptsans_700.ttf"))
+    from(res.resolve("font/super_sans.ttf"))
+    from(res.resolve("drawable/aqua_brand.png"))
+    from(res.resolve("drawable/super_brand.png"))
+    from(res.resolve("drawable-nodpi")) {
+        include("fav_star_filled.png", "fav_star_outline.png", "fav_star_outline_lt.png",
+            "xp_seg_tile.png", "ic_launch_bliss.png", "ic_launch_dark.png",
+            "ic_launch_aqua.png", "ic_launch_super.png", "notif_bg_full.png", "notif_star_w.png")
+    }
+    into(layout.buildDirectory.dir("generated/art"))
 }
 
-tasks.named("processResources") { dependsOn(writeVersion) }
+sourceSets.main {
+    resources.srcDir(layout.buildDirectory.dir("generated/resources"))
+    resources.srcDir(layout.buildDirectory.dir("generated/art"))
+}
+
+tasks.named("processResources") { dependsOn(writeVersion, syncArt) }
 
 // One distributable jar (unsigned deps merged; signatures stripped).
 val fatJar = tasks.register<Jar>("fatJar") {
