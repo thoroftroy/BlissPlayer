@@ -63,7 +63,7 @@ class DesktopNotify : NotificationGateway {
 
     override fun progress(title: String, done: Int, total: Int, stopAction: (() -> Unit)?) {
         // Progress lives in the app window (EDT-safe callers); tray tooltip mirrors it.
-        tray?.toolTip = if (total > 0) "$title — $done/$total" else title
+        tray?.toolTip = if (total > 0) "$title | $done/$total" else title
     }
 
     override fun done(title: String, message: String) {
@@ -72,7 +72,7 @@ class DesktopNotify : NotificationGateway {
     }
 
     override fun nowPlaying(state: NowPlaying) {
-        tray?.toolTip = state.item?.let { "${it.title} — ${it.artist}" } ?: "BlissPlayer"
+        tray?.toolTip = state.item?.let { "${it.title} | ${it.artist}" } ?: "BlissPlayer"
     }
 
     fun notify(title: String, message: String) {

@@ -4,6 +4,8 @@
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:orientation="vertical"
+    android:clipChildren="true"
+    android:clipToPadding="true"
     android:paddingLeft="8dp"
     android:paddingRight="8dp">
 
@@ -49,6 +51,10 @@
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_marginTop="6dp"
+        android:background="@drawable/xp_panel"
+        android:elevation="4dp"
+        android:clipChildren="true"
+        android:clipToPadding="true"
         android:orientation="horizontal">
 
         <Button android:id="@+id/tabSongs" android:layout_width="0dp" android:layout_height="wrap_content"
@@ -106,6 +112,10 @@
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_marginTop="6dp"
+        android:background="@drawable/xp_panel"
+        android:elevation="4dp"
+        android:clipChildren="true"
+        android:clipToPadding="true"
         android:orientation="horizontal">
 
         <Button android:id="@+id/btnPlayAll" android:layout_width="0dp" android:layout_height="wrap_content"
@@ -158,6 +168,9 @@
         android:layout_width="match_parent"
         android:layout_height="0dp"
         android:layout_weight="1"
+        android:clipChildren="true"
+        android:clipToPadding="true"
+        android:elevation="0dp"
         android:layout_marginTop="4dp" />
 
     <ScrollView
@@ -166,6 +179,10 @@
         android:layout_height="0dp"
         android:layout_weight="1"
         android:visibility="gone"
+        android:clipChildren="true"
+        android:clipToPadding="true"
+        android:elevation="0dp"
+        android:fillViewport="true"
         android:layout_marginTop="4dp">
         <LinearLayout
             android:id="@+id/moreBox"

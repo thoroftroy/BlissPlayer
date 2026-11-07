@@ -1070,6 +1070,17 @@ class MainActivity : AppCompatActivity() {
                     syncPlaylists()
                     return true
                 }
+                // Inside an album drill: drag changes track order. Persisted
+                // per album so numbers follow the new order next launch.
+                if (drillAlbum != null) {
+                    java.util.Collections.swap(rows, a, b)
+                    adapter.submit(rows)
+                    val key = drillAlbum ?: return true
+                    val ids = rows.mapNotNull { (it as? Row.SongRow)?.song?.mediaId }
+                    prefs.edit().putString("album_order_$key", ids.joinToString(",")).apply()
+                    toast("Track order saved.")
+                    return true
+                }
                 return false
             }
 
@@ -1364,6 +1375,13 @@ class MainActivity : AppCompatActivity() {
                     if (kind == "analyzer") {
                         s.takeProposals()?.let { pending ->
                             if (pending.isNotEmpty()) showProposals(pending)
+                        }
+                        if (prefs.getBoolean("trim_silence", true)) {
+                            s.startSilenceTrim(songs)
+                        }
+                    } else if (kind == "dupes") {
+                        s.takeDupes()?.let { (pairs, clashes) ->
+                            showDupeResults(pairs, clashes)
                         }
                     } else {
                         refreshCountCache()
@@ -1935,10 +1953,16 @@ class MainActivity : AppCompatActivity() {
                 // Albums come from tags and overrides, never from folder names.
                 // Same key as grouping, so the drill can never be empty.
                 val a = drillAlbum!!
-                val inA = songs.filter {
+                val base = songs.filter {
                     com.blissplayer.music.data.SongAnalyzer.albumKey(displayAlbum(it)) == a
                 }.sortedBy { it.sortTitle }
-                crumb.text = "$a (${inA.size}) | tap here to go back"
+                // Custom drag order wins when present. Unknown ids stay at end.
+                val saved = prefs.getString("album_order_$a", null)
+                    ?.split(',')?.mapNotNull { it.toLongOrNull() }?.filter { id -> base.any { it.mediaId == id } }
+                val inA = if (saved.isNullOrEmpty()) base
+                else saved.mapNotNull { id -> base.firstOrNull { it.mediaId == id } } +
+                    base.filter { s -> s.mediaId !in saved.toSet() }
+                crumb.text = "$a (${inA.size}) | drag to reorder tracks, tap here to go back"
                 adapter.numbered = true
                 adapter.submit(inA.map { Row.SongRow(it) })
             }
@@ -3292,7 +3316,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun playlistSongsDialog(id: Long, name: String) {
-        val list = db.songsIn(id).mapNotNull { byId[it] }
+        var list = db.songsIn(id).mapNotNull { byId[it] }
         if (list.isEmpty()) {
             toast(if (name == "Favorites") "Favorites is empty. Tap a star to add songs."
             else "Playlist is empty. Its songs may have moved.")
@@ -3302,21 +3326,50 @@ class MainActivity : AppCompatActivity() {
             layoutManager = LinearLayoutManager(this@MainActivity)
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, dp(320))
+            clipChildren = true
+            clipToPadding = true
+            elevation = 0f
         }
-        lv.adapter = stampFav(LibraryAdapter(dark = dark, numbered = true,
+        val rows = list.map { Row.SongRow(it) }.toMutableList()
+        val adapter = stampFav(LibraryAdapter(dark = dark, numbered = true,
             favoriteIds = favoriteIds,
             onFav = ::toggleFavorite,
             onTap = { row ->
                 if (row is Row.SongRow) {
-                    val idx = list.indexOfFirst { it.mediaId == row.song.mediaId }.coerceAtLeast(0)
-                    playQueue(list, idx)
+                    val cur = rows.mapNotNull { (it as? Row.SongRow)?.song }
+                    val idx = cur.indexOfFirst { it.mediaId == row.song.mediaId }.coerceAtLeast(0)
+                    playQueue(cur, idx)
                 }
             },
             onMenu = { row -> if (row is Row.SongRow) songMenu(row.song) }))
-        (lv.adapter as LibraryAdapter).albumLines = list.associate { it.mediaId to displayAlbum(it) }
-        (lv.adapter as LibraryAdapter).submit(list.map { Row.SongRow(it) })
+        (adapter as LibraryAdapter).albumLines = list.associate { it.mediaId to displayAlbum(it) }
+        adapter.submit(rows.toList())
+        lv.adapter = adapter
+        // Drag to reorder track numbers. Persists to the playlist order.
+        androidx.recyclerview.widget.ItemTouchHelper(object : androidx.recyclerview.widget.ItemTouchHelper.SimpleCallback(
+            androidx.recyclerview.widget.ItemTouchHelper.UP or androidx.recyclerview.widget.ItemTouchHelper.DOWN, 0
+        ) {
+            override fun onMove(
+                rv: RecyclerView,
+                h: RecyclerView.ViewHolder,
+                t: RecyclerView.ViewHolder
+            ): Boolean {
+                val a = h.bindingAdapterPosition
+                val b = t.bindingAdapterPosition
+                if (a !in rows.indices || b !in rows.indices) return false
+                java.util.Collections.swap(rows, a, b)
+                adapter.submit(rows.toList())
+                val ids = rows.mapNotNull { (it as? Row.SongRow)?.song?.mediaId }
+                db.reorderPlaylist(id, ids)
+                list = rows.mapNotNull { (it as? Row.SongRow)?.song }
+                syncPlaylists()
+                return true
+            }
+            override fun onSwiped(h: RecyclerView.ViewHolder, dir: Int) {}
+        }).attachToRecyclerView(lv)
         ThemeDialogBuilder(this)
             .setCustomTitle(xpTitle(name))
+            .setMessage("Drag songs up or down to change track order. Numbers follow the new order.")
             .setView(pad(lv))
             .setPositiveButton("Close", null)
             .setNeutralButton("Add songs") { _, _ -> addSongsDialog(id, name) }
@@ -4316,6 +4369,33 @@ class MainActivity : AppCompatActivity() {
                 override fun onStopTrackingTouch(s: SeekBar?) {}
             })
         })
+        val eqAccuracyLabel = TextView(this).apply { textSize = 13f; setTextColor(iconColor()) }
+        fun eqAccuracyText(v: Int) {
+            eqAccuracyLabel.text = "Equalize accuracy: $v percent. " +
+                com.blissplayer.music.playback.LoudnessScanner.accuracyLabel(v)
+        }
+        moreBox.addView(eqAccuracyLabel)
+        moreBox.addView(SeekBar(this).apply {
+            max = 100
+            val startA = (prefs.getFloat("eq_accuracy", 0.35f) * 100).roundToInt().coerceIn(0, 100)
+            progress = startA
+            eqAccuracyText(startA)
+            progressDrawable = xpProgress()
+            thumb = xpThumb()
+            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(s: SeekBar?, v: Int, fromUser: Boolean) {
+                    if (!fromUser) return
+                    prefs.edit().putFloat("eq_accuracy", v / 100f).apply()
+                    eqAccuracyText(v)
+                }
+                override fun onStartTrackingTouch(s: SeekBar?) {}
+                override fun onStopTrackingTouch(s: SeekBar?) {}
+            })
+        })
+        moreBox.addView(TextView(this).apply {
+            text = "Fast is quickest for huge libraries. Accurate takes longer samples in more spots for tighter matching."
+            textSize = 12f
+        })
         moreBox.addView(TextView(this).apply {
             text = eqStatusIdleText()
             textSize = 12f
@@ -4476,6 +4556,38 @@ class MainActivity : AppCompatActivity() {
                 toast(if (now) "Online lookup on. Slower, but smarter." else "Online lookup off. Names only.")
             }
         })
+        val trimOn = prefs.getBoolean("trim_silence", true)
+        moreBox.addView(xpBtn("Trim silence: ${if (trimOn) "On" else "Off"}").apply {
+            setOnClickListener {
+                val now = !prefs.getBoolean("trim_silence", true)
+                prefs.edit().putBoolean("trim_silence", now).apply()
+                buildMorePane()
+                toast(if (now) "Silence trim on. New silence at song edges will be skipped."
+                    else "Silence trim off.")
+            }
+        })
+        moreBox.addView(TextView(this).apply {
+            text = "When on, the analyzer listens to song starts and ends and adds skip segments for complete silence or near silence. Nothing is rewritten."
+            textSize = 12f
+        })
+        moreBox.addView(xpBtn("Trim silence now").apply {
+            setOnClickListener {
+                val s = svc
+                if (s == null) {
+                    toast("Playback is still starting. Try again in a moment.")
+                    return@setOnClickListener
+                }
+                s.startSilenceTrim(songs)
+                toast("Trimming silence in the background.")
+            }
+        })
+        moreBox.addView(xpBtn("Dupe finder").apply {
+            setOnClickListener { dupeFinderDialog() }
+        })
+        moreBox.addView(TextView(this).apply {
+            text = "Listens and compares recordings. Shows pairs that sound 50 to 100 percent identical so you can delete one, plus same name songs that sound different so you can fix tags."
+            textSize = 12f
+        })
         moreBox.addView(xpBtn("Organize into BlissPlayer folder").apply {
             setOnClickListener { organizeConfirm() }
         })
@@ -4517,7 +4629,7 @@ class MainActivity : AppCompatActivity() {
             }
         })
         moreBox.addView(TextView(this).apply {
-            text = "Portable v1 JSON links songs by file and metadata, never by device-only ids — the same file opens on Linux. Missing songs are kept in the file, never silently dropped."
+            text = "Portable v1 JSON links songs by file and metadata, never by device only ids. The same file opens on Linux. Missing songs are kept in the file, never silently dropped."
             textSize = 12f
         })
 
@@ -4740,7 +4852,7 @@ class MainActivity : AppCompatActivity() {
                 val ms = ev.filter { it.kind == "listen" }.sumOf { it.ms }
                 fun topSong(): String {
                     val counts = ev.filter { it.kind == "play" }.groupingBy { it.mediaId }.eachCount()
-                    val (id, c) = counts.maxByOrNull { it.value } ?: return "—"
+                    val (id, c) = counts.maxByOrNull { it.value } ?: return "None yet"
                     return "${songName(id)} ($c plays)"
                 }
                 fun topArtist(): String {
@@ -4750,7 +4862,7 @@ class MainActivity : AppCompatActivity() {
                         val names = if (song == null) listOf("Unknown artist") else creditNames(song)
                         names.forEach { a -> counts[a] = (counts[a] ?: 0) + 1 }
                     }
-                    val (a, c) = counts.maxByOrNull { it.value } ?: return "—"
+                    val (a, c) = counts.maxByOrNull { it.value } ?: return "None yet"
                     return "$a ($c plays)"
                 }
                 fun topGenre(): String {
@@ -4759,11 +4871,11 @@ class MainActivity : AppCompatActivity() {
                         val g = genreMap[e.mediaId] ?: "Uncategorized"
                         counts[g] = (counts[g] ?: 0) + 1
                     }
-                    val (g, c) = counts.maxByOrNull { it.value } ?: return "—"
+                    val (g, c) = counts.maxByOrNull { it.value } ?: return "None yet"
                     return "$g ($c plays)"
                 }
-                return "$label: $plays plays, $fin finishes, $sk skips, ${span(ms)}.\n" +
-                    "Top song: ${topSong()}\nTop artist: ${topArtist()}\nTop genre: ${topGenre()}"
+                return "$label: $plays plays, $fin finishes, $sk skips, ${span(ms)}.\n\n" +
+                    "Top song\n${topSong()}\n\nTop artist\n${topArtist()}\n\nTop genre\n${topGenre()}"
             }
             val monthTxt = bucket(
                 com.blissplayer.music.model.SongStats.monthStartMs(nowMs),
@@ -4787,10 +4899,12 @@ class MainActivity : AppCompatActivity() {
                 "Most played artist: $topArtistTxt\n" +
                 "Top genre: $topGenreTxt"))
             if (prefs.getBoolean("stats_show_top3", true)) {
-                moreBox.addView(statCard("Top 3",
-                    "Most skipped:\n${top3({ it.skips.toLong() }, { "${it.skips} skip${if (it.skips == 1) "" else "s"}" })}\n" +
-                    "Most completed:\n${top3({ it.completions.toLong() }, { "${it.completions} finishes" })}\n" +
-                    "Longest listened:\n${top3({ it.listenMs }, { span(it.listenMs) })}"))
+                moreBox.addView(statCard("Most skipped",
+                    top3({ it.skips.toLong() }, { "${it.skips} skip${if (it.skips == 1) "" else "s"}" })))
+                moreBox.addView(statCard("Most completed",
+                    top3({ it.completions.toLong() }, { "${it.completions} finishes" })))
+                moreBox.addView(statCard("Longest listened",
+                    top3({ it.listenMs }, { span(it.listenMs) })))
             }
             val monthStart = com.blissplayer.music.model.SongStats.monthStartMs(nowMs)
             if (showMonth) {
@@ -5444,6 +5558,161 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun dupeFinderDialog() {
+        if (songs.isEmpty()) {
+            toast("Scan your music first.")
+            return
+        }
+        val s = svc
+        // Show cached results instantly when a previous run finished.
+        val cached = s?.takeDupes()
+        if (cached != null) {
+            showDupeResults(cached.first, cached.second)
+            return
+        }
+        if (s == null) {
+            toast("Playback is still starting. Try again in a moment.")
+            return
+        }
+        s.startDupeFinder(songs)
+        toast("Listening for duplicates in the background.")
+    }
+
+    private fun showDupeResults(
+        pairs: List<com.blissplayer.music.playback.PlayerService.DupePair>,
+        clashes: List<com.blissplayer.music.playback.PlayerService.NameClash>
+    ) {
+        if (pairs.isEmpty() && clashes.isEmpty()) {
+            toast("No duplicates found. Nothing sounds alike.")
+            return
+        }
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(8), dp(8), dp(8), dp(8))
+        }
+        val sv = ScrollView(this).apply {
+            addView(box)
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(420)
+            )
+        }
+        box.addView(TextView(this).apply {
+            text = "Same recording (${pairs.size})"
+            textSize = 15f
+            xpBold()
+            setTextColor(iconColor())
+        })
+        box.addView(TextView(this).apply {
+            text = "These sound 50 to 100 percent identical. Tick one in each pair to delete it."
+            textSize = 12f
+        })
+        // Visual gap between the two lists so pairs and clashes read as separate groups.
+        val toDelete = mutableSetOf<Long>()
+        if (pairs.isEmpty()) {
+            box.addView(TextView(this).apply {
+                text = "None. No two songs sounded alike."
+                textSize = 12f
+            })
+        } else {
+            pairs.take(100).forEach { p ->
+                box.addView(TextView(this).apply {
+                    text = "${p.score} percent: ${p.a.title} (${p.a.artist}) matches ${p.b.title} (${p.b.artist})"
+                    textSize = 13f
+                    xpBold()
+                    setTextColor(iconColor())
+                    setPadding(0, dp(8), 0, dp(2))
+                })
+                listOf(p.a, p.b).forEach { song ->
+                    box.addView(android.widget.CheckBox(this).apply {
+                        text = "Delete: ${song.title} (${song.artist})"
+                        textSize = 12f
+                        setTextColor(iconColor())
+                        setOnCheckedChangeListener { _, checked ->
+                            if (checked) toDelete.add(song.mediaId) else toDelete.remove(song.mediaId)
+                        }
+                    })
+                }
+                box.addView(View(this).apply {
+                    layoutParams = LinearLayout.LayoutParams(-1, dp(1)).apply {
+                        topMargin = dp(4); bottomMargin = dp(4)
+                    }
+                    setBackgroundColor(0xFF9E9E9E.toInt())
+                })
+            }
+        }
+        box.addView(TextView(this).apply {
+            text = "Same name, different audio (${clashes.size})"
+            textSize = 15f
+            xpBold()
+            setTextColor(iconColor())
+            setPadding(0, dp(12), 0, 0)
+        })
+        box.addView(TextView(this).apply {
+            text = "Same title and artist but the recordings sound different. The analyzer may have merged them by mistake. Open a song to fix its tags."
+            textSize = 12f
+        })
+        if (clashes.isEmpty()) {
+            box.addView(TextView(this).apply {
+                text = "None. Every shared name sounded like the same song."
+                textSize = 12f
+            })
+        } else {
+            clashes.take(50).forEach { c ->
+                box.addView(TextView(this).apply {
+                    text = "${c.title} (${c.artist}): ${c.songs.size} versions that sound different"
+                    textSize = 13f
+                    xpBold()
+                    setTextColor(iconColor())
+                    setPadding(0, dp(8), 0, dp(2))
+                })
+                c.songs.forEach { song ->
+                    box.addView(xpBtn("Fix tags: ${song.title.take(28)}").apply {
+                        setOnClickListener {
+                            lifecycleScope.launch {
+                                val tags = com.blissplayer.music.data.TagTools.readTags(this@MainActivity, song)
+                                tagEditorDialog(song, tags)
+                            }
+                        }
+                    })
+                }
+                box.addView(View(this).apply {
+                    layoutParams = LinearLayout.LayoutParams(-1, dp(1)).apply {
+                        topMargin = dp(4); bottomMargin = dp(4)
+                    }
+                    setBackgroundColor(0xFF9E9E9E.toInt())
+                })
+            }
+        }
+        safeShow(ThemeDialogBuilder(this)
+            .setCustomTitle(xpTitle("Dupe finder"))
+            .setView(sv)
+            .setPositiveButton(if (toDelete.isEmpty()) "Close" else "Delete selected (${toDelete.size})") { _, _ ->
+                if (toDelete.isNotEmpty()) deleteSongsById(toDelete.toList())
+            }
+            .setNegativeButton("Close", null))
+    }
+
+    private fun deleteSongsById(ids: List<Long>) {
+        if (ids.isEmpty()) return
+        lifecycleScope.launch(Dispatchers.IO) {
+            var done = 0
+            val errors = mutableListOf<String>()
+            for (id in ids) {
+                val song = byId[id] ?: continue
+                when (val r = com.blissplayer.music.data.TagTools.delete(this@MainActivity, song)) {
+                    is com.blissplayer.music.data.TagTools.WriteResult.Ok -> done++
+                    is com.blissplayer.music.data.TagTools.WriteResult.Failed -> errors.add("${song.title}: ${r.msg}")
+                    is com.blissplayer.music.data.TagTools.WriteResult.NeedsPermission -> errors.add("${song.title}: needs permission")
+                }
+            }
+            launch(Dispatchers.Main) {
+                scan()
+                val extra = if (errors.isNotEmpty()) " ${errors.size} could not be deleted." else ""
+                toast("Deleted $done songs.$extra")
+            }
+        }
+    }
+
     private fun organizeConfirm() {
         if (songs.isEmpty()) {
             toast("Scan your music first.")
@@ -5680,7 +5949,7 @@ class MainActivity : AppCompatActivity() {
         }
         // Runs in the service: no pop-up, survives back/rotate/swipe-away.
         // Progress lands in the status line below and a silent notification.
-        s.startEqualizer(inScope, prefs.getFloat("eq_strength", 1f))
+        s.startEqualizer(inScope, prefs.getFloat("eq_strength", 1f), prefs.getFloat("eq_accuracy", 0.35f))
         eqStatusView?.text = "Working in the background."
         toast("Equalizing ${inScope.size} songs in the background.")
     }
@@ -5890,6 +6159,37 @@ class MainActivity : AppCompatActivity() {
 
     private fun toast(m: String) = Toast.makeText(this, m, Toast.LENGTH_SHORT).show()
 
+    /** Scrolling lists always render underneath chrome, never over it. */
+    private fun hardenScrolling(root: android.view.View?) {
+        if (root !is android.view.ViewGroup) return
+        root.setClipChildren(true)
+        root.setClipToPadding(true)
+        for (i in 0 until root.childCount) {
+            val c = root.getChildAt(i)
+            if (c is androidx.recyclerview.widget.RecyclerView ||
+                c is android.widget.ScrollView ||
+                c is android.widget.HorizontalScrollView
+            ) {
+                // Content scrolls inside its own box with no elevation.
+                (c as? android.view.ViewGroup)?.setClipChildren(true)
+                (c as? android.view.ViewGroup)?.setClipToPadding(true)
+                c.elevation = 0f
+                if (c is android.view.ViewGroup) hardenScrolling(c)
+            } else if (c.id == R.id.tabRow || c.id == R.id.playRow ||
+                c.id == R.id.titleBarWrap || c.id == R.id.headerBar ||
+                c.id == R.id.statusStrip || c.id == R.id.miniPlayer
+            ) {
+                // Fixed chrome floats above scrolling content.
+                c.elevation = dp(4).toFloat()
+                (c as? android.view.ViewGroup)?.setClipChildren(true)
+                (c as? android.view.ViewGroup)?.setClipToPadding(true)
+                if (c is android.view.ViewGroup) hardenScrolling(c)
+            } else if (c is android.view.ViewGroup && c !is androidx.recyclerview.widget.RecyclerView) {
+                hardenScrolling(c)
+            }
+        }
+    }
+
     private fun skinStatic() {
         modernUi()?.let {
             it.styleMain(findViewById(R.id.root))
@@ -5956,6 +6256,11 @@ class MainActivity : AppCompatActivity() {
             })
         list.setPadding(dp(2), dp(2), dp(2), dp(2))
         list.clipToPadding = true
+        list.clipChildren = true
+        list.elevation = 0f
+        // Every scrolling surface stays underneath chrome. Run for both
+        // portrait and landscape shells plus dialogs that appear later.
+        hardenScrolling(findViewById(R.id.root))
         findViewById<LinearLayout>(R.id.nowPlayingPanel)?.background = xpBtnPanel()
         findViewById<LinearLayout>(R.id.npDisplay)?.apply {
             setBackgroundResource(R.drawable.xp_display)

@@ -38,7 +38,7 @@ class FolderTreeIndexTest {
     @Test fun scalesLinearlyToHundredThousandPaths() {
         // The old More-pane code compared every path with every other path
         // (quadratic); this index walks each path once. 100k paths must finish
-        // in seconds, not minutes — the number is printed for TESTING.md.
+        // In seconds, not minutes. The number is printed for TESTING.md.
         val random = java.util.Random(7)
         val paths = mutableSetOf<String>()
         while (paths.size < 100_000) {

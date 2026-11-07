@@ -3,7 +3,7 @@ package com.blissplayer.core
 /**
  * One shared schema for both drivers (D-3): Android's SQLiteOpenHelper and
  * the desktop sqlite-jdbc driver execute these exact statements. Same
- * tables, same meaning, same version — only the connection is platform
+ * tables, same meaning, same version. Only the connection is platform
  * specific. Existing Android databases are never migrated by this move:
  * the statements and the version are byte-identical to what the app
  * already created, so user data (library, stats, gains, caches) survives.

@@ -7,7 +7,7 @@ import java.sql.DriverManager
 /**
  * Same schema as the Android SQLiteOpenHelper (tables + meaning), desktop
  * driver (sqlite-jdbc). Fresh desktop databases start at the current shape;
- * no migration of Android user data is attempted — libraries are rescanned.
+ * no migration of Android user data is attempted | libraries are rescanned.
  */
 class DesktopDb(path: String) {
     private val conn: Connection
@@ -118,6 +118,18 @@ class DesktopDb(path: String) {
     @Synchronized fun removeFromPlaylist(pid: Long, mediaId: Long) {
         conn.prepareStatement("DELETE FROM playlist_songs WHERE playlist_id=? AND media_id=?").use {
             it.setLong(1, pid); it.setLong(2, mediaId); it.executeUpdate()
+        }
+    }
+
+    @Synchronized fun reorderPlaylist(pid: Long, ids: List<Long>) {
+        conn.prepareStatement("DELETE FROM playlist_songs WHERE playlist_id=?").use {
+            it.setLong(1, pid); it.executeUpdate()
+        }
+        conn.prepareStatement("INSERT INTO playlist_songs(playlist_id, media_id, position) VALUES(?,?,?)").use { ps ->
+            ids.forEachIndexed { idx, id ->
+                ps.setLong(1, pid); ps.setLong(2, id); ps.setInt(3, idx); ps.addBatch()
+            }
+            ps.executeBatch()
         }
     }
 

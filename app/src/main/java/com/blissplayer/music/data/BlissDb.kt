@@ -16,7 +16,7 @@ class BlissDb(context: Context) : SQLiteOpenHelper(context, "bliss.db", null, co
 
     override fun onCreate(db: SQLiteDatabase) {
         // Single-sourced schema (core DbSchema): identical statements, identical
-        // version — fresh installs match every other install, upgrades below untouched.
+        // Fresh installs match every other install. Upgrades are handled below.
         com.blissplayer.core.DbSchema.statements.forEach { db.execSQL(it) }
     }
 

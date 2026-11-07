@@ -16,6 +16,9 @@ package com.blissplayer.music.playback
  *   so music never restarts over another app uninvited. If focus does come
  *   back while we are still the auto-paused owner, we take it. The user
  *   resumes with one tap.
+ * - An unplug or Bluetooth disconnect (noisy) pauses and stays paused.
+ *   Later gains from voice dictation or navigation must never restart it.
+ *   Only an explicit play clears the noisy hold.
  * - Duck requests only lower the volume while held.
  * - Ignore mode: focus events do nothing at all.
  */
@@ -46,6 +49,14 @@ class FocusPolicy {
     var ducked = false
         private set
 
+    /**
+     * Bluetooth or wired output went away. While this is set, a later
+     * focus gain (voice dictation ending, maps prompt finishing) must never
+     * restart playback on its own. The user restarts with one tap.
+     */
+    var noisyHeld = false
+        private set
+
     /** Why the music stopped: focus-transient, focus-permanent, noisy, user, null while playing. */
     var pauseReason: String? = null
         private set
@@ -65,6 +76,7 @@ class FocusPolicy {
             Event.PLAY_STARTED -> {
                 userPaused = false
                 autoPaused = false
+                noisyHeld = false
                 pauseReason = null
                 if (ducked) {
                     ducked = false
@@ -74,6 +86,7 @@ class FocusPolicy {
             Event.USER_PAUSE -> {
                 userPaused = true
                 autoPaused = false
+                noisyHeld = false
                 pauseReason = "user"
                 listOf(Action.NONE)
             }
@@ -81,6 +94,7 @@ class FocusPolicy {
                 userPaused = true
                 autoPaused = false
                 ducked = false
+                noisyHeld = false
                 pauseReason = "user"
                 listOf(Action.NONE)
             }
@@ -116,6 +130,7 @@ class FocusPolicy {
                 if (!isPlaying || userPaused && !autoPaused) listOf(Action.NONE)
                 else {
                     autoPaused = true
+                    noisyHeld = true
                     pauseReason = "noisy"
                     listOf(Action.PAUSE)
                 }
@@ -125,6 +140,13 @@ class FocusPolicy {
                 if (ducked) {
                     ducked = false
                     out.add(Action.DUCK_OFF)
+                }
+                if (noisyHeld) {
+                    // Car or headphones went away. Stay paused until the user
+                    // taps play. A voice prompt ending must not restart sound
+                    // through the speaker on its own.
+                    if (out.isEmpty()) out.add(Action.NONE)
+                    return out
                 }
                 if (autoPaused && !userPaused) {
                     autoPaused = false

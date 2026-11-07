@@ -32,7 +32,7 @@ import kotlinx.coroutines.runBlocking
  * Android implementations of the shared contracts (§1.2), each a thin
  * delegation over the existing behavior: Media3/ExoPlayer, MediaStore,
  * jaudiotagger-via-TagTools, ToneControl, the service notification, and
- * SharedPreferences. Zero behavior change — the UI keeps calling the
+ * SharedPreferences. Zero behavior change. The UI keeps calling the
  * existing paths; these exist so swapping in a second platform impl (or a
  * test fake) is mechanical.
  */
@@ -106,7 +106,7 @@ class AndroidLibrary(
     override fun organize(entries: List<LibraryEntry>, destinations: Map<String, String>): Map<String, String> {
         // Android organizes into its own Music/BlissPlayer scheme via MediaStore
         // (permission flows included); the desktop destination map is ignored by
-        // design — enabled-folders-only is enforced by filtering first.
+        // Design note. Enabled folders only is enforced by filtering first.
         val byId = songs().associateBy { it.mediaId.toString() }
         val scoped = entries.mapNotNull { byId[it.key] }
         return runBlocking { organizeSuspend(scoped) }

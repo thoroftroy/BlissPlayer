@@ -6,7 +6,7 @@ import java.io.File
 
 /**
  * Offline cleanup throughput on the user's real 1177-file YMusic corpus
- * (filenames only — no network). Gated on the folder existing so CI stays green.
+ * (filenames only, no network). Gated on the folder existing so CI stays green.
  */
 class CorpusThroughputTest {
     @Test fun cleanLocalKeepsUpWithThousandSongLibraries() {

@@ -102,8 +102,11 @@ class MobileThemeController(private val activity: Activity, val theme: MobileThe
     fun styleMain(root: ViewGroup) {
         if (!theme.modern) return
         material(root, MaterialRole.BACKDROP)
-        root.clipChildren = false
-        root.clipToPadding = false
+        // Scrolling content must stay underneath chrome. Never disable
+        // clipping on the activity root: rows and More panels would paint
+        // over the tabs. Particle bursts live in a window overlay instead.
+        root.clipChildren = true
+        root.clipToPadding = true
         attachWindow(activity.window)
         styleTree(root)
         root.findViewById<View>(R.id.titleBarWrap)?.let { toolbar ->
@@ -140,6 +143,10 @@ class MobileThemeController(private val activity: Activity, val theme: MobileThe
         root.findViewById<View>(R.id.tabRow)?.let { tabs ->
             material(tabs, if (theme == MobileTheme.AQUA) MaterialRole.TOOLBAR else MaterialRole.PANEL)
             tabs.setPadding(dp(4), dp(4), dp(4), dp(4))
+            // Chrome stays above scrolling lists. Lists scroll underneath.
+            tabs.elevation = dp(4).toFloat()
+            (tabs as? ViewGroup)?.setClipChildren(true)
+            (tabs as? ViewGroup)?.setClipToPadding(true)
         }
         listOf(R.id.btnPlayAll, R.id.btnPlayShuffle, R.id.btnSort).forEachIndexed { i, id ->
             root.findViewById<Button>(id)?.let { button ->
@@ -165,8 +172,30 @@ class MobileThemeController(private val activity: Activity, val theme: MobileThe
             it.background = null
             it.setPadding(dp(1), dp(4), dp(1), dp(8))
             // Rows stay inside the list: never paint over Play/Mix/Sort.
-            it.clipToPadding = true
-            it.clipChildren = true
+            it.setClipToPadding(true)
+            it.setClipChildren(true)
+            it.elevation = 0f
+        }
+        root.findViewById<View>(R.id.playRow)?.let {
+            it.elevation = dp(4).toFloat()
+            (it as? ViewGroup)?.setClipChildren(true)
+            (it as? ViewGroup)?.setClipToPadding(true)
+        }
+        root.findViewById<View>(R.id.headerBar)?.let {
+            it.elevation = dp(4).toFloat()
+            (it as? ViewGroup)?.setClipChildren(true)
+            (it as? ViewGroup)?.setClipToPadding(true)
+        }
+        root.findViewById<View>(R.id.titleBarWrap)?.let {
+            it.elevation = dp(4).toFloat()
+            (it as? ViewGroup)?.setClipChildren(true)
+            (it as? ViewGroup)?.setClipToPadding(true)
+        }
+        root.findViewById<android.widget.ScrollView>(R.id.morePane)?.let {
+            it.setClipToPadding(true)
+            it.setClipChildren(true)
+            it.elevation = 0f
+            it.isFillViewport = true
         }
         listOf(R.id.miniPlayer, R.id.nowPlayingPanel).forEach { id ->
             root.findViewById<LinearLayout>(id)?.let {

@@ -151,9 +151,16 @@ class PlayerService : MediaSessionService() {
         override fun onReceive(c: android.content.Context?, intent: android.content.Intent?) {
             if (intent?.action != android.media.AudioManager.ACTION_AUDIO_BECOMING_NOISY) return
             if (!::player.isInitialized || !player.isPlaying) return
+            waitingForFocus = false
             systemPauseArmed = true
             applyFocusActions(focusPolicy.onEvent(FocusPolicy.Event.NOISY, true, true))
             persistPauseReason()
+            // Keep the paused controls visible. Without an immediate repost
+            // the bar can vanish until the next tick, which only runs while playing.
+            postNotif()
+            if (player.mediaItemCount > 0) {
+                runCatching { startForeground(NOTIF_ID, buildNotification()) }
+            }
         }
     }
     private var noisyRegistered = false
@@ -508,7 +515,20 @@ class PlayerService : MediaSessionService() {
             getSharedPreferences("bliss", MODE_PRIVATE).edit()
                 .putString("last_playback_error", lastPlaybackError).apply()
         }
+        // Recover from a wedged idle state (route change left the renderer
+        // with no duration and a dead play flag). Re-prepare so the toggle
+        // always makes sound and the position bar always moves.
+        if (player.playbackState == Player.STATE_IDLE || player.playbackState == Player.STATE_ENDED) {
+            runCatching { player.prepare() }
+            lastWatchPos = -1L
+            lastWatchTime = android.os.SystemClock.elapsedRealtime()
+            stallCount = 0
+            bufferingItem = null
+        }
+        waitingForFocus = false
         ensureFocusThenPlay()
+        // The bar must move immediately after a tap, not after the next tick.
+        postNotif()
     }
 
     private fun savePlaybackState() {
@@ -695,7 +715,7 @@ class PlayerService : MediaSessionService() {
             )
             .setDeleteIntent(actionIntent(ACTION_STOP, 5))
             .setOnlyAlertOnce(true)
-            .setOngoing(playing)
+            .setOngoing(true)
             .setShowWhen(false)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .addAction(android.R.drawable.ic_media_previous, "Previous", actionIntent(ACTION_PREV, 1))
@@ -744,11 +764,16 @@ class PlayerService : MediaSessionService() {
                 setOnClickPendingIntent(R.id.n_fav, actionIntent(ACTION_FAV, 6))
                 setTextViewText(R.id.n_time, "${fmt(pos)} / ${fmt(dur)}")
                 if (dur > 0) setProgressBar(R.id.n_progress, 1000, ((pos * 1000) / dur).toInt().coerceIn(0, 1000), false)
+                else setProgressBar(R.id.n_progress, 1000, 0, false)
             }
             b.setCustomContentView(small)
             b.setCustomBigContentView(big)
         }
+        // Always show a progress bar so the position never vanishes. When the
+        // duration is unknown (player idle after a route change) show zero
+        // instead of hiding the bar entirely.
         if (dur > 0) b.setProgress(dur.toInt().coerceAtLeast(1), pos.toInt(), false)
+        else b.setProgress(1000, 0, false)
         return b.build()
     }
 
@@ -841,6 +866,23 @@ class PlayerService : MediaSessionService() {
 
     private var analyzerJob: Job? = null
     private var eqJob: Job? = null
+    private var trimJob: Job? = null
+    private var dupeJob: Job? = null
+
+    data class DupePair(val a: Song, val b: Song, val score: Int)
+    data class NameClash(val title: String, val artist: String, val songs: List<Song>)
+    var dupePairs: List<DupePair>? = null
+        private set
+    var dupeClashes: List<NameClash>? = null
+        private set
+
+    fun takeDupes(): Pair<List<DupePair>, List<NameClash>>? {
+        val p = dupePairs ?: return null
+        val c = dupeClashes ?: emptyList()
+        dupePairs = null
+        dupeClashes = null
+        return p to c
+    }
 
     /** Finished analyzer proposals waiting for review (cleared on take). */
     var pendingProposals: List<com.blissplayer.core.AnalyzerRules.Proposal>? = null
@@ -992,7 +1034,7 @@ class PlayerService : MediaSessionService() {
     }
 
     /** Equalizer in the service: silent progress, gains to db, no pop-ups. */
-    fun startEqualizer(songs: List<Song>, strength: Float) {
+    fun startEqualizer(songs: List<Song>, strength: Float, accuracy: Float = 0.35f) {
         eqJob?.cancel()
         val total = songs.size
         if (total == 0) return
@@ -1007,6 +1049,7 @@ class PlayerService : MediaSessionService() {
                     this@PlayerService, songs,
                     cached = cached,
                     strength = strength,
+                    accuracy = accuracy,
                     putGain = { id, mult -> db.putGain(id, mult) },
                     putCache = { id, rms, mod -> db.putMeasure(id, rms, mod) },
                     onProgress = { done, tot, title, _ ->
@@ -1049,6 +1092,179 @@ class PlayerService : MediaSessionService() {
         eqJob?.cancel()
         runCatching { notifManager.cancel(EQ_NOTIF_ID) }
         progressListener?.invoke("equalizer", 0, 0, "Stopped.")
+    }
+
+    /** Trim silence: listen to the edges and add skip segments for dead air. */
+    fun startSilenceTrim(songs: List<Song>) {
+        trimJob?.cancel()
+        val total = songs.size
+        if (total == 0) return
+        val t0 = System.currentTimeMillis()
+        progressNotif(EQ_NOTIF_ID, "Trimming silence in $total songs",
+            "Starting.", 0, total, ACTION_EQ_STOP, 12)
+        progressListener?.invoke("trim", 0, total, "Starting.")
+        trimJob = scope.launch(Dispatchers.Default) {
+            var added = 0
+            try {
+                songs.forEachIndexed { i, s ->
+                    if (!isActive) return@forEachIndexed
+                    val res = runCatching {
+                        LoudnessScanner.silenceTrim(
+                            this@PlayerService,
+                            android.net.Uri.parse(s.contentUri),
+                            s.durationMs
+                        )
+                    }.getOrNull()
+                    if (res != null) {
+                        val (start, end) = res
+                        runCatching {
+                            val existing = db.segmentsFor(s.mediaId)
+                            val hasLead = start > 0 && existing.any { it.startMs <= 500 && it.label == "Silence" }
+                            val hasTrail = end < s.durationMs && existing.any { it.endMs >= s.durationMs - 1000 && it.label == "Silence" }
+                            if (start > 0 && !hasLead) {
+                                db.addSegment(s.mediaId, 0, start, "Silence")
+                                added++
+                            }
+                            if (end < s.durationMs && !hasTrail) {
+                                db.addSegment(s.mediaId, end, s.durationMs, "Silence")
+                                added++
+                            }
+                        }
+                    }
+                    if (i % 5 == 0 || i == total - 1) {
+                        val eta = fmtEta(i + 1, total, System.currentTimeMillis() - t0)
+                        val text = "Listening for silence (${i + 1} of $total, $eta): ${s.title}"
+                        progressNotif(EQ_NOTIF_ID, "Trimming silence in $total songs",
+                            text, i + 1, total, ACTION_EQ_STOP, 12)
+                        progressListener?.invoke("trim", i + 1, total, text)
+                    }
+                }
+                runCatching { refreshSegments() }
+                runCatching { notifManager.cancel(EQ_NOTIF_ID) }
+                doneNotif(EQ_NOTIF_ID, "Silence trim done", "$added edge segments added. Tap to open.")
+                progressListener?.invoke("trim", total, total, "Done: $added edge segments added.")
+            } catch (e: Exception) {
+                if (e is kotlinx.coroutines.CancellationException) throw e
+                runCatching { notifManager.cancel(EQ_NOTIF_ID) }
+                progressListener?.invoke("trim", 0, total, "Stopped.")
+            }
+        }
+    }
+
+    fun cancelTrim() {
+        trimJob?.cancel()
+        runCatching { notifManager.cancel(EQ_NOTIF_ID) }
+    }
+
+    /** Dupe finder: listen and compare fingerprints, plus same name different audio. */
+    fun startDupeFinder(songs: List<Song>) {
+        dupeJob?.cancel()
+        dupePairs = null
+        dupeClashes = null
+        val total = songs.size
+        if (total == 0) return
+        val t0 = System.currentTimeMillis()
+        progressNotif(EQ_NOTIF_ID, "Finding duplicates in $total songs",
+            "Starting.", 0, total, ACTION_EQ_STOP, 12)
+        progressListener?.invoke("dupes", 0, total, "Starting.")
+        dupeJob = scope.launch(Dispatchers.Default) {
+            try {
+                // Narrow first: same duration within 3s, or same normalized title.
+                fun normTitle(s: Song): String {
+                    return s.title.lowercase().replace(Regex("[^a-z0-9 ]"), "").trim().replace(Regex("\\s+"), " ")
+                }
+                fun normArtist(s: Song): String {
+                    return s.artist.lowercase().replace(Regex("[^a-z0-9 ]"), "").trim().replace(Regex("\\s+"), " ")
+                }
+                val byDur = songs.groupBy { it.durationMs / 3000 }
+                val candidates = mutableSetOf<Pair<Long, Long>>()
+                for ((_, group) in byDur) {
+                    if (group.size < 2 || group.size > 60) continue
+                    for (i in group.indices) for (j in i + 1 until group.size) {
+                        candidates.add(group[i].mediaId to group[j].mediaId)
+                    }
+                }
+                val byName = songs.groupBy { normTitle(it) + "|" + normArtist(it) }
+                for ((_, group) in byName) {
+                    if (group.size < 2 || group.size > 30) continue
+                    for (i in group.indices) for (j in i + 1 until group.size) {
+                        candidates.add(group[i].mediaId to group[j].mediaId)
+                    }
+                }
+                // Cap pairs so huge libraries still finish.
+                val pairList = candidates.toList().take(4000)
+                val byId = songs.associateBy { it.mediaId }
+                val prints = mutableMapOf<Long, com.blissplayer.core.AudioFingerprint.Print>()
+                val needIds = pairList.flatMap { listOf(it.first, it.second) }.toSet().take(600)
+                var doneFp = 0
+                for (id in needIds) {
+                    if (!isActive) break
+                    val s = byId[id] ?: continue
+                    val p = runCatching {
+                        LoudnessScanner.fingerprint(this@PlayerService, android.net.Uri.parse(s.contentUri), s.durationMs)
+                    }.getOrNull()
+                    if (p != null) prints[id] = p
+                    doneFp++
+                    if (doneFp % 10 == 0) {
+                        val eta = fmtEta(doneFp, needIds.size, System.currentTimeMillis() - t0)
+                        val text = "Listening for duplicates ($doneFp of ${needIds.size}, $eta)"
+                        progressNotif(EQ_NOTIF_ID, "Finding duplicates in $total songs",
+                            text, doneFp, needIds.size, ACTION_EQ_STOP, 12)
+                        progressListener?.invoke("dupes", doneFp, needIds.size, text)
+                    }
+                }
+                val pairs = mutableListOf<DupePair>()
+                for ((aId, bId) in pairList) {
+                    val pa = prints[aId] ?: continue
+                    val pb = prints[bId] ?: continue
+                    val score = com.blissplayer.core.AudioFingerprint.similarity(pa, pb)
+                    if (score >= 50) {
+                        val a = byId[aId] ?: continue
+                        val b = byId[bId] ?: continue
+                        pairs.add(DupePair(a, b, score))
+                    }
+                }
+                pairs.sortByDescending { it.score }
+                // Same name and artist but different audio: possible analyzer mistake.
+                val clashes = mutableListOf<NameClash>()
+                for ((_, group) in byName) {
+                    if (group.size < 2) continue
+                    var allHeard = true
+                    var anyDifferent = false
+                    for (i in group.indices) for (j in i + 1 until group.size) {
+                        val pa = prints[group[i].mediaId]
+                        val pb = prints[group[j].mediaId]
+                        if (pa == null || pb == null) {
+                            // If we skipped fingerprinting (too many pairs), do not
+                            // claim a clash. Only report heard differences.
+                            continue
+                        }
+                        val score = com.blissplayer.core.AudioFingerprint.similarity(pa, pb)
+                        if (score < 50) anyDifferent = true
+                    }
+                    if (anyDifferent) {
+                        val first = group.first()
+                        clashes.add(NameClash(first.title, first.artist, group))
+                    }
+                    if (!allHeard) continue
+                }
+                dupePairs = pairs.take(200)
+                dupeClashes = clashes.take(100)
+                runCatching { notifManager.cancel(EQ_NOTIF_ID) }
+                val msg = "${pairs.size} similar pairs, ${clashes.size} same name different audio. Tap to open."
+                doneNotif(EQ_NOTIF_ID, "Dupe finder done", msg)
+                progressListener?.invoke("dupes", total, total, "Done: $msg")
+            } catch (e: Exception) {
+                if (e is kotlinx.coroutines.CancellationException) throw e
+                runCatching { notifManager.cancel(EQ_NOTIF_ID) }
+                progressListener?.invoke("dupes", 0, total, "Stopped.")
+            }
+        }
+    }
+
+    fun cancelDupes() {
+        dupeJob?.cancel()
+        runCatching { notifManager.cancel(EQ_NOTIF_ID) }
     }
 
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? = session

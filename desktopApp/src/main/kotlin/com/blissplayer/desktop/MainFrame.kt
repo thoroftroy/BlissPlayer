@@ -347,7 +347,7 @@ class MainFrame(private val ctx: DesktopContext) : JFrame("BlissPlayer") {
     }
 
     private fun applyTheme() {
-        title = "BlissPlayer — ${theme.title}"
+        title = "BlissPlayer | ${theme.title}"
         iconImage = XpArt.image(when (theme) {
             DeskTheme.AQUA -> "ic_launch_aqua.png"
             DeskTheme.DARK -> "ic_launch_dark.png"
@@ -512,22 +512,28 @@ class MainFrame(private val ctx: DesktopContext) : JFrame("BlissPlayer") {
         when {
             drillArtist != null -> {
                 val songs = sortedPool(pool.filter { it.artist == drillArtist })
-                headerBar.setText("$drillArtist — ${songs.size} songs. Double-click to play.")
+                headerBar.setText("$drillArtist | ${songs.size} songs. Double-click to play.")
                 songs.forEach { items.add(Row.Song(it)) }
             }
             drillAlbum != null -> {
-                val songs = sortedPool(pool.filter { (ctx.db.albumOf(it.mediaId) ?: it.album) == drillAlbum })
-                headerBar.setText("$drillAlbum — ${songs.size} songs. Double-click to play.")
+                val base = sortedPool(pool.filter { (ctx.db.albumOf(it.mediaId) ?: it.album) == drillAlbum })
+                // Custom drag order wins when present.
+                val saved = ctx.settings.getString("album_order_$drillAlbum", "")
+                    .split(',').mapNotNull { it.toLongOrNull() }.filter { id -> base.any { it.mediaId == id } }
+                val songs = if (saved.isEmpty()) base
+                else saved.mapNotNull { id -> base.firstOrNull { it.mediaId == id } } +
+                    base.filter { s -> s.mediaId !in saved.toSet() }
+                headerBar.setText("$drillAlbum | ${songs.size} songs. Right click a song to move it and change track order.")
                 songs.forEach { items.add(Row.Song(it)) }
             }
             drillGenre != null -> {
                 val songs = sortedPool(pool.filter { ctx.db.genreOf(it.mediaId) == drillGenre })
-                headerBar.setText("$drillGenre — ${songs.size} songs. Double-click to play.")
+                headerBar.setText("$drillGenre | ${songs.size} songs. Double-click to play.")
                 songs.forEach { items.add(Row.Song(it)) }
             }
             drillPlaylist != null -> {
                 val ids = ctx.db.songsIn(drillPlaylist!!)
-                headerBar.setText("Playlist — ${ids.size} songs. Double-click to play.")
+                headerBar.setText("Playlist | ${ids.size} songs. Right click a song to move it and change track order.")
                 ids.mapNotNull { byId[it] }.forEach { items.add(Row.Song(it)) }
             }
             tab == 0 -> {
@@ -640,7 +646,7 @@ class MainFrame(private val ctx: DesktopContext) : JFrame("BlissPlayer") {
 
     private fun songMenu(r: SongRow, c: Component, x: Int, y: Int) {
         val loved = r.mediaId in ctx.db.favorites()
-        popup(listOf(
+        val items = mutableListOf<Pair<String, () -> Unit>>(
             (if (loved) "★ Unstar" else "☆ Star") to {
                 ctx.db.setFavorite(r.mediaId, !loved); list.repaint() },
             "Play now" to { playQueue(listOf(r), 0) },
@@ -651,7 +657,31 @@ class MainFrame(private val ctx: DesktopContext) : JFrame("BlissPlayer") {
             "Edit details" to { editDetails(r) },
             "Delete song and file" to { deleteConfirm(r) },
             "Details" to { showDetails(r) }
-        ), c, x, y)
+        )
+        // Reorder when drilled into a playlist or album. Playlists persist
+        // to the playlist order, albums persist to a per album custom order.
+        if (drillPlaylist != null || drillAlbum != null) {
+            items.add(0, "Move up (reorder track)" to { moveDrilled(r, -1) })
+            items.add(1, "Move down (reorder track)" to { moveDrilled(r, 1) })
+        }
+        popup(items, c, x, y)
+    }
+
+    private fun moveDrilled(r: SongRow, delta: Int) {
+        val pool = currentSongPool().toMutableList()
+        val idx = pool.indexOfFirst { it.mediaId == r.mediaId }
+        if (idx < 0) return
+        val to = (idx + delta).coerceIn(0, pool.lastIndex)
+        if (to == idx) return
+        java.util.Collections.swap(pool, idx, to)
+        if (drillPlaylist != null) {
+            ctx.db.reorderPlaylist(drillPlaylist!!, pool.map { it.mediaId })
+            setStatus("Track order saved. Numbers follow the new order.")
+        } else if (drillAlbum != null) {
+            ctx.settings.putString("album_order_${drillAlbum}", pool.joinToString(",") { it.mediaId.toString() })
+            setStatus("Album track order saved.")
+        }
+        render()
     }
 
     private fun groupMenu(g: Row.Group, c: Component, x: Int, y: Int) {
@@ -850,7 +880,7 @@ class MainFrame(private val ctx: DesktopContext) : JFrame("BlissPlayer") {
     private fun showQueue() {
         val dlg = xpDialog("Queue (${queue.size})")
         val model = DefaultListModel<String>()
-        queue.forEachIndexed { i, r -> model.addElement("${i + 1}. ${r.title} — ${r.artist}") }
+        queue.forEachIndexed { i, r -> model.addElement("${i + 1}. ${r.title} | ${r.artist}") }
         val ql = JList(model)
         dlg.add(JScrollPane(ql), BorderLayout.CENTER)
         val bar = JPanel(FlowLayout(FlowLayout.LEFT))
@@ -897,7 +927,7 @@ class MainFrame(private val ctx: DesktopContext) : JFrame("BlissPlayer") {
 
     private fun refreshQueueModel(model: DefaultListModel<String>) {
         model.clear()
-        queue.forEachIndexed { i, r -> model.addElement("${i + 1}. ${r.title} — ${r.artist}") }
+        queue.forEachIndexed { i, r -> model.addElement("${i + 1}. ${r.title} | ${r.artist}") }
     }
 
     // ================= resume =================
@@ -1078,9 +1108,15 @@ class MainFrame(private val ctx: DesktopContext) : JFrame("BlissPlayer") {
         moreBox.add(section("Loudness"))
         val strength = JSlider(0, 200, (ctx.settings.getFloat("eq_strength", 1f) * 100).toInt())
         moreBox.add(strength)
+        val accuracy = JSlider(0, 100, (ctx.settings.getFloat("eq_accuracy", 0.35f) * 100).toInt())
+        accuracy.majorTickSpacing = 25
+        accuracy.paintLabels = true
+        moreBox.add(JLabel("Accuracy: Fast is quickest, Accurate takes longer samples in more spots."))
+        moreBox.add(accuracy)
         moreBox.add(btn("Equalize library") {
-            runLoudness(strength.value / 100f)
             ctx.settings.putFloat("eq_strength", strength.value / 100f)
+            ctx.settings.putFloat("eq_accuracy", accuracy.value / 100f)
+            runLoudness(strength.value / 100f, accuracy.value / 100f)
         })
         moreBox.add(hint("Matches volume across songs. 100% lands every song on the average; higher pushes further on stubborn libraries."))
         moreBox.add(section("Shuffle"))
@@ -1128,6 +1164,13 @@ class MainFrame(private val ctx: DesktopContext) : JFrame("BlissPlayer") {
         moreBox.add(scope)
         moreBox.add(btn("Run analyzer") { runAnalyzer(scope.selectedIndex == 1, online.isSelected) })
         moreBox.add(hint("Cleans names offline, confirms online. Review before anything is written."))
+        val trimBox = JCheckBox("Trim silence at song edges", ctx.settings.getBoolean("trim_silence", true))
+        trimBox.addActionListener { ctx.settings.putBoolean("trim_silence", trimBox.isSelected) }
+        moreBox.add(trimBox)
+        moreBox.add(hint("When on, the analyzer listens to starts and ends and adds skip segments for silence or near silence. Nothing is rewritten."))
+        moreBox.add(btn("Trim silence now") { runSilenceTrim() })
+        moreBox.add(btn("Dupe finder") { runDupeFinder() })
+        moreBox.add(hint("Listens and compares recordings. Shows pairs that sound 50 to 100 percent identical plus same name songs that sound different."))
         moreBox.add(section("Playlists"))
         moreBox.add(btn("New playlist") {
             val name = JOptionPane.showInputDialog(this, "Playlist name:")
@@ -1157,7 +1200,7 @@ class MainFrame(private val ctx: DesktopContext) : JFrame("BlissPlayer") {
             }
         })
         moreBox.add(section("About"))
-        moreBox.add(hint("BlissPlayer ${DesktopMain.version()} — Linux desktop. Same core as Android: analyzer, loudness, playlists, stats."))
+        moreBox.add(hint("BlissPlayer ${DesktopMain.version()} | Linux desktop. Same core as Android: analyzer, loudness, playlists, stats."))
         moreBox.revalidate()
         moreBox.repaint()
     }
@@ -1276,8 +1319,14 @@ class MainFrame(private val ctx: DesktopContext) : JFrame("BlissPlayer") {
         moreBox.add(statCard("All time", "Total plays: ${totals.values.sum()}"))
         if (ctx.settings.getBoolean("stats_show_top3", true)) {
             val top = totals.entries.sortedByDescending { it.value }.take(3)
-                .mapIndexed { i, (id, c) -> "${i + 1}. ${name(id)} ($c plays)" }.joinToString("\n").ifBlank { "None yet" }
-            moreBox.add(statCard("Top 3", top))
+            if (top.isEmpty()) {
+                moreBox.add(statCard("Top 3", "None yet"))
+            } else {
+                // Separate cards so each leader reads on its own.
+                top.forEachIndexed { i, (id, c) ->
+                    moreBox.add(statCard("Top ${i + 1}", "${name(id)} ($c plays)"))
+                }
+            }
         }
         val now = System.currentTimeMillis()
         if (ctx.settings.getBoolean("stats_show_month", true)) {
@@ -1363,7 +1412,7 @@ class MainFrame(private val ctx: DesktopContext) : JFrame("BlissPlayer") {
         val dlg = xpDialog("Review (${proposals.size})", wide = true)
         val body = xpBody(dlg)
         val model = DefaultListModel<String>()
-        proposals.forEach { model.addElement("[${it.confidence}] ${it.newTitle} — ${it.newArtist} (${it.reason})") }
+        proposals.forEach { model.addElement("[${it.confidence}] ${it.newTitle} | ${it.newArtist} (${it.reason})") }
         val ql = JList(model)
         body.add(JScrollPane(ql))
         val bar = JPanel(FlowLayout(FlowLayout.LEFT))
@@ -1388,7 +1437,7 @@ class MainFrame(private val ctx: DesktopContext) : JFrame("BlissPlayer") {
         dlg.isVisible = true
     }
 
-    private fun runLoudness(strength: Float) {
+    private fun runLoudness(strength: Float, accuracy: Float = 0.35f) {
         setStatus("Equalizing in the background…")
         progress.isVisible = true
         progress.isIndeterminate = true
@@ -1396,7 +1445,7 @@ class MainFrame(private val ctx: DesktopContext) : JFrame("BlissPlayer") {
         object : SwingWorker<DesktopLoudness.Result, String>() {
             override fun doInBackground(): DesktopLoudness.Result {
                 return kotlinx.coroutines.runBlocking {
-                    ctx.loudness.equalize(target, strength, { id, mult -> ctx.db.putGain(id, mult) }) { done, total, title, eta ->
+                    ctx.loudness.equalize(target, strength, accuracy, { id, mult -> ctx.db.putGain(id, mult) }) { done, total, title, eta ->
                         publish("$done/$total $title${eta?.let { " (~${it}s left)" } ?: ""}")
                     }
                 }
@@ -1419,6 +1468,183 @@ class MainFrame(private val ctx: DesktopContext) : JFrame("BlissPlayer") {
         }.execute()
     }
 
+    private fun runSilenceTrim() {
+        if (rows.isEmpty()) {
+            setStatus("No songs to trim.")
+            return
+        }
+        setStatus("Trimming silence…")
+        progress.isVisible = true
+        progress.isIndeterminate = true
+        object : SwingWorker<Int, String>() {
+            override fun doInBackground(): Int {
+                var added = 0
+                rows.forEachIndexed { i, r ->
+                    val res = runCatching { ctx.loudness.silenceTrim(r.path, r.durationMs) }.getOrNull()
+                    if (res != null) {
+                        val (start, end) = res
+                        runCatching {
+                            val existing = ctx.db.segmentsFull(r.mediaId)
+                            val hasLead = start > 0 && existing.any { it.startMs <= 500 && it.label == "Silence" }
+                            val hasTrail = end < r.durationMs && existing.any { it.endMs >= r.durationMs - 1000 && it.label == "Silence" }
+                            if (start > 0 && !hasLead) {
+                                ctx.db.addSegment(r.mediaId, 0, start, "Silence")
+                                added++
+                            }
+                            if (end < r.durationMs && !hasTrail) {
+                                ctx.db.addSegment(r.mediaId, end, r.durationMs, "Silence")
+                                added++
+                            }
+                        }
+                    }
+                    if (i % 5 == 0) publish("${i + 1}/${rows.size} ${r.title}")
+                }
+                return added
+            }
+            override fun process(chunks: List<String>) { setStatus("Trimming silence: ${chunks.lastOrNull()}") }
+            override fun done() {
+                this@MainFrame.progress.isVisible = false
+                this@MainFrame.progress.isIndeterminate = false
+                try {
+                    setStatus("Silence trim done: ${get()} edge segments added.")
+                } catch (e: Exception) {
+                    setStatus("Silence trim failed: ${e.message}")
+                }
+            }
+        }.execute()
+    }
+
+    private fun runDupeFinder() {
+        if (rows.isEmpty()) {
+            setStatus("No songs to compare.")
+            return
+        }
+        setStatus("Listening for duplicates…")
+        progress.isVisible = true
+        progress.isIndeterminate = true
+        object : SwingWorker<Pair<List<Triple<SongRow, SongRow, Int>>, List<Triple<String, String, List<SongRow>>>>, String>() {
+            override fun doInBackground(): Pair<List<Triple<SongRow, SongRow, Int>>, List<Triple<String, String, List<SongRow>>>> {
+                fun norm(s: String) = s.lowercase().replace(Regex("[^a-z0-9 ]"), "").trim().replace(Regex("\\s+"), " ")
+                val byDur = rows.groupBy { it.durationMs / 3000 }
+                val candidates = mutableSetOf<Pair<Long, Long>>()
+                for ((_, group) in byDur) {
+                    if (group.size < 2 || group.size > 60) continue
+                    for (i in group.indices) for (j in i + 1 until group.size) {
+                        candidates.add(group[i].mediaId to group[j].mediaId)
+                    }
+                }
+                val byName = rows.groupBy { norm(it.title) + "|" + norm(it.artist) }
+                for ((_, group) in byName) {
+                    if (group.size < 2 || group.size > 30) continue
+                    for (i in group.indices) for (j in i + 1 until group.size) {
+                        candidates.add(group[i].mediaId to group[j].mediaId)
+                    }
+                }
+                val pairList = candidates.toList().take(4000)
+                val byId = rows.associateBy { it.mediaId }
+                val prints = mutableMapOf<Long, com.blissplayer.core.AudioFingerprint.Print>()
+                val needIds = pairList.flatMap { listOf(it.first, it.second) }.toSet().take(600)
+                var doneFp = 0
+                for (id in needIds) {
+                    val r = byId[id] ?: continue
+                    val p = runCatching { ctx.loudness.fingerprint(r.path, r.durationMs) }.getOrNull()
+                    if (p != null) prints[id] = p
+                    doneFp++
+                    if (doneFp % 20 == 0) publish("Listening $doneFp/${needIds.size}")
+                }
+                val pairs = mutableListOf<Triple<SongRow, SongRow, Int>>()
+                for ((aId, bId) in pairList) {
+                    val pa = prints[aId] ?: continue
+                    val pb = prints[bId] ?: continue
+                    val score = com.blissplayer.core.AudioFingerprint.similarity(pa, pb)
+                    if (score >= 50) {
+                        val a = byId[aId] ?: continue
+                        val b = byId[bId] ?: continue
+                        pairs.add(Triple(a, b, score))
+                    }
+                }
+                pairs.sortByDescending { it.third }
+                val clashes = mutableListOf<Triple<String, String, List<SongRow>>>()
+                for ((_, group) in byName) {
+                    if (group.size < 2) continue
+                    var anyDifferent = false
+                    for (i in group.indices) for (j in i + 1 until group.size) {
+                        val pa = prints[group[i].mediaId]
+                        val pb = prints[group[j].mediaId]
+                        if (pa == null || pb == null) continue
+                        if (com.blissplayer.core.AudioFingerprint.similarity(pa, pb) < 50) anyDifferent = true
+                    }
+                    if (anyDifferent) clashes.add(Triple(group.first().title, group.first().artist, group))
+                }
+                return pairs.take(200) to clashes.take(50)
+            }
+            override fun process(chunks: List<String>) { setStatus("Dupe finder: ${chunks.lastOrNull()}") }
+            override fun done() {
+                this@MainFrame.progress.isVisible = false
+                this@MainFrame.progress.isIndeterminate = false
+                try {
+                    val (pairs, clashes) = get()
+                    setStatus("Dupe finder: ${pairs.size} similar pairs, ${clashes.size} same name different audio.")
+                    dupeDialog(pairs, clashes)
+                } catch (e: Exception) {
+                    setStatus("Dupe finder failed: ${e.message}")
+                }
+            }
+        }.execute()
+    }
+
+    private fun dupeDialog(
+        pairs: List<Triple<SongRow, SongRow, Int>>,
+        clashes: List<Triple<String, String, List<SongRow>>>
+    ) {
+        if (pairs.isEmpty() && clashes.isEmpty()) {
+            JOptionPane.showMessageDialog(this, "No duplicates found. Nothing sounds alike.")
+            return
+        }
+        val dlg = xpDialog("Dupe finder", wide = true)
+        val body = xpBody(dlg)
+        body.add(JLabel("Same recording (${pairs.size}): 50 to 100 percent identical.").apply { font = XpArt.sized(theme, 14, true) })
+        body.add(JLabel("Tick one in each pair to delete it. Same name section lists songs that sound different so tags can be fixed."))
+        val model = DefaultListModel<String>()
+        val pairIndex = mutableListOf<Pair<SongRow, SongRow>>()
+        pairs.take(100).forEach { (a, b, score) ->
+            model.addElement("$score percent: ${a.title} (${a.artist}) matches ${b.title} (${b.artist})")
+            pairIndex.add(a to b)
+        }
+        if (pairs.isEmpty()) model.addElement("None. No two songs sounded alike.")
+        val ql = JList(model)
+        body.add(JScrollPane(ql))
+        val delBar = JPanel(FlowLayout(FlowLayout.LEFT))
+        val delBtn = XpButton("Delete selected pair songs", { theme }) {
+            val sel = ql.selectedIndices
+            if (sel.isEmpty()) {
+                setStatus("Select pairs to delete.")
+                return@XpButton
+            }
+            var done = 0
+            for (i in sel) {
+                val (a, b) = pairIndex.getOrNull(i) ?: continue
+                for (r in listOf(a, b)) {
+                    if (runCatching { java.io.File(r.path).delete() }.getOrDefault(false)) done++
+                }
+            }
+            setStatus("Deleted $done files. Rescan to refresh.")
+            dlg.dispose()
+            refreshLibrary()
+        }
+        delBar.add(delBtn)
+        body.add(delBar)
+        body.add(JLabel("Same name, different audio (${clashes.size})").apply { font = XpArt.sized(theme, 14, true) })
+        clashes.take(20).forEach { (title, artist, group) ->
+            body.add(JLabel("$title ($artist): ${group.size} versions that sound different"))
+        }
+        if (clashes.isEmpty()) body.add(JLabel("None. Every shared name sounded like the same song."))
+        val close = XpButton("Close", { theme }) { dlg.dispose() }
+        body.add(close)
+        dlg.pack()
+        dlg.isVisible = true
+    }
+
     // ================= playlists =================
 
     private fun addSongsDialog(ids: List<Long>) {
@@ -1439,7 +1665,7 @@ class MainFrame(private val ctx: DesktopContext) : JFrame("BlissPlayer") {
         }
         body.add(JLabel("Songs:").apply { font = XpArt.sized(theme, 14, true) })
         rows.sortedBy { it.title.lowercase() }.forEach { r ->
-            val box = JCheckBox("${r.title} — ${r.artist}")
+            val box = JCheckBox("${r.title} | ${r.artist}")
             checks["s:${r.mediaId}"] = box
             body.add(box)
         }
