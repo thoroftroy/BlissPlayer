@@ -319,12 +319,23 @@ object SongAnalyzer {
      */
     fun mbFold(
         localTitle: String, localArtist: String, currentGenre: String,
-        hits: List<MusicBrainzLookup.Hit>
+        hits: List<MusicBrainzLookup.Hit>,
+        localDurationMs: Long = 0L
     ): WikiApplied? {
         if (hits.isEmpty() || localTitle.isBlank()) return null
         val want = WikiLookup.norm(MusicBrainzLookup.baseTitle(localTitle))
         if (want.isBlank()) return null
         val localUnknown = isUnknownArtist(localArtist)
+        // Duration guard: same title but wildly different length is a different
+        // recording. Downgrade to Check instead of claiming High.
+        fun durationOk(h: MusicBrainzLookup.Hit): Boolean {
+            val ref = h.lengthMs ?: return true
+            if (localDurationMs <= 0) return true
+            val diff = kotlin.math.abs(ref - localDurationMs)
+            if (diff <= 15_000L) return true
+            val ratio = minOf(ref, localDurationMs).toDouble() / maxOf(ref, localDurationMs).toDouble()
+            return ratio >= 0.75
+        }
         // Exact title first (unknown or matching performer), then title-only.
         var settled: WikiApplied? = null
         for (h in hits) {
@@ -336,7 +347,9 @@ object SongAnalyzer {
                     if (h.genre != null && (currentGenre.isBlank() || currentGenre == "Uncategorized")) h.genre
                     else null
                 val artist = if (h.artist.isNotBlank()) h.artist else localArtist
-                return WikiApplied(localTitle, artist, genre, reasons, true, true, h.artist)
+                val high = durationOk(h)
+                if (!high) reasons.add("duration differs, needs review")
+                return WikiApplied(localTitle, artist, genre, reasons, high, true, h.artist)
             }
             if (settled == null && h.artist.isNotBlank()) {
                 val reasons = mutableListOf("MusicBrainz title match (artist differs: ${h.artist})")
@@ -375,10 +388,21 @@ object SongAnalyzer {
         val g0 = genreOf(m.song.mediaId)
         // Primary reading first, then the swapped order ("Title - Artist"
         // uploaders), then the bare title (uploader tags poison the query).
+        // Plus the filename reading: a previous bad analyzer run may have
+        // written wrong tags, but the filename still holds the truth.
         val tried = mutableListOf<Pair<String, String>>(m.title to m.artist)
         m.altArtist.takeIf { it.isNotBlank() }?.let { aa ->
             m.altTitle.takeIf { it.isNotBlank() }?.let { at ->
                 if (at to aa != tried[0]) tried.add(at to aa)
+            }
+        }
+        runCatching {
+            val base = (m.song.filePath ?: "").substringAfterLast('/').substringBeforeLast('.').trim()
+            if (base.isNotBlank() && " - " in base) {
+                val c = cleanLocal(base, "", base)
+                if (c.title.isNotBlank() && (c.title to c.artist) !in tried) {
+                    tried.add(c.title to c.artist)
+                }
             }
         }
         if (!isUnknownArtist(m.artist) && WikiLookup.norm(m.artist) !in WikiLookup.norm(m.title)) {
@@ -415,7 +439,7 @@ object SongAnalyzer {
                 if (e is kotlinx.coroutines.CancellationException) throw e
                 emptyList()
             }
-            val folded = mbFold(tt, aa, g0, mb)
+            val folded = mbFold(tt, aa, g0, mb, m.song.durationMs)
             if (folded != null) {
                 val ok = corroborated(aa, folded.snippetArtist, tt, folded.high)
                 if (ok) {

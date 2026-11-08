@@ -15,4 +15,3 @@ dependencyResolutionManagement {
 rootProject.name = "BlissPlayer"
 include(":app")
 include(":core")
-include(":desktopApp")

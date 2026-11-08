@@ -196,7 +196,17 @@ object TagTools {
             val uri = Uri.parse(song.contentUri)
             try {
                 val rows = context.contentResolver.delete(uri, null, null)
-                if (rows > 0) WriteResult.Ok else WriteResult.Failed("Nothing was deleted.")
+                if (rows > 0) WriteResult.Ok
+                else {
+                    // Some providers return 0 even though the file is gone
+                    // (already deleted by a prior Allow retry). Treat a missing
+                    // record as deleted so the UI never claims failure for a
+                    // song that is actually gone.
+                    val stillThere = runCatching {
+                        context.contentResolver.query(uri, arrayOf(MediaStore.Audio.Media._ID), null, null, null)?.use { it.count > 0 } ?: false
+                    }.getOrDefault(true)
+                    if (!stillThere) WriteResult.Ok else WriteResult.Failed("Nothing was deleted.")
+                }
             } catch (e: RecoverableSecurityException) {
                 if (Build.VERSION.SDK_INT >= 30) {
                     val sender = MediaStore.createDeleteRequest(

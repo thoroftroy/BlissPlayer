@@ -24,7 +24,8 @@ object MusicBrainzLookup {
         val track: String,
         val artist: String,
         val album: String?,
-        val genre: String?
+        val genre: String?,
+        val lengthMs: Long? = null
     )
 
     private const val API = "https://musicbrainz.org/ws/2/recording/"
@@ -238,7 +239,8 @@ object MusicBrainzLookup {
         val artist = if (ac >= 0) field(obj.substring(ac), "\"name\"") ?: "" else ""
         val album = bestRelease(obj)
         val genre = bestTag(obj)
-        return Hit(track, artist, album, genre)
+        val lengthMs = Regex("\"length\"\\s*:\\s*(\\d+)").find(obj)?.groupValues?.get(1)?.toLongOrNull()
+        return Hit(track, artist, album, genre, lengthMs)
     }
 
     /** Prefer a dated original album, then a single; never fall back to known live/compilation groups. */

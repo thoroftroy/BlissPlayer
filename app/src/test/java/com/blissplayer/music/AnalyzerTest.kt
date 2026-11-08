@@ -542,6 +542,17 @@ class AnalyzerTest {
     }
 
     @Test
+    fun mbFoldDurationGuardsFalseHigh() {
+        val hits = listOf(MusicBrainzLookup.Hit("Halo", "Beyonce", "I Am...", "Pop", 225_000L))
+        val wrong = SongAnalyzer.mbFold("Halo", "Beyonce", "Uncategorized", hits, 90_000L)
+        assertNotNull(wrong)
+        assertFalse(wrong!!.high)
+        val right = SongAnalyzer.mbFold("Halo", "Beyonce", "Uncategorized", hits, 224_000L)
+        assertNotNull(right)
+        assertTrue(right!!.high)
+    }
+
+    @Test
     fun albumParseShapes() {
         assertEquals("25", WikiLookup.parseAlbum("| album = [[25 (Adele album)|25]]"))
         assertEquals("Whenever You Need Somebody", WikiLookup.parseAlbum("|album=[[Whenever You Need Somebody]]"))

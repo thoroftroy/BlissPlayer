@@ -1,8 +1,0 @@
-[Desktop Entry]
-Type=Application
-Name=BlissPlayer
-Comment=Music player with online metadata, loudness matching and XP/Aqua/neon themes
-Exec=bliss-player
-Icon=bliss-player
-Categories=AudioVideo;Audio;Player;
-Terminal=false

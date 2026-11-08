@@ -1402,7 +1402,7 @@ class MainActivity : AppCompatActivity() {
         if (!s.analyzerRunning && s.pendingProposals == null) {
             analyzerStatus?.text = idleAnalyzerText()
         }
-        if (!s.eqRunning) {
+        if (!s.eqRunning && !s.trimRunning && !s.dupeRunning) {
             eqStatusView?.text = eqStatusIdleText()
         }
     }
@@ -2426,27 +2426,37 @@ class MainActivity : AppCompatActivity() {
     private fun playNext(song: Song) {
         val p = svc?.player ?: return
         ensureQueueSync()
-        if (queue.isEmpty()) {
+        if (queue.isEmpty() || p.mediaItemCount == 0) {
             playQueue(listOf(song), 0)
             return
         }
-        val (q, at) = com.blissplayer.core.QueueOps.insertNext(queue, p.currentMediaItemIndex, song)
+        // Resolve "current" from the playing mediaId, not a possibly stale index.
+        // A stale index would insert at the top and look broken.
+        val curId = p.currentMediaItem?.mediaId?.toLongOrNull()
+        val mirrorAt = curId?.let { id -> queue.indexOfFirst { it.mediaId == id } } ?: -1
+        val baseIndex = when {
+            mirrorAt >= 0 -> mirrorAt
+            else -> p.currentMediaItemIndex.coerceIn(0, queue.size - 1)
+        }
+        val (q, at) = com.blissplayer.core.QueueOps.insertNext(queue, baseIndex, song)
         queue.clear()
         queue.addAll(q)
-        p.addMediaItem(at, toItem(song))
+        p.addMediaItem(at.coerceIn(0, p.mediaItemCount), toItem(song))
+        saveResume()
         refreshQueueList()
     }
 
     private fun addToQueueEnd(song: Song) {
         val p = svc?.player ?: return
         ensureQueueSync()
-        if (queue.isEmpty()) {
+        if (queue.isEmpty() || p.mediaItemCount == 0) {
             playQueue(listOf(song), 0)
             return
         }
         queue.clear()
         queue.addAll(com.blissplayer.core.QueueOps.append(queue, song))
         p.addMediaItem(toItem(song))
+        saveResume()
         refreshQueueList()
     }
 
@@ -3022,9 +3032,17 @@ class MainActivity : AppCompatActivity() {
                             toast("Deleted.")
                             queue.removeAll { it.mediaId == song.mediaId }
                             removeFromPlayer(song.mediaId)
+                            // Optimistic: vanish now so Allow-or-not the list
+                            // never shows a deleted song until leaving the tab.
+                            songs = songs.filter { it.mediaId != song.mediaId }
+                            byId.remove(song.mediaId)
+                            render()
+                            refreshQueueList()
+                            refreshMini()
                             scan()
                         }
                         is TagTools.WriteResult.NeedsPermission -> {
+                            toast("Need your permission to delete. Tap Allow.")
                             askSystemAccess(r.sender) { deleteRetry(song) }
                         }
                         is TagTools.WriteResult.Failed -> toast("Could not delete: ${r.msg}")
@@ -3040,6 +3058,15 @@ class MainActivity : AppCompatActivity() {
             when (val r = TagTools.delete(this@MainActivity, song)) {
                 is TagTools.WriteResult.Ok -> {
                     toast("Deleted.")
+                    // Same instant cleanup as the first-try path: the song
+                    // vanishes now, not after leaving the tab.
+                    queue.removeAll { it.mediaId == song.mediaId }
+                    removeFromPlayer(song.mediaId)
+                    songs = songs.filter { it.mediaId != song.mediaId }
+                    byId.remove(song.mediaId)
+                    render()
+                    refreshQueueList()
+                    refreshMini()
                     scan()
                 }
                 is TagTools.WriteResult.NeedsPermission ->
@@ -4567,7 +4594,7 @@ class MainActivity : AppCompatActivity() {
             }
         })
         moreBox.addView(TextView(this).apply {
-            text = "When on, the analyzer listens to song starts and ends and adds skip segments for complete silence or near silence. Nothing is rewritten."
+            text = "When on, the analyzer checks waveform edges and adds skip segments for complete silence or near silence. Nothing is rewritten, no realtime playback."
             textSize = 12f
         })
         moreBox.addView(xpBtn("Trim silence now").apply {
@@ -4575,6 +4602,10 @@ class MainActivity : AppCompatActivity() {
                 val s = svc
                 if (s == null) {
                     toast("Playback is still starting. Try again in a moment.")
+                    return@setOnClickListener
+                }
+                if (s.anyWorkRunning) {
+                    toast("Another library job is still running. Stop it first, then trim.")
                     return@setOnClickListener
                 }
                 s.startSilenceTrim(songs)
@@ -4585,7 +4616,7 @@ class MainActivity : AppCompatActivity() {
             setOnClickListener { dupeFinderDialog() }
         })
         moreBox.addView(TextView(this).apply {
-            text = "Listens and compares recordings. Shows pairs that sound 50 to 100 percent identical so you can delete one, plus same name songs that sound different so you can fix tags."
+            text = "Compares waveforms to find matching recordings for deletion, plus same-name songs that sound different so you can fix tags. Titles-only mode is instant, waveform mode compares RMS fingerprints."
             textSize = 12f
         })
         moreBox.addView(xpBtn("Organize into BlissPlayer folder").apply {
@@ -5380,6 +5411,10 @@ class MainActivity : AppCompatActivity() {
             toast("Playback is still starting. Try again in a moment.")
             return
         }
+        if (s.anyWorkRunning) {
+            toast("Another library job is still running. Stop it first, then analyze.")
+            return
+        }
         // Runs in the service: no pop-up, survives back/rotate/swipe-away.
         // Progress lands in the status line below and a silent notification.
         s.startAnalyzer(inScope, online, genreSnapshot, albumSnapshot)
@@ -5564,18 +5599,52 @@ class MainActivity : AppCompatActivity() {
             return
         }
         val s = svc
-        // Show cached results instantly when a previous run finished.
+        // Show cached waveform results instantly when a previous run finished.
         val cached = s?.takeDupes()
         if (cached != null) {
             showDupeResults(cached.first, cached.second)
             return
         }
-        if (s == null) {
-            toast("Playback is still starting. Try again in a moment.")
-            return
+        xpMenuDialog("Find duplicates how?", listOf(
+            "Titles only (instant)",
+            "Waveforms (slower, listens to audio)"
+        )) { which ->
+            if (which == 0) {
+                // Instant: normalized title plus artist grouping, no decode.
+                val t0 = System.currentTimeMillis()
+                val byName = songs.groupBy {
+                    it.title.lowercase().replace(Regex("[^a-z0-9 ]"), "").trim()
+                        .replace(Regex("\\s+"), " ") + "|" +
+                    it.artist.lowercase().replace(Regex("[^a-z0-9 ]"), "").trim()
+                        .replace(Regex("\\s+"), " ")
+                }.filter { it.value.size > 1 }
+                val pairs = mutableListOf<com.blissplayer.music.playback.PlayerService.DupePair>()
+                for ((_, group) in byName) {
+                    if (group.size > 30) continue
+                    for (i in group.indices) for (j in i + 1 until group.size) {
+                        pairs.add(com.blissplayer.music.playback.PlayerService.DupePair(group[i], group[j], 100))
+                    }
+                }
+                val ms = System.currentTimeMillis() - t0
+                if (pairs.isEmpty()) {
+                    toast("No same-title duplicates found (${ms}ms).")
+                    return@xpMenuDialog
+                }
+                toast("Titles checked in ${ms}ms: ${pairs.size} pairs.")
+                showDupeResults(pairs.take(200), emptyList())
+            } else {
+                if (s == null) {
+                    toast("Playback is still starting. Try again in a moment.")
+                    return@xpMenuDialog
+                }
+                if (s.anyWorkRunning) {
+                    toast("Another library job is still running. Stop it first, then find duplicates.")
+                    return@xpMenuDialog
+                }
+                s.startDupeFinder(songs)
+                toast("Comparing waveforms in the background. Watch the estimate, cancel anytime with Stop.")
+            }
         }
-        s.startDupeFinder(songs)
-        toast("Listening for duplicates in the background.")
     }
 
     private fun showDupeResults(
@@ -5692,21 +5761,58 @@ class MainActivity : AppCompatActivity() {
             .setNegativeButton("Close", null))
     }
 
-    private fun deleteSongsById(ids: List<Long>) {
+    private fun deleteSongsById(ids: List<Long>, permissionAttempts: Set<String> = emptySet()) {
         if (ids.isEmpty()) return
         lifecycleScope.launch(Dispatchers.IO) {
             var done = 0
             val errors = mutableListOf<String>()
+            val needUris = mutableListOf<String>()
+            val needSongs = mutableListOf<com.blissplayer.music.model.Song>()
             for (id in ids) {
                 val song = byId[id] ?: continue
                 when (val r = com.blissplayer.music.data.TagTools.delete(this@MainActivity, song)) {
-                    is com.blissplayer.music.data.TagTools.WriteResult.Ok -> done++
+                    is com.blissplayer.music.data.TagTools.WriteResult.Ok -> {
+                        done++
+                        launch(Dispatchers.Main) {
+                            queue.removeAll { it.mediaId == song.mediaId }
+                            removeFromPlayer(song.mediaId)
+                        }
+                    }
                     is com.blissplayer.music.data.TagTools.WriteResult.Failed -> errors.add("${song.title}: ${r.msg}")
-                    is com.blissplayer.music.data.TagTools.WriteResult.NeedsPermission -> errors.add("${song.title}: needs permission")
+                    is com.blissplayer.music.data.TagTools.WriteResult.NeedsPermission -> {
+                        if (song.contentUri in permissionAttempts) {
+                            errors.add("${song.title}: Android still denied after Allow.")
+                        } else {
+                            needUris.add(song.contentUri)
+                            needSongs.add(song)
+                        }
+                    }
                 }
             }
             launch(Dispatchers.Main) {
+                // Optimistic: vanished now, scan confirms.
+                val gone = ids.toSet()
+                songs = songs.filter { it.mediaId !in gone }
+                gone.forEach { byId.remove(it) }
+                render()
+                refreshQueueList()
+                refreshMini()
                 scan()
+                if (needUris.isNotEmpty() && android.os.Build.VERSION.SDK_INT >= 30) {
+                    val remaining = needSongs.map { it.mediaId }
+                    pendingRetries.addLast { deleteSongsById(remaining, permissionAttempts + needUris.toSet()) }
+                    try {
+                        val sender = android.provider.MediaStore.createDeleteRequest(
+                            contentResolver, needUris.distinct().map { android.net.Uri.parse(it) }
+                        ).intentSender
+                        senderLauncher.launch(androidx.activity.result.IntentSenderRequest.Builder(sender).build())
+                        toast("Allow once, then deleting finishes (${needUris.size} songs). Deleted $done so far.")
+                    } catch (e: Exception) {
+                        pendingRetries.clear()
+                        toast("Deleted $done songs. Could not request permission: ${e.message}")
+                    }
+                    return@launch
+                }
                 val extra = if (errors.isNotEmpty()) " ${errors.size} could not be deleted." else ""
                 toast("Deleted $done songs.$extra")
             }
@@ -5945,6 +6051,10 @@ class MainActivity : AppCompatActivity() {
         val s = svc
         if (s == null) {
             toast("Playback is still starting. Try again in a moment.")
+            return
+        }
+        if (s.anyWorkRunning) {
+            toast("Another library job is still running. Stop it first, then equalize.")
             return
         }
         // Runs in the service: no pop-up, survives back/rotate/swipe-away.

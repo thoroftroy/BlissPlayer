@@ -200,13 +200,14 @@ object LoudnessScanner {
 
     /**
      * Leading and trailing near silence as (trimStartMs, trimEndMsExclusive).
-     * Returns null when there is nothing worth skipping. Threshold catches
-     * complete silence and almost complete silence.
+     * Waveform RMS edges only: no realtime playback. Short edges plus early
+     * exit keep 1000-song libraries to minutes, not hours.
      */
     suspend fun silenceTrim(context: Context, uri: Uri, durationMs: Long): Pair<Long, Long>? {
         val safeDur = if (durationMs > 0) durationMs else return null
         if (safeDur < 5_000L) return null
-        val edgeLen = minOf(20_000L, safeDur / 3)
+        // Short edges: most dead air is under 8s. Cap at 10s or a quarter of the song.
+        val edgeLen = minOf(10_000L, safeDur / 4)
         val lead = decodeBuckets(context, uri, 0L, edgeLen) ?: return null
         // 100ms buckets from a continuous edge decode.
         val trim = com.blissplayer.core.AudioFingerprint.trimEdges(lead, 100L) ?: return null

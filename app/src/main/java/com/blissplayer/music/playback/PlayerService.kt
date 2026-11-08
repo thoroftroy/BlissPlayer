@@ -36,9 +36,15 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import kotlin.math.log10
 
@@ -70,11 +76,15 @@ class PlayerService : MediaSessionService() {
         const val ACTION_FAV = "bliss.fav"
         const val ACTION_ANALYZER_STOP = "bliss.analyzer_stop"
         const val ACTION_EQ_STOP = "bliss.eq_stop"
+        const val ACTION_TRIM_STOP = "bliss.trim_stop"
+        const val ACTION_DUPE_STOP = "bliss.dupe_stop"
         private const val CHANNEL = "bliss_playback"
         private const val NOTIF_ID = 1001
         private const val PROGRESS_CHANNEL = "bliss_progress"
         private const val ANALYZER_NOTIF_ID = 1002
         private const val EQ_NOTIF_ID = 1003
+        private const val TRIM_NOTIF_ID = 1004
+        private const val DUPE_NOTIF_ID = 1005
     }
 
     lateinit var player: ExoPlayer
@@ -569,6 +579,13 @@ class PlayerService : MediaSessionService() {
                 player.repeatMode = prefs.getInt("resume_repeat", Player.REPEAT_MODE_ALL).coerceIn(0, 2)
                 player.prepare()
                 if (play) startPlayback() else player.pause()
+                // Killed while swiped away: the queue exists but no UI will
+                // repost the card. Pin foreground now so controls survive
+                // without reopening the app, paused or playing.
+                if (player.mediaItemCount > 0) {
+                    runCatching { startForeground(NOTIF_ID, buildNotification()) }
+                    postNotif()
+                }
             } catch (e: Exception) {
                 if (e is kotlinx.coroutines.CancellationException) throw e
                 lastPlaybackError = "Could not restore playback: ${e.message}"
@@ -637,7 +654,15 @@ class PlayerService : MediaSessionService() {
                 ACTION_PREV -> player.seekToPreviousMediaItem()
                 ACTION_FAV -> toggleFavoriteNow()
                 ACTION_ANALYZER_STOP -> cancelAnalyzer()
-                ACTION_EQ_STOP -> cancelEqualizer()
+                ACTION_EQ_STOP -> {
+                    // Old builds shared one Stop for eq/trim/dupes. Cancel all
+                    // three so a stale Stop never leaves work running to repost.
+                    cancelEqualizer()
+                    cancelTrim(silent = true)
+                    cancelDupes(silent = true)
+                }
+                ACTION_TRIM_STOP -> cancelTrim()
+                ACTION_DUPE_STOP -> cancelDupes()
                 // Swiping the notification away means done with music: stop it all.
                 ACTION_STOP -> {
                     focusPolicy.onEvent(FocusPolicy.Event.STOPPED, respectFocus(), false)
@@ -896,6 +921,9 @@ class PlayerService : MediaSessionService() {
 
     val analyzerRunning: Boolean get() = analyzerJob?.isActive == true
     val eqRunning: Boolean get() = eqJob?.isActive == true
+    val trimRunning: Boolean get() = trimJob?.isActive == true
+    val dupeRunning: Boolean get() = dupeJob?.isActive == true
+    val anyWorkRunning: Boolean get() = analyzerRunning || eqRunning || trimRunning || dupeRunning
 
     private fun ensureProgressChannel() {
         if (Build.VERSION.SDK_INT >= 26) {
@@ -1094,69 +1122,108 @@ class PlayerService : MediaSessionService() {
         progressListener?.invoke("equalizer", 0, 0, "Stopped.")
     }
 
-    /** Trim silence: listen to the edges and add skip segments for dead air. */
+    /** Trim silence: waveform edges, parallel, no realtime listening. */
     fun startSilenceTrim(songs: List<Song>) {
         trimJob?.cancel()
         val total = songs.size
         if (total == 0) return
         val t0 = System.currentTimeMillis()
-        progressNotif(EQ_NOTIF_ID, "Trimming silence in $total songs",
-            "Starting.", 0, total, ACTION_EQ_STOP, 12)
+        progressNotif(TRIM_NOTIF_ID, "Trimming silence in $total songs",
+            "Starting.", 0, total, ACTION_TRIM_STOP, 13)
         progressListener?.invoke("trim", 0, total, "Starting.")
         trimJob = scope.launch(Dispatchers.Default) {
             var added = 0
+            var skippedDone = 0
             try {
-                songs.forEachIndexed { i, s ->
-                    if (!isActive) return@forEachIndexed
-                    val res = runCatching {
-                        LoudnessScanner.silenceTrim(
-                            this@PlayerService,
-                            android.net.Uri.parse(s.contentUri),
-                            s.durationMs
-                        )
-                    }.getOrNull()
-                    if (res != null) {
-                        val (start, end) = res
-                        runCatching {
-                            val existing = db.segmentsFor(s.mediaId)
-                            val hasLead = start > 0 && existing.any { it.startMs <= 500 && it.label == "Silence" }
-                            val hasTrail = end < s.durationMs && existing.any { it.endMs >= s.durationMs - 1000 && it.label == "Silence" }
-                            if (start > 0 && !hasLead) {
-                                db.addSegment(s.mediaId, 0, start, "Silence")
-                                added++
-                            }
-                            if (end < s.durationMs && !hasTrail) {
-                                db.addSegment(s.mediaId, end, s.durationMs, "Silence")
-                                added++
+                val sem = kotlinx.coroutines.sync.Semaphore((Runtime.getRuntime().availableProcessors() * 2).coerceIn(8, 12))
+                val done = java.util.concurrent.atomic.AtomicInteger(0)
+                // Pre-check: songs already trimmed at both edges skip decode entirely.
+                val todo = songs.filter { s ->
+                    val existing = runCatching { db.segmentsFor(s.mediaId) }.getOrDefault(emptyList())
+                    val hasLead = existing.any { it.startMs <= 500 && it.label == "Silence" }
+                    val hasTrail = existing.any { it.endMs >= s.durationMs - 1000 && it.label == "Silence" }
+                    if (hasLead && hasTrail) {
+                        skippedDone++
+                        false
+                    } else true
+                }
+                if (todo.isEmpty()) {
+                    runCatching { notifManager.cancel(TRIM_NOTIF_ID) }
+                    doneNotif(TRIM_NOTIF_ID, "Silence trim done", "Already trimmed. Nothing to do.")
+                    progressListener?.invoke("trim", total, total, "Done: already trimmed.")
+                    return@launch
+                }
+                coroutineScope {
+                    todo.map { s ->
+                        async {
+                            sem.withPermit {
+                                ensureActive()
+                                val res = try {
+                                    LoudnessScanner.silenceTrim(
+                                        this@PlayerService,
+                                        android.net.Uri.parse(s.contentUri),
+                                        s.durationMs
+                                    )
+                                } catch (e: Exception) {
+                                    if (e is kotlinx.coroutines.CancellationException) throw e
+                                    null
+                                }
+                                if (res != null) {
+                                    val (start, end) = res
+                                    runCatching {
+                                        val existing = db.segmentsFor(s.mediaId)
+                                        val hasLead = start > 0 && existing.any { it.startMs <= 500 && it.label == "Silence" }
+                                        val hasTrail = end < s.durationMs && existing.any { it.endMs >= s.durationMs - 1000 && it.label == "Silence" }
+                                        if (start > 0 && !hasLead) {
+                                            db.addSegment(s.mediaId, 0, start, "Silence")
+                                            synchronized(this@PlayerService) { added++ }
+                                        }
+                                        if (end < s.durationMs && !hasTrail) {
+                                            db.addSegment(s.mediaId, end, s.durationMs, "Silence")
+                                            synchronized(this@PlayerService) { added++ }
+                                        }
+                                    }
+                                }
+                                val d = done.incrementAndGet()
+                                if (d % 10 == 0 || d == todo.size) {
+                                    ensureActive()
+                                    val eta = fmtEta(d, todo.size, System.currentTimeMillis() - t0)
+                                    val text = "Waveform edges ($d of ${todo.size}, $eta): ${s.title}"
+                                    progressNotif(TRIM_NOTIF_ID, "Trimming silence in $total songs",
+                                        text, d, todo.size, ACTION_TRIM_STOP, 13)
+                                    progressListener?.invoke("trim", d, todo.size, text)
+                                }
                             }
                         }
-                    }
-                    if (i % 5 == 0 || i == total - 1) {
-                        val eta = fmtEta(i + 1, total, System.currentTimeMillis() - t0)
-                        val text = "Listening for silence (${i + 1} of $total, $eta): ${s.title}"
-                        progressNotif(EQ_NOTIF_ID, "Trimming silence in $total songs",
-                            text, i + 1, total, ACTION_EQ_STOP, 12)
-                        progressListener?.invoke("trim", i + 1, total, text)
-                    }
+                    }.forEach { it.await() }
                 }
                 runCatching { refreshSegments() }
-                runCatching { notifManager.cancel(EQ_NOTIF_ID) }
-                doneNotif(EQ_NOTIF_ID, "Silence trim done", "$added edge segments added. Tap to open.")
-                progressListener?.invoke("trim", total, total, "Done: $added edge segments added.")
+                runCatching { notifManager.cancel(TRIM_NOTIF_ID) }
+                val reuse = if (skippedDone > 0) " $skippedDone already trimmed." else ""
+                doneNotif(TRIM_NOTIF_ID, "Silence trim done", "$added edge segments added.$reuse Tap to open.")
+                progressListener?.invoke("trim", total, total, "Done: $added edge segments added.$reuse")
             } catch (e: Exception) {
-                if (e is kotlinx.coroutines.CancellationException) throw e
-                runCatching { notifManager.cancel(EQ_NOTIF_ID) }
+                if (e is kotlinx.coroutines.CancellationException) {
+                    runCatching { notifManager.cancel(TRIM_NOTIF_ID) }
+                    progressListener?.invoke("trim", 0, total, "Stopped.")
+                    throw e
+                }
+                runCatching { notifManager.cancel(TRIM_NOTIF_ID) }
+                doneNotif(TRIM_NOTIF_ID, "Silence trim stopped", "What finished is kept.")
                 progressListener?.invoke("trim", 0, total, "Stopped.")
             }
         }
     }
 
-    fun cancelTrim() {
+    fun cancelTrim(silent: Boolean = false) {
         trimJob?.cancel()
+        runCatching { notifManager.cancel(TRIM_NOTIF_ID) }
+        // Also clear the legacy shared id in case this Stop came from an old notification.
         runCatching { notifManager.cancel(EQ_NOTIF_ID) }
+        if (!silent) progressListener?.invoke("trim", 0, 0, "Stopped.")
     }
 
-    /** Dupe finder: listen and compare fingerprints, plus same name different audio. */
+    /** Dupe finder: waveform fingerprints compared, never realtime playback. */
     fun startDupeFinder(songs: List<Song>) {
         dupeJob?.cancel()
         dupePairs = null
@@ -1164,11 +1231,12 @@ class PlayerService : MediaSessionService() {
         val total = songs.size
         if (total == 0) return
         val t0 = System.currentTimeMillis()
-        progressNotif(EQ_NOTIF_ID, "Finding duplicates in $total songs",
-            "Starting.", 0, total, ACTION_EQ_STOP, 12)
+        progressNotif(DUPE_NOTIF_ID, "Finding duplicates in $total songs",
+            "Starting.", 0, total, ACTION_DUPE_STOP, 14)
         progressListener?.invoke("dupes", 0, total, "Starting.")
         dupeJob = scope.launch(Dispatchers.Default) {
             try {
+                ensureActive()
                 // Narrow first: same duration within 3s, or same normalized title.
                 fun normTitle(s: Song): String {
                     return s.title.lowercase().replace(Regex("[^a-z0-9 ]"), "").trim().replace(Regex("\\s+"), " ")
@@ -1194,24 +1262,35 @@ class PlayerService : MediaSessionService() {
                 // Cap pairs so huge libraries still finish.
                 val pairList = candidates.toList().take(4000)
                 val byId = songs.associateBy { it.mediaId }
-                val prints = mutableMapOf<Long, com.blissplayer.core.AudioFingerprint.Print>()
+                val prints = java.util.concurrent.ConcurrentHashMap<Long, com.blissplayer.core.AudioFingerprint.Print>()
                 val needIds = pairList.flatMap { listOf(it.first, it.second) }.toSet().take(600)
-                var doneFp = 0
-                for (id in needIds) {
-                    if (!isActive) break
-                    val s = byId[id] ?: continue
-                    val p = runCatching {
-                        LoudnessScanner.fingerprint(this@PlayerService, android.net.Uri.parse(s.contentUri), s.durationMs)
-                    }.getOrNull()
-                    if (p != null) prints[id] = p
-                    doneFp++
-                    if (doneFp % 10 == 0) {
-                        val eta = fmtEta(doneFp, needIds.size, System.currentTimeMillis() - t0)
-                        val text = "Listening for duplicates ($doneFp of ${needIds.size}, $eta)"
-                        progressNotif(EQ_NOTIF_ID, "Finding duplicates in $total songs",
-                            text, doneFp, needIds.size, ACTION_EQ_STOP, 12)
-                        progressListener?.invoke("dupes", doneFp, needIds.size, text)
-                    }
+                val doneFp = java.util.concurrent.atomic.AtomicInteger(0)
+                val sem = kotlinx.coroutines.sync.Semaphore((Runtime.getRuntime().availableProcessors() * 2).coerceIn(8, 12))
+                coroutineScope {
+                    needIds.map { id ->
+                        async {
+                            sem.withPermit {
+                                ensureActive()
+                                val s = byId[id] ?: return@withPermit
+                                val p = try {
+                                    LoudnessScanner.fingerprint(this@PlayerService, android.net.Uri.parse(s.contentUri), s.durationMs)
+                                } catch (e: Exception) {
+                                    if (e is kotlinx.coroutines.CancellationException) throw e
+                                    null
+                                }
+                                if (p != null) prints[id] = p
+                                val d = doneFp.incrementAndGet()
+                                if (d % 10 == 0 || d == needIds.size) {
+                                    ensureActive()
+                                    val eta = fmtEta(d, needIds.size, System.currentTimeMillis() - t0)
+                                    val text = "Waveform compare ($d of ${needIds.size}, $eta)"
+                                    progressNotif(DUPE_NOTIF_ID, "Finding duplicates in $total songs",
+                                        text, d, needIds.size, ACTION_DUPE_STOP, 14)
+                                    progressListener?.invoke("dupes", d, needIds.size, text)
+                                }
+                            }
+                        }
+                    }.forEach { it.await() }
                 }
                 val pairs = mutableListOf<DupePair>()
                 for ((aId, bId) in pairList) {
@@ -1250,21 +1329,28 @@ class PlayerService : MediaSessionService() {
                 }
                 dupePairs = pairs.take(200)
                 dupeClashes = clashes.take(100)
-                runCatching { notifManager.cancel(EQ_NOTIF_ID) }
+                runCatching { notifManager.cancel(DUPE_NOTIF_ID) }
                 val msg = "${pairs.size} similar pairs, ${clashes.size} same name different audio. Tap to open."
-                doneNotif(EQ_NOTIF_ID, "Dupe finder done", msg)
+                doneNotif(DUPE_NOTIF_ID, "Dupe finder done", msg)
                 progressListener?.invoke("dupes", total, total, "Done: $msg")
             } catch (e: Exception) {
-                if (e is kotlinx.coroutines.CancellationException) throw e
-                runCatching { notifManager.cancel(EQ_NOTIF_ID) }
+                if (e is kotlinx.coroutines.CancellationException) {
+                    runCatching { notifManager.cancel(DUPE_NOTIF_ID) }
+                    progressListener?.invoke("dupes", 0, total, "Stopped.")
+                    throw e
+                }
+                runCatching { notifManager.cancel(DUPE_NOTIF_ID) }
+                doneNotif(DUPE_NOTIF_ID, "Dupe finder stopped", "What finished is kept.")
                 progressListener?.invoke("dupes", 0, total, "Stopped.")
             }
         }
     }
 
-    fun cancelDupes() {
+    fun cancelDupes(silent: Boolean = false) {
         dupeJob?.cancel()
+        runCatching { notifManager.cancel(DUPE_NOTIF_ID) }
         runCatching { notifManager.cancel(EQ_NOTIF_ID) }
+        if (!silent) progressListener?.invoke("dupes", 0, 0, "Stopped.")
     }
 
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? = session
