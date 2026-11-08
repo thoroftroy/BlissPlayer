@@ -43,8 +43,13 @@ object MusicBrainzLookup {
         try {
             return block()
         } finally {
-            delay(HOLD_MS)
-            bucket.release()
+            // Cancellation-safe: a Stop pressed mid-hold must never skip
+            // the release, or every later lookup in this process stalls.
+            try {
+                kotlinx.coroutines.withContext(kotlinx.coroutines.NonCancellable) { delay(HOLD_MS) }
+            } finally {
+                bucket.release()
+            }
         }
     }
 
@@ -86,13 +91,33 @@ object MusicBrainzLookup {
         }
         val url = API + "?query=" + URLEncoder.encode(q, "UTF-8") +
             "&fmt=json&limit=5&inc=releases+release-groups+tags"
+        return fetch(url, 5)
+    }
+
+    /**
+     * One request for up to [titles.size] songs: an OR of exact recording
+     * phrases. Callers filter the shared hit list per song with the same
+     * exact-title plus artist rules as [search], so accuracy is identical
+     * while MusicBrainz traffic drops ~8x (1 request/sec shared limit).
+     */
+    suspend fun searchBatch(titles: List<String>): List<Hit> {
+        val clean = titles.filter { it.isNotBlank() }.distinct().take(8)
+        if (clean.isEmpty()) return emptyList()
+        val q = clean.joinToString(" OR ") { "recording:" + esc(it) }
+        val limit = (clean.size * 4).coerceIn(10, 50)
+        val url = API + "?query=" + URLEncoder.encode(q, "UTF-8") +
+            "&fmt=json&limit=$limit&inc=releases+release-groups+tags"
+        return fetch(url, limit)
+    }
+
+    private suspend fun fetch(url: String, max: Int): List<Hit> {
         var attempt = 0
         while (true) {
             if (boxed()) return emptyList()
             try {
                 val body = paced { getThrowing(url) } ?: return emptyList()
                 consecutiveLimits.set(0)
-                return parse(body)
+                return parse(body, max)
             } catch (e: RateLimited) {
                 limits.incrementAndGet()
                 consecutiveLimits.incrementAndGet()
@@ -194,14 +219,14 @@ object MusicBrainzLookup {
     }
 
     /** Minimal reader for the recordings array. */
-    fun parse(body: String): List<Hit> {
+    fun parse(body: String, max: Int = 5): List<Hit> {
         val out = mutableListOf<Hit>()
         var idx = body.indexOf("\"recordings\":")
         if (idx < 0) return out
         idx = body.indexOf('[', idx)
         if (idx < 0) return out
         var i = idx + 1
-        while (out.size < 5 && i < body.length) {
+        while (out.size < max && i < body.length) {
             // Next top-level object in the array.
             while (i < body.length && body[i] != '{' && body[i] != ']') i++
             if (i >= body.length || body[i] == ']') break

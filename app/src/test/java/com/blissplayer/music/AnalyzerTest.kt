@@ -542,14 +542,29 @@ class AnalyzerTest {
     }
 
     @Test
-    fun mbFoldDurationGuardsFalseHigh() {
-        val hits = listOf(MusicBrainzLookup.Hit("Halo", "Beyonce", "I Am...", "Pop", 225_000L))
+    fun mbFoldDurationGuardsFalseHigh() {        val hits = listOf(MusicBrainzLookup.Hit("Halo", "Beyonce", "I Am...", "Pop", 225_000L))
         val wrong = SongAnalyzer.mbFold("Halo", "Beyonce", "Uncategorized", hits, 90_000L)
         assertNotNull(wrong)
         assertFalse(wrong!!.high)
         val right = SongAnalyzer.mbFold("Halo", "Beyonce", "Uncategorized", hits, 224_000L)
         assertNotNull(right)
         assertTrue(right!!.high)
+    }
+
+    @Test
+    fun filenameReadingCorrectsPreviousBadTags() {
+        // A previous analyzer run wrote wrong tags, but the filename holds
+        // the truth: the filename-derived reading must clean to the real
+        // song, which is what selectReading tries before the polluted tags.
+        val fileBase = "16 stitch - Fallout"
+        val fileReading = SongAnalyzer.cleanLocal(fileBase, "", fileBase)
+        assertEquals("Fallout", fileReading.title)
+        assertEquals("16 stitch", fileReading.artist)
+        // Dashless filenames clean to the solo-equivalent (title, "") query.
+        val soloBase = "1916"
+        val soloReading = SongAnalyzer.cleanLocal(soloBase, "", soloBase)
+        assertEquals("1916", soloReading.title)
+        assertTrue(soloReading.artist.isBlank() || SongAnalyzer.isUnknownArtist(soloReading.artist))
     }
 
     @Test

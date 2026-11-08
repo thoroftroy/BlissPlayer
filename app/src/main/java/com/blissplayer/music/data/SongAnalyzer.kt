@@ -184,9 +184,11 @@ object SongAnalyzer {
 
         // Phase 2: Wikipedia confirmation + enrichment.
         // One cheap probe first: without network there is no point burning
-        // minutes on per-song timeouts. Songs run several-wide with a
-        // persistent answer cache, so a thousand-song library costs one
-        // lookup per unique song ever.
+        // minutes on per-song timeouts. MusicBrainz goes out batched (one
+        // request covers 8 titles against its 1-request-per-second limit),
+        // then songs finish in parallel with Wikipedia fallbacks. Answers
+        // persist in the cache, so a thousand-song library costs one lookup
+        // per unique song ever.
         var offline = false
         if (online && mids.isNotEmpty()) {
             offline = try {
@@ -196,11 +198,45 @@ object SongAnalyzer {
                 true
             }
             if (!offline) {
-                val sem = kotlinx.coroutines.sync.Semaphore(8)
+                // Memo pass (free): absorb cached answers, learn each song's
+                // single network reading.
+                val pending = mutableListOf<Triple<Mid, String, String>>()
+                for (m in mids) {
+                    coroutineContext.ensureActive()
+                    if (m.versioned) continue
+                    selectReading(m, genreOf, lookupCache)?.let { (tt, aa) ->
+                        pending.add(Triple(m, tt, aa))
+                    }
+                }
+                // Batched MusicBrainz: one request per 8 distinct titles.
+                val mbByTitle = mutableMapOf<String, List<MusicBrainzLookup.Hit>>()
+                var batched = 0
+                pending.map { it.second }.distinct().chunked(8).forEach { titles ->
+                    coroutineContext.ensureActive()
+                    val hits = try {
+                        MusicBrainzLookup.searchBatch(titles)
+                    } catch (e: Exception) {
+                        if (e is kotlinx.coroutines.CancellationException) throw e
+                        emptyList()
+                    }
+                    // Distribute by exact title match, the same rule the
+                    // per-song path enforces: each title's recordings land
+                    // with the songs that asked for that title.
+                    for (t in titles) {
+                        val want = WikiLookup.norm(MusicBrainzLookup.baseTitle(t))
+                        mbByTitle[t] = hits.filter {
+                            WikiLookup.norm(MusicBrainzLookup.baseTitle(it.track)) == want
+                        }
+                    }
+                    batched += titles.size
+                    report(batched.coerceAtMost(mids.size), mids.size, "lookup")
+                }
+                // Per-song finish (12 workers overlap Wikipedia fetches).
+                val sem = kotlinx.coroutines.sync.Semaphore(12)
                 val done = java.util.concurrent.atomic.AtomicInteger(0)
-                mids.map { m ->
+                pending.map { (m, tt, aa) ->
                     async {
-                        sem.withPermit { lookupOne(m, genreOf, lookupCache) }
+                        sem.withPermit { finishWithMb(m, tt, aa, mbByTitle[tt] ?: emptyList(), genreOf, lookupCache) }
                         report(done.incrementAndGet(), mids.size, "lookup")
                     }
                 }.awaitAll()
@@ -378,163 +414,174 @@ object SongAnalyzer {
     fun isBadAlbumTitle(title: String): Boolean =
         com.blissplayer.core.AnalyzerRules.isBadAlbumTitle(title)
 
-    private suspend fun lookupOne(
+    /**
+     * Memo pass over one song's candidate readings (free): absorb cached
+     * answers, and pick the single reading that goes to the network.
+     * Returns null when a High memo settles the song or no reading is left.
+     * A redo pass naturally tries the next untried reading because tried
+     * ones leave memos behind.
+     */
+    private suspend fun selectReading(
         m: Mid, genreOf: (Long) -> String, cache: LookupCache?
-    ) {
+    ): Pair<String, String>? {
         coroutineContext.ensureActive()
-        // Modified re-uploads keep their version words: Wikipedia
-        // would only find the unmodified original, so skip it.
-        if (m.versioned) return
         val g0 = genreOf(m.song.mediaId)
-        // Primary reading first, then the swapped order ("Title - Artist"
-        // uploaders), then the bare title (uploader tags poison the query).
-        // Plus the filename reading: a previous bad analyzer run may have
-        // written wrong tags, but the filename still holds the truth.
-        val tried = mutableListOf<Pair<String, String>>(m.title to m.artist)
-        m.altArtist.takeIf { it.isNotBlank() }?.let { aa ->
-            m.altTitle.takeIf { it.isNotBlank() }?.let { at ->
-                if (at to aa != tried[0]) tried.add(at to aa)
-            }
-        }
+        val primary = m.title to m.artist
+        var fileReading: Pair<String, String>? = null
         runCatching {
             val base = (m.song.filePath ?: "").substringAfterLast('/').substringBeforeLast('.').trim()
-            if (base.isNotBlank() && " - " in base) {
+            if (base.isNotBlank()) {
                 val c = cleanLocal(base, "", base)
-                if (c.title.isNotBlank() && (c.title to c.artist) !in tried) {
-                    tried.add(c.title to c.artist)
+                if (c.title.isNotBlank() && (c.title to c.artist) != primary) {
+                    fileReading = c.title to c.artist
                 }
             }
         }
-        if (!isUnknownArtist(m.artist) && WikiLookup.norm(m.artist) !in WikiLookup.norm(m.title)) {
-            val solo = m.title to ""
-            if (solo != tried[0] && solo !in tried) tried.add(solo)
+        val tagSuspicious = isUnknownArtist(m.artist) || artistSuspicious(m.artist)
+        val ordered = mutableListOf<Pair<String, String>>()
+        if (tagSuspicious) {
+            fileReading?.let { ordered.add(it) }
+            ordered.add(primary)
+            m.altArtist.takeIf { it.isNotBlank() }?.let { aa ->
+                m.altTitle.takeIf { it.isNotBlank() }?.let { at ->
+                    if ((at to aa) !in ordered) ordered.add(at to aa)
+                }
+            }
+        } else {
+            ordered.add(primary)
+            fileReading?.let { ordered.add(it) }
         }
-        // Once any reading confirms the title, later readings still try cheap
-        // MusicBrainz (it may upgrade to High) but skip slow Wikipedia: it would
-        // only re-confirm the same title.
-        var confirmed = false
-        for ((tt, aa) in tried) {
+        var netReading: Pair<String, String>? = null
+        for ((tt, aa) in ordered) {
             coroutineContext.ensureActive()
-            val solo = aa.isBlank()
             val memo = runCatching { cache?.get(tt, aa) }.getOrNull()
-            if (memo != null && !memo.found) continue
-            if (memo != null && memo.found) {
-                // Memo artist differs from this reading: a recorded suggestion.
-                val suggested = memo.artist.takeIf { it.isNotBlank() && it != aa }
-                val f = Folded(
-                    memo.title, suggested, memo.genre, memo.album,
-                    memo.hitTitle, memo.pageId, memo.high, memo.titleConfirmed,
-                    if (memo.high) listOf("Online: ${memo.hitTitle}")
-                    else listOf("Online title match")
-                )
-                if (absorb(m, f, g0, solo)) return
-                if (f.titleConfirmed) confirmed = true
+            if (memo == null) {
+                if (netReading == null) netReading = tt to aa
                 continue
             }
-            // MusicBrainz first: one structured call carries performer,
-            // album, genre. Wikipedia runs only when it has nothing at all.
-            val mb = try {
-                MusicBrainzLookup.search(tt, aa)
-            } catch (e: Exception) {
-                if (e is kotlinx.coroutines.CancellationException) throw e
-                emptyList()
-            }
-            val folded = mbFold(tt, aa, g0, mb, m.song.durationMs)
-            if (folded != null) {
-                val ok = corroborated(aa, folded.snippetArtist, tt, folded.high)
-                if (ok) {
-                    val album = mbAlbum(tt, mb)
-                    // Genre backfill: MusicBrainz tags are sparse, so a
-                    // confirmed title without genre gets one Wikipedia
-                    // details call (cached with the answer).
-                    var mbGenre = folded.genre
-                    if (mbGenre == null && folded.titleConfirmed &&
-                        (g0.isBlank() || g0 == "Uncategorized")
-                    ) {
-                        mbGenre = wikiGenreFor(tt, aa)
-                    }
-                    runCatching {
-                        cache?.put(
-                            tt, aa, CachedLookup(
-                                folded.title,
-                                if (!solo && folded.titleConfirmed) folded.snippetArtist ?: folded.artist else folded.artist,
-                                mbGenre, album, -1, folded.title,
-                                folded.high && !solo, folded.titleConfirmed, true
-                            )
-                        )
-                    }
-                    val f = Folded(
-                        folded.title,
-                        if (!solo && folded.titleConfirmed) folded.snippetArtist else null,
-                        mbGenre, album, folded.title, -1,
-                        folded.high && !solo, folded.titleConfirmed, folded.reasons.toList()
-                    )
-                    if (absorb(m, f, g0, solo)) return
-                    if (f.titleConfirmed) confirmed = true
-                    continue
-                }
-            }
-            if (!confirmed) {
-            val hit = try {
-                WikiLookup.lookup(tt, aa)
-            } catch (e: Exception) {
-                if (e is kotlinx.coroutines.CancellationException) throw e
-                null
-            }
-            if (hit == null) {
-                runCatching { cache?.put(tt, aa, miss()) }
-                continue
-            }
-            val applied = applyWikiResult(tt, aa, g0, hit)
-            if (!corroborated(aa, applied.snippetArtist, tt, applied.high)) {
-                // Title matched nothing trustworthy: pure guess, not kept.
-                // Cache the miss so obscure songs cost one lookup ever.
-                if (!applied.titleConfirmed) {
-                    runCatching {
-                        cache?.put(
-                            tt, aa, CachedLookup(
-                                applied.title, aa, null, null,
-                                hit.pageId, hit.title, false, false, false
-                            )
-                        )
-                    }
-                }
-                continue
-            }
-            var genre = applied.genre
-            var album: String? = null
-            if (applied.titleConfirmed) {
-                // One combined call serves categories-genre and infobox
-                // genre/album together.
-                val details = pageDetails(hit.pageId)
-                if (genre == null) {
-                    genre = details?.first?.let { genreFromCategories(it) }
-                        ?: details?.second?.genre?.let { genreFromCategories(listOf(it)) }
-                }
-                album = WikiLookup.snippetAlbum(hit.snippet) ?: details?.second?.album
-            }
-            runCatching {
-                cache?.put(
-                    tt, aa, CachedLookup(
-                        applied.title,
-                        if (!solo && applied.titleConfirmed) {
-                            applied.snippetArtist ?: applied.artist
-                        } else applied.artist,
-                        genre, album, hit.pageId, hit.title,
-                        applied.high && !solo, applied.titleConfirmed, true
-                    )
-                )
-            }
+            if (!memo.found) continue
+            val solo = aa.isBlank()
+            val suggested = memo.artist.takeIf { it.isNotBlank() && it != aa }
             val f = Folded(
-                applied.title,
-                if (!solo && applied.titleConfirmed) applied.snippetArtist else null,
-                genre, album, hit.title, hit.pageId, applied.high && !solo, applied.titleConfirmed,
-                applied.reasons.toList()
+                memo.title, suggested, memo.genre, memo.album,
+                memo.hitTitle, memo.pageId, memo.high, memo.titleConfirmed,
+                if (memo.high) listOf("Online: ${memo.hitTitle}")
+                else listOf("Online title match")
             )
-            if (absorb(m, f, g0, solo)) return
-            if (f.titleConfirmed) confirmed = true
-            } // (!confirmed)
+            if (absorb(m, f, g0, solo)) return null
         }
+        return netReading
+    }
+
+    /**
+     * Finish one song with pre-batched MusicBrainz hits plus the Wikipedia
+     * fallback. The same exact-title plus artist rules as the old per-song
+     * path apply; only the transport is batched.
+     */
+    private suspend fun finishWithMb(
+        m: Mid, tt: String, aa: String, mb: List<MusicBrainzLookup.Hit>,
+        genreOf: (Long) -> String, cache: LookupCache?
+    ) {
+        coroutineContext.ensureActive()
+        val g0 = genreOf(m.song.mediaId)
+        val solo = aa.isBlank()
+        val folded = mbFold(tt, aa, g0, mb, m.song.durationMs)
+        if (folded != null) {
+            val ok = corroborated(aa, folded.snippetArtist, tt, folded.high)
+            if (ok) {
+                val album = mbAlbum(tt, mb)
+                // Genre backfill: MusicBrainz tags are sparse, so a
+                // confirmed title without genre gets one Wikipedia
+                // details call (cached with the answer).
+                var mbGenre = folded.genre
+                if (mbGenre == null && folded.titleConfirmed &&
+                    (g0.isBlank() || g0 == "Uncategorized")
+                ) {
+                    mbGenre = wikiGenreFor(tt, aa)
+                }
+                runCatching {
+                    cache?.put(
+                        tt, aa, CachedLookup(
+                            folded.title,
+                            if (!solo && folded.titleConfirmed) folded.snippetArtist ?: folded.artist else folded.artist,
+                            mbGenre, album, -1, folded.title,
+                            folded.high && !solo, folded.titleConfirmed, true
+                        )
+                    )
+                }
+                val f = Folded(
+                    folded.title,
+                    if (!solo && folded.titleConfirmed) folded.snippetArtist else null,
+                    mbGenre, album, folded.title, -1,
+                    folded.high && !solo, folded.titleConfirmed, folded.reasons.toList()
+                )
+                absorb(m, f, g0, solo)
+                return
+            }
+        }
+        val throttlesBefore = WikiLookup.throttleCount()
+        val hit = try {
+            WikiLookup.lookup(tt, aa)
+        } catch (e: Exception) {
+            if (e is kotlinx.coroutines.CancellationException) throw e
+            null
+        }
+        if (hit == null) {
+            // A throttle is transient: never cache it as a miss, or a redo
+            // would skip a song that was never actually looked up.
+            if (WikiLookup.throttleCount() == throttlesBefore) {
+                runCatching { cache?.put(tt, aa, miss()) }
+            }
+            return
+        }
+        val applied = applyWikiResult(tt, aa, g0, hit)
+        if (!corroborated(aa, applied.snippetArtist, tt, applied.high)) {
+            // Title matched nothing trustworthy: pure guess, not kept.
+            // Cache the miss so obscure songs cost one lookup ever.
+            if (!applied.titleConfirmed) {
+                runCatching {
+                    cache?.put(
+                        tt, aa, CachedLookup(
+                            applied.title, aa, null, null,
+                            hit.pageId, hit.title, false, false, false
+                        )
+                    )
+                }
+            }
+            return
+        }
+        var genre = applied.genre
+        var album: String? = WikiLookup.snippetAlbum(hit.snippet)
+        if (applied.titleConfirmed && (genre == null || album == null)) {
+            // One combined call serves categories-genre and infobox
+            // genre/album together. Skipped when the snippet already
+            // carried both, saving a fetch per song.
+            val details = pageDetails(hit.pageId)
+            if (genre == null) {
+                genre = details?.first?.let { genreFromCategories(it) }
+                    ?: details?.second?.genre?.let { genreFromCategories(listOf(it)) }
+            }
+            if (album == null) album = details?.second?.album
+        }
+        runCatching {
+            cache?.put(
+                tt, aa, CachedLookup(
+                    applied.title,
+                    if (!solo && applied.titleConfirmed) {
+                        applied.snippetArtist ?: applied.artist
+                    } else applied.artist,
+                    genre, album, hit.pageId, hit.title,
+                    applied.high && !solo, applied.titleConfirmed, true
+                )
+            )
+        }
+        val f = Folded(
+            applied.title,
+            if (!solo && applied.titleConfirmed) applied.snippetArtist else null,
+            genre, album, hit.title, hit.pageId, applied.high && !solo, applied.titleConfirmed,
+            applied.reasons.toList()
+        )
+        absorb(m, f, g0, solo)
     }
 
     /**

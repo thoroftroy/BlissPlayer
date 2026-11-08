@@ -197,8 +197,8 @@ object WikiLookup {
 
     // Wikipedia throttles concurrent bulk callers, so fetches go through a
     // token bucket: at most PERMITS overlap, each holding its permit for
-    // HOLD_MS. iTunes-first keeps this path's volume low.
-    private val bucket = kotlinx.coroutines.sync.Semaphore(2)
+    // HOLD_MS. Throttles back off with one retry and never poison the cache.
+    private val bucket = kotlinx.coroutines.sync.Semaphore(4)
     private const val HOLD_MS = 500L
 
     suspend fun <T> paced(block: suspend () -> T): T {
@@ -206,8 +206,15 @@ object WikiLookup {
         try {
             return block()
         } finally {
-            kotlinx.coroutines.delay(HOLD_MS)
-            bucket.release()
+            // Cancellation-safe: a Stop pressed mid-hold must never skip
+            // the release, or every later lookup in this process stalls.
+            try {
+                kotlinx.coroutines.withContext(kotlinx.coroutines.NonCancellable) {
+                    kotlinx.coroutines.delay(HOLD_MS)
+                }
+            } finally {
+                bucket.release()
+            }
         }
     }
 
