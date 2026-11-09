@@ -77,7 +77,7 @@ android {
 }
 
 dependencies {
-    // Playback: ExoPlayer core only (no UI module — custom XP UI). Keeps APK small.
+    // Playback uses ExoPlayer core only with a custom XP UI. That keeps the APK small.
     val media3 = "1.4.1"
     implementation("androidx.media3:media3-exoplayer:$media3")
     implementation("androidx.media3:media3-session:$media3")

@@ -28,7 +28,7 @@
   (title bars, buttons, selected row, display, sections) still pass, proving
   no visual change from the migration.
 - Modern rows now share code: `RowCardDrawing` (rounded cards, same stops/
-  hairlines/geometry as `MaterialDrawable` ROW — Aqua delegated on Android
+  hairlines/geometry as `MaterialDrawable` ROW. Aqua delegates on Android
   too) and `TrackGlyphDrawing` (CD/hexagon, delegated by Android's
   `ThemeGlyphDrawable`; Super's animated sheen stays platform-side).
   Verified by `ModernRowDrawingTest`, desktop `PolishShots`, and real Xvfb
@@ -43,7 +43,7 @@
 - Shared tray model: `:core` `TrayMenu` (ids, labels, dispatch) is used by the
   Linux AWT fallback and the new native SNI tray; `TrayMenuTest` covers all
   five entries, the unknown-id case, and that Quit sends no transport command
-  (the old code also fired PAUSE on Quit — fixed).
+  (the old code also fired PAUSE on Quit, which is fixed).
 - Native StatusNotifierItem tray (`DesktopSniTray`, dbus-java): exports
   `/StatusNotifierItem` + `/Menu` (com.canonical.dbusmenu) and registers with
   `org.kde.StatusNotifierWatcher`. Verified against the real Plasma panel:
@@ -51,7 +51,7 @@
   (Category/Id/Title/Status/Menu/ItemIsMenu) introspect correctly,
   `GetLayout` returns the 5 labeled entries over the wire, and `Event`
   clicks for Play/Pause (TOGGLE), Show and Quit dispatch through the shared
-  model — Quit exits the full desktop app and unregisters the item.
+  model. Quit exits the full desktop app and unregisters the item.
 - `DesktopSniTrayTest` replays layout + clicks over the real session bus
   (two connections, no watcher registration so no panel icon in tests).
 - AWT fallback kept for X11 desktops without SNI (SNI is attempted first,
@@ -79,7 +79,7 @@
   cards, CD glyphs, round dot buttons and glass/neon decks; Linux renders
   tinted flat XP rows with square controls. That gap stays open (native UIs
   per D-1); no parity claimed.
-- JVM suites: core 26+3, desktop 16, app 99 (6 skipped) — green.
+- JVM suites: core 26+3, desktop 16, app 99 (6 skipped), all green.
 
 ## Shared seek-bar work (0.11.25, Nov 5, 2026)
 
@@ -340,7 +340,7 @@ FFmpeg/AAC, not a user music file. Test reports are in `app/build/reports/`.
   bus exists), 4 themes with per-theme fonts, auto/phone/desktop layout toggle,
   folders/analyzer/loudness/boost/mixer/playlists/portable-import-export/stats.
 - Headless parity smoke green on the full `~/Downloads/YMusic` library too
-  (1177 files — the same corpus as the Android bulk runs): scan 1177/1177,
+  (1177 files, the same corpus as the Android bulk runs): scan 1177/1177,
   tag read, playlist v1 round-trip + keep-missing + fuzzy relink
   (Truck Drivin Song.m4a), loudness rms 0.329, real VLC play (pos 1000ms),
   seek to 30s, pause holds.
@@ -354,13 +354,13 @@ FFmpeg/AAC, not a user music file. Test reports are in `app/build/reports/`.
   sections in the same order with the same hues, same dialogs/menus
   (segments editor, playlist picker, sort, filter, queue reorder, stats).
 - `:desktopApp:test` 13/13 green (paint, DB migrate/organize, scan/organize, single-instance lock).
-- Shared schema: `core.DbSchema` (v14, 17 tables + 3 indexes) is the single source both drivers execute — Android `BlissDb.onCreate` and desktop sqlite-jdbc run the identical statements; upgrades untouched so existing users keep their data. `DbSchemaTest` pins it.
+- Shared schema: `core.DbSchema` (v14, 17 tables + 3 indexes) is the single source both drivers execute. Android `BlissDb.onCreate` and desktop sqlite-jdbc run the identical statements; upgrades untouched so existing users keep their data. `DbSchemaTest` pins it.
 - Shared queries: `core.LibraryQueries` (sort orders verbatim, contains-narrow, canonical group keys) with tests; both apps delegate to it. `cleanLocal` does 1177 real YMusic filenames in 94ms (12.5k/s); the folder index builds 100k paths + 200k songs in 165ms (was quadratic before).
-- Android adapters (`music.platform.*`): PlayerEngine/LibraryAccess/TagGateway/AudioFx/NotificationGateway/SettingsStore/AppPaths/PlaybackSession thinly wrap the existing Media3/MediaStore/TagTools/ToneControl/service paths — zero behavior change, swapping in a second impl is now mechanical. dB/millibel unit mapping verified by reading ToneControl.
+- Android adapters (`music.platform.*`): PlayerEngine/LibraryAccess/TagGateway/AudioFx/NotificationGateway/SettingsStore/AppPaths/PlaybackSession thinly wrap the existing Media3/MediaStore/TagTools/ToneControl/service paths. There is zero behavior change, swapping in a second impl is now mechanical. dB/millibel unit mapping verified by reading ToneControl.
 - Android portable playlists: More → Export/Import portable (SAF, v1 JSON, same core code as Linux), favorites merge/replace/ignore, share-favorites toggle, missing kept in the file and reported.
 - Tray: single-instance lock (second launch exits instead of a second icon), right-click menu (Show/Play-Pause/Next/Previous/Quit), Quit tears down tray + player + DB, shutdown hook on kill.
 - `BlissPlayer-linux-v0.11.22.tar.gz` (20 MB) + `BlissPlayer-x86_64.AppImage`
   (~20 MB) built via `./build-linux.sh` + appimagetool; both committed.
-- NOT verified: desktop UI visually (no Xvfb on this box — launch manually);
+- NOT verified: desktop UI visually (no Xvfb on this box, so launch it manually);
   real-car Bluetooth/aux, long handset playback, acoustic safety (unchanged
   standing gaps); full 1177-file desktop scan timing.

@@ -360,7 +360,7 @@ Just checking btu is everyhting in this finsihed? okay lets start work on 0.11.x
 - [x] Original-release filtering rejects known live/compilation groups (offline regression tests).
 - [x] Paused notification persists; task-removal keeps controls usable (emulator-verified, real swipe/BT still open).
 - [x] One project builds Android + Linux: `:core` shared brains, `desktopApp` Swing UI, tarball + AppImage committed, headless smoke green incl. full 1177-file scan.
-- [ ] Remaining 0.11.x list (analyzer artist merges/genre coverage, mixer UI, stats controls, scroll/clip polish, EQ range) is still open — see Multiplatform_Instructions.md for what this cut covered.
+- [ ] Remaining 0.11.x list (analyzer artist merges/genre coverage, mixer UI, stats controls, scroll/clip polish, EQ range) is still open. See Multiplatform_Instructions.md for what this cut covered.
 
 Audit finding: monthly and yearly cards currently derive from the same event
 log, so clearing one period changes the other; visibility switches are not

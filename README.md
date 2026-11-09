@@ -1,7 +1,7 @@
 # BlissPlayer
 
 A music player for Android with an Explorer-style library, classic control
-panels, and a retro playback deck — in four distinct themes: **Bliss**,
+panels, and a retro playback deck. It comes in four distinct themes: **Bliss**,
 **Dark Bliss**, **Aqua Bliss** (Snow Leopard glass and metal), and
 **Super Bliss** (animated neon rainbow).
 
@@ -33,18 +33,18 @@ Requires Android 10 or newer (best on Android 13+).
 ## Themes
 
 Pick in More → Look and feel → Theme. Each theme has its own type,
-materials, controls, dialogs and motion — not a recolor. The home-screen
+materials, controls, dialogs and motion. None of them is just a recolor. The home-screen
 icon swaps to match the theme.
 
-- **Bliss** — the classic XP face: Tahoma-spirited type, beige panels,
+- **Bliss** is the classic XP face: Tahoma-spirited type, beige panels,
   blue title bars, green Play, segmented progress. Clicks answer with tiny
   pixel pops, nothing more.
-- **Dark Bliss** — the same XP soul after lights-out, same restrained clicks.
-- **Aqua Bliss** — Snow Leopard: brushed-metal grain, gel-pill buttons with
+- **Dark Bliss** is the same XP soul after lights-out, same restrained clicks.
+- **Aqua Bliss** is Snow Leopard: brushed-metal grain, gel-pill buttons with
   a reflected lens, translucent water-lit panels and dialogs with drifting
   caustics, dark-ink titles, mac-style track/group glyphs, the user's own
   Aqua note artwork in the toolbar. Silver system bars with dark icons.
-- **Super Bliss** — over-the-top neon rainbow: Outfit type, glowing
+- **Super Bliss** is over-the-top neon rainbow: Outfit type, glowing
   glass everywhere, a fast aurora drifting behind everything, tap explosions
   with triple shockwave rings, springy buttons. The user's rainbow note art
   in the toolbar.
@@ -68,7 +68,7 @@ ambient motion settles to a heartbeat when idle.
   (same odds no matter how often they play), boosted by the favorites-rarity
   slider, or treated like regular songs.
 - **Your music (More tab):** a collapsible folder tree of every folder with
-  music. Tick to include, untick to skip — unticked folders stay listed,
+  music. Tick to include, untick to skip. Unticked folders stay listed,
   grayed out, and are never removed or touched by anything. Expand all /
   Collapse all work in bulk.
 - **Library work (More tab):** four separate steps, each with its own button,
