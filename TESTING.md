@@ -2,24 +2,19 @@
 
 ## 0.14 round (Nov 9, 2026, BlissTest2 API 35, full YMusic library on device)
 
-- Device truth first: swipe-stop, trim per-file, waveform sanity, organize service, notification persistence and search were each reproduced or measured live on the emulator with the real 1175-song library, not just unit-tested.
-
-- Library work steps each run alone in the service with silent progress plus Stop, and each tracks every file: trim and organize marks live in song_state (DB v15), dupe waveforms live in the dupe_fp cache.
-- Waveform scorer rebuilt (48 loudness windows plus 48 timbre windows, Pearson, both must agree). Same file twice scores 100; 15 diverse real pairs score 20-37. The old scorer called such pairs 95.
-- Trim of the full library completes, marks every file, and a redo finishes in 0.009s with "Already trimmed".
-- Organize runs in the service with a Stop action, skips finished files, collects write-grant leftovers for one system Allow, then resumes with just those files and reports counts in a completion dialog.
-- Notification swipe is definitive: stopped_by_user is set, queue and resume prefs are cleared, the card stays gone; app swipe still keeps background play. Collapsed notification carries the scrub bar.
+- Battery and background weight: the UI ticker only reschedules while music plays (re-armed by resume, service connect and play state), the service holds foreground only while sound is coming out (paused keeps the identical card through a plain notify), and the route re-check rides along every 5th tick. Verified live: paused shows no foreground flag with the card present, app swipe-away keeps the service and card with no foreground, resume re-elevates to foreground plus playback. No visuals or functionality changed. Emulator PSS: 77-95MB idle, 126MB paused with queue, 115-136MB playing. One first-launch ANR seen on a cold emulator (scan index plus player init storm); the search index now builds off the main thread and hot regexes are hoisted to constants, and a clean fresh launch after shows the full library with no ANR.
+- Device truth first: swipe-stop, trim per-file, waveform sanity, organize service, notification persistence and search were each reproduced or measured live on the emulator with the real 1173-song library, not just unit-tested.
+- Library work steps each run alone in the service with silent progress plus Stop, and each tracks every file: trim and organize marks live in song_state (DB v15/v16), dupe fine curves live in the dupe_fine cache.
+- Waveform scorer v1 (48 loudness plus 48 timbre windows) still called Kelly Clarkson vs Red 73 percent similar on device, and offline tuning over 300 diverse pairs showed coarse curves cannot separate same-genre songs (26-31 false pairs at 50+). Scorer v2 is one RMS number per 50ms plus shift-tolerant Pearson: same recording re-encoded scores 0.9999, a 2s intro shift recovers to 1.0, and 300 diverse pairs peak at 0.57, so the bar sits at 0.75 with an empty gap on both sides. Same-title different-audio pairs surface as clashes, same-title matches join the pair list (deduped).
+- Trim of the full library completes in ~100s, marks every file, and a redo finishes in 0.009s with "Already trimmed". Dupe waveform full pass takes ~6min one-time (decode-bound), instant on redo; pairs=2 clashes=1 on this library.
+- Organize runs in the service with a Stop action, skips finished files, collects write-grant leftovers for one system Allow, then resumes with just those files and reports counts in a completion dialog (the leftovers end-to-end test passes on this flow).
+- Notification swipe is definitive: stopped_by_user is set, queue and resume prefs are cleared, the MediaSession is released so Media3 cannot repost the card, and the card stays gone; app swipe still keeps background play. Collapsed notification carries the scrub bar.
 - Boost re-applies on every play start and recovers a missing enhancer from the live session.
-- LibraryWorkV14Test 4/4 green on device (trim per-file, waveform sanity, organize service, swipe-stop).
-- JVM: 150 checks green, including the YMusic offline diagnostic over the real
-  Testing Files (1177 files: 99.7 percent artist coverage, 96.0 percent proposals, 767 high).
-- Search verified live on the emulator with real key events into the app field:
-  magnifier opens the row, "kryptonite" filters 1195 songs to the 1 match,
-  tapping the match plays it (media session confirms the title, position
-  advances). SearchTest locks the open and filter steps in.
-- Full connected suite first pass 30/36: the 6 failures triaged one by one (below).
-- Still open: <fill after suite runs>.
-
+- LibraryWorkV14Test 4/4 green on device (trim per-file, waveform sanity with the Kelly/Red regression pair, organize service, swipe-stop).
+- Search verified live on the emulator with real key events into the app field: magnifier opens the row, "kryptonite" filters 1194 songs to the 1 match, tapping the match plays it. SearchTest locks the open and filter steps in.
+- JVM: 149 checks green, including the YMusic offline diagnostic over the real Testing Files (1177 files: 99.7 percent artist coverage, 96.0 percent proposals, 767 high).
+- Full connected gate: all classes green individually on the final tree (MeasureJobs 8/8 incl. the 22-min online analyzer, Stability 15/15, LibraryWorkV14 4/4, Bulk 3/3, Search 2/2, QueueOrder, TrimStop). Two test-only fixes came out of the gate: QueueOrder now reads the tapped title from its own row (the old tree-wide guess grabbed the mini clock), and themeCycle skips honestly when the box disables animators. DeleteFlowTest deletes one real library song per full run by design.
+- Still open: real-car Bluetooth handoff, long handset sessions, physical aux, acoustic safety; if the phone still shows huge RAM after this build, next step is a heap dump from that device.
 
 ## Shared theme tokens, cards and glyphs (in progress)
 
