@@ -1521,6 +1521,18 @@ class MainActivity : AppCompatActivity() {
                 if (seeded) albums = db.allAlbums()
                 val counts = db.playCounts()
                 val totals = db.totalPlays()
+                // The search corpus costs thousands of normalizes: build it
+                // here on the worker, assign it on the main thread.
+                val index = filtered.map { s ->
+                    val g = genres[s.mediaId] ?: "Uncategorized"
+                    val t = norm(s.title)
+                    val a = norm(s.artist)
+                    val al = norm(albums[s.mediaId] ?: s.album)
+                    val gn = norm(g)
+                    val fn = norm(s.filePath?.substringAfterLast('/')?.substringBeforeLast('.') ?: "")
+                    val all = "$t $a $al $gn $fn"
+                    SearchIdx(s, t, a, al, gn, fn, all, all.split(' ').filter { it.isNotEmpty() })
+                }
                 launch(Dispatchers.Main) {
                     songs = filtered
                     byId.clear()
@@ -1529,16 +1541,7 @@ class MainActivity : AppCompatActivity() {
                     albumMap = albums
                     cachedCounts = counts
                     cachedTotals = totals
-                    searchIndex = filtered.map { s ->
-                        val g = genreMap[s.mediaId] ?: "Uncategorized"
-                        val t = norm(s.title)
-                        val a = norm(s.artist)
-                        val al = norm(albums[s.mediaId] ?: s.album)
-                        val gn = norm(g)
-                        val fn = norm(s.filePath?.substringAfterLast('/')?.substringBeforeLast('.') ?: "")
-                        val all = "$t $a $al $gn $fn"
-                        SearchIdx(s, t, a, al, gn, fn, all, all.split(' ').filter { it.isNotEmpty() })
-                    }
+                    searchIndex = index
                     restoreQueueIfNeeded()
                     if (pendingQueueSync) {
                         pendingQueueSync = false
@@ -1764,9 +1767,11 @@ class MainActivity : AppCompatActivity() {
             filterGenre.isNotBlank() || filterPlaylist != null
 
     /** Lowercase, no accents, only letters and digits. Typos still match after this. */
+    private val normNonWord = Regex("[^a-z0-9 ]")
+    private val normSpaces = Regex("\\s+")
     private fun norm(s: String): String {
         val n = java.text.Normalizer.normalize(s.lowercase(Locale.US), java.text.Normalizer.Form.NFD)
-        return n.replace(Regex("[^a-z0-9 ]"), " ").replace(Regex("\\s+"), " ").trim()
+        return n.replace(normNonWord, " ").replace(normSpaces, " ").trim()
     }
 
     /** Levenshtein with an early exit past cap. Small words must match closer. */

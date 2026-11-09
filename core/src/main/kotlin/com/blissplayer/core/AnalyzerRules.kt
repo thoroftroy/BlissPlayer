@@ -299,15 +299,21 @@ object AnalyzerRules {
      * Remastered", "Deluxe Edition") collapse to the original album name.
      * Compilation names stay as they are (different releases).
      */
+    private val albumYearWrap = Regex("\\s*[\\(\\[]\\s*(?:19|20)\\d{2}\\s*[\\)\\]]")
+    private val albumYearTail = Regex("\\s*-\\s*(?:19|20)\\d{2}\\s*$")
+    private val albumYearHead = Regex("^\\s*(?:19|20)\\d{2}\\s*-\\s*")
+    private val albumBareVersion = Regex("\\s+\\b(remastered|remaster|deluxe|live|unplugged|tour|acoustic|remix|remixes|demo|instrumental)\\s*$", RegexOption.IGNORE_CASE)
+    private val albumEditionTail = Regex("\\s+\\b(deluxe\\s+edition|expanded\\s+edition|anniversary\\s+edition|bonus\\s+edition)\\s*$",
+        RegexOption.IGNORE_CASE)
     fun canonicalAlbum(raw: String): String {
         var a = raw.trim().trim('_', ' ', '-', '.')
         if (a.isBlank() || a.equals("Unknown album", true)) return raw.trim()
         // Year wrappers: "(1999)", "[2004]", " - 2004", "2004 - ".
-        a = Regex("\\s*[\\(\\[]\\s*(?:19|20)\\d{2}\\s*[\\)\\]]").replace(a, " ").trim()
-        a = Regex("\\s*-\\s*(?:19|20)\\d{2}\\s*$").replace(a, "").trim()
-        a = Regex("^\\s*(?:19|20)\\d{2}\\s*-\\s*").replace(a, "").trim()
+        a = albumYearWrap.replace(a, " ").trim()
+        a = albumYearTail.replace(a, "").trim()
+        a = albumYearHead.replace(a, "").trim()
         // Trailing bare version words: "X Remastered", "X Deluxe", "X Live".
-        a = Regex("\\s+\\b(remastered|remaster|deluxe|live|unplugged|tour|acoustic|remix|remixes|demo|instrumental)\\s*$", RegexOption.IGNORE_CASE).replace(a, "").trim()
+        a = albumBareVersion.replace(a, "").trim()
         // Trailing parenthetical version words, repeatedly: "(Live) (Remaster)".
         var prev: String
         do {
@@ -315,8 +321,7 @@ object AnalyzerRules {
             a = albumVersionWords.replace(a, "").trim()
         } while (a != prev && a.isNotBlank())
         // "Deluxe Edition" style tails without parens.
-        a = Regex("\\s+\\b(deluxe\\s+edition|expanded\\s+edition|anniversary\\s+edition|bonus\\s+edition)\\s*$",
-            RegexOption.IGNORE_CASE).replace(a, "").trim()
+        a = albumEditionTail.replace(a, "").trim()
         return a.ifBlank { raw.trim() }
     }
 
@@ -916,11 +921,14 @@ object AnalyzerRules {
      * pass through untouched; only the concert/compilation packaging and
      * version packaging are rejected.
      */
+    private val badAlbumBestOf = Regex("\\b(best\\s+of|greatest\\s+hits?|the\\s+very\\s+best|number\\s+ones|#1'?s|anthology|collection|essentials|compilation|greatest|hits(\\s+collection)?)\\b")
+    private val badAlbumLive = Regex("\\b(live(\\s+(at|in|from|on|in\\s+concert))?|unplugged|mtv\\s+unplugged|in\\s+concert|live\\s+album|concert|on(\\s+tour|\\s+stage)|tour\\s+edition|from\\s+the\\s+tour)\\b")
+    private val badAlbumVersion = Regex("\\b(remix\\s+album|remixes|remix(ed)?|remaster(ed)?|deluxe(\\s+edition)?|expanded(\\s+edition)?|anniversary(\\s+edition)?|acoustic(\\s+sessions?)?|demo(s)?|instrumental|reissue|bonus(\\s+tracks?)?|tour|sessions?)\\b")
     fun isBadAlbumTitle(title: String): Boolean {
         val t = " $title ".lowercase()
-        if (Regex("\\b(best\\s+of|greatest\\s+hits?|the\\s+very\\s+best|number\\s+ones|#1'?s|anthology|collection|essentials|compilation|greatest|hits(\\s+collection)?)\\b").containsMatchIn(t)) return true
-        if (Regex("\\b(live(\\s+(at|in|from|on|in\\s+concert))?|unplugged|mtv\\s+unplugged|in\\s+concert|live\\s+album|concert|on(\\s+tour|\\s+stage)|tour\\s+edition|from\\s+the\\s+tour)\\b").containsMatchIn(t)) return true
-        if (Regex("\\b(remix\\s+album|remixes|remix(ed)?|remaster(ed)?|deluxe(\\s+edition)?|expanded(\\s+edition)?|anniversary(\\s+edition)?|acoustic(\\s+sessions?)?|demo(s)?|instrumental|reissue|bonus(\\s+tracks?)?|tour|sessions?)\\b").containsMatchIn(t)) return true
+        if (badAlbumBestOf.containsMatchIn(t)) return true
+        if (badAlbumLive.containsMatchIn(t)) return true
+        if (badAlbumVersion.containsMatchIn(t)) return true
         return false
     }
 

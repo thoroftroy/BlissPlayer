@@ -514,8 +514,10 @@ object WikiLookup {
     }
 
     /** Normalize for comparison: lowercase, no accents, only letters and digits. */
+    private val normNonWord = Regex("[^a-z0-9 ]")
+    private val normSpaces = Regex("\\s+")
     fun norm(s: String): String {
         val n = java.text.Normalizer.normalize(s.lowercase(), java.text.Normalizer.Form.NFD)
-        return n.replace(Regex("[^a-z0-9 ]"), " ").replace(Regex("\\s+"), " ").trim()
+        return n.replace(normNonWord, " ").replace(normSpaces, " ").trim()
     }
 }
