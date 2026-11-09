@@ -1,5 +1,26 @@
 # Testing
 
+## 0.14 round (Nov 9, 2026, BlissTest2 API 35, full YMusic library on device)
+
+- Device truth first: swipe-stop, trim per-file, waveform sanity, organize service, notification persistence and search were each reproduced or measured live on the emulator with the real 1175-song library, not just unit-tested.
+
+- Library work steps each run alone in the service with silent progress plus Stop, and each tracks every file: trim and organize marks live in song_state (DB v15), dupe waveforms live in the dupe_fp cache.
+- Waveform scorer rebuilt (48 loudness windows plus 48 timbre windows, Pearson, both must agree). Same file twice scores 100; 15 diverse real pairs score 20-37. The old scorer called such pairs 95.
+- Trim of the full library completes, marks every file, and a redo finishes in 0.009s with "Already trimmed".
+- Organize runs in the service with a Stop action, skips finished files, collects write-grant leftovers for one system Allow, then resumes with just those files and reports counts in a completion dialog.
+- Notification swipe is definitive: stopped_by_user is set, queue and resume prefs are cleared, the card stays gone; app swipe still keeps background play. Collapsed notification carries the scrub bar.
+- Boost re-applies on every play start and recovers a missing enhancer from the live session.
+- LibraryWorkV14Test 4/4 green on device (trim per-file, waveform sanity, organize service, swipe-stop).
+- JVM: 150 checks green, including the YMusic offline diagnostic over the real
+  Testing Files (1177 files: 99.7 percent artist coverage, 96.0 percent proposals, 767 high).
+- Search verified live on the emulator with real key events into the app field:
+  magnifier opens the row, "kryptonite" filters 1195 songs to the 1 match,
+  tapping the match plays it (media session confirms the title, position
+  advances). SearchTest locks the open and filter steps in.
+- Full connected suite first pass 30/36: the 6 failures triaged one by one (below).
+- Still open: <fill after suite runs>.
+
+
 ## Shared theme tokens, cards and glyphs (in progress)
 
 - `:core` now holds the theme system both platforms read: `BlissTheme`

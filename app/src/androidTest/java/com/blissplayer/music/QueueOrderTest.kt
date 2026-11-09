@@ -55,19 +55,20 @@ class QueueOrderTest {
         }
         assertTrue("mini stuck on placeholder", current.isNotBlank() && current != "Nothing playing")
 
-        // Dots of the third song row (index 2 skips header fluff): menu must open.
+        // Dots of a song row: read the title from the tapped row itself,
+        // not from a tree-wide guess (background clocks look like titles).
         val dots = device.wait(Until.findObjects(By.desc("More options")), 10000)
         assertTrue("no dots buttons", dots.size >= 3)
+        val row = dots[2].parent
+        assertNotNull("dots have no row", row)
+        val targetTitle = row!!.findObjects(By.clazz("android.widget.TextView"))
+            .mapNotNull { it.text?.takeIf { t -> t.isNotBlank() } }
+            .firstOrNull()
+        assertNotNull("could not read tapped song title", targetTitle)
         dots[2].click()
-        // The menu dialog is titled with the tapped song; that is our target.
+        // The menu dialog opens for that song.
         val target = device.wait(Until.findObject(By.text("Play next")), 5000)
         assertNotNull("no Play next item", target)
-        // Dialog title above the menu items carries the song name.
-        val menuTitle = device.findObjects(By.clazz("android.widget.TextView"))
-            .mapNotNull { it.text?.takeIf { t -> t.isNotBlank() } }
-            .firstOrNull { it != "Play next" && it != "Add to queue" && !it.contains("songs.") }
-        assertNotNull("could not read tapped song title: $menuTitle", menuTitle)
-        val targetTitle = menuTitle!!
         target.click()
         // The menu closes and the song lands right after the current one.
         // The queue list itself is the proof (toasts are not reliably visible
@@ -80,7 +81,7 @@ class QueueOrderTest {
         assertTrue("now playing never opened", upNext)
         val listRoot = device.findObject(By.textContains("Up next, in order")).parent
         // Wait for the tapped song to appear inside the queue list.
-        assertTrue("tapped song never reached the queue", device.wait(Until.hasObject(By.text(targetTitle.take(24))), 10000))
+        assertTrue("tapped song never reached the queue", device.wait(Until.hasObject(By.textContains(targetTitle!!.take(24))), 10000))
         val rows = listRoot.findObjects(By.clazz("androidx.recyclerview.widget.RecyclerView"))
         assertTrue("no queue list", rows.isNotEmpty())
         val cells = rows[0].children.mapNotNull { cell ->

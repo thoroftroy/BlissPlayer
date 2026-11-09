@@ -465,6 +465,41 @@ class AnalyzerTest {
         }
     }
 
+    @Test
+    fun liveAlbumTagIsRepairedToUnknown() = runBlocking {
+        // A song already tagged with a concert package: the lookup confirms
+        // the recording but offers only that same live album, so the tag is
+        // repaired to Unknown instead of keeping the live grouping.
+        val s = song("Hello", "Adele", "Adele - Hello").copy(
+            mediaId = 424201L,
+            album = "Live at Wembley",
+            durationMs = 295_000
+        )
+        val cache = object : SongAnalyzer.LookupCache {
+            override fun get(title: String, artist: String) = SongAnalyzer.CachedLookup(
+                "Hello", "Adele", null, "Live at Wembley",
+                1, "Hello", true, true, true
+            )
+            override fun put(title: String, artist: String, hit: SongAnalyzer.CachedLookup) {}
+        }
+        val out = SongAnalyzer.analyze(listOf(s), { "Pop" }, { "Live at Wembley" }, true, cache) { _, _, _ -> }
+        assertEquals(1, out.size)
+        assertEquals("Unknown album", out[0].newAlbum)
+        assertTrue("reason was: ${out[0].reason}", "live or compilation" in out[0].reason)
+    }
+
+    @Test
+    fun badFullLengthAlbumTitlesRejected() {
+        assertTrue(SongAnalyzer.isBadAlbumTitle("Live"))
+        assertTrue(SongAnalyzer.isBadAlbumTitle("Remix Album"))
+        assertTrue(SongAnalyzer.isBadAlbumTitle("Tour Edition"))
+        assertTrue(SongAnalyzer.isBadAlbumTitle("Unplugged Sessions"))
+        assertTrue(SongAnalyzer.isBadAlbumTitle("Deluxe"))
+        assertTrue(SongAnalyzer.isBadAlbumTitle("Hits"))
+        assertFalse(SongAnalyzer.isBadAlbumTitle("A Night at the Opera"))
+        assertFalse(SongAnalyzer.isBadAlbumTitle("Back in Black"))
+    }
+
     @Ignore("needs network")
     @Test
     fun liveVevoLookup() {
@@ -498,7 +533,7 @@ class AnalyzerTest {
         assertEquals(1, hits.size)
         assertEquals("Lonely", hits[0].track)
         assertEquals("Akon", hits[0].artist)
-        assertEquals("Trouble (Deluxe Edition)", hits[0].album)
+        assertEquals("Trouble", hits[0].album)
         assertEquals("Hip-Hop", hits[0].genre)
         assertTrue(MusicBrainzLookup.parse("{\"recordings\":[]}").isEmpty())
         assertEquals("Rock", MusicBrainzLookup.genreDisplay("alternative rock"))

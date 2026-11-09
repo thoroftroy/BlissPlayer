@@ -65,29 +65,39 @@ ambient motion settles to a heartbeat when idle.
   music. Tick to include, untick to skip — unticked folders stay listed,
   grayed out, and are never removed or touched by anything. Expand all /
   Collapse all work in bulk.
-- **Song analyzer (More tab):** runs in the background with a silent progress
-  notification (no pop-ups), skips songs already done, offers New/changed,
-  Redo done, or Everything with a time estimate. It cleans "Official Video
-  [abc123]" style names, then looks each song up on MusicBrainz and Wikipedia
-  for title, artist, album and genre. Nothing is ever guessed or hardcoded:
-  confident fixes apply with one tap ("Apply confident"), the rest wait in
-  review (with Select all). Needs internet; answers are cached so each song
-  is looked up once ever.
-- **Organize into BlissPlayer folder (More tab):** moves songs in the
-  *enabled* folders into `Music/BlissPlayer/Artist/Album`. Unticked folders
-  are never moved. Android asks once to allow the batch.
-- **Loudness (More tab):** runs in the background like the analyzer
-  (skip-done, estimates, silent progress); one tap samples every song and
-  evens out volumes (nothing rewritten, Undo is one tap). The **Equalize
-  strength** slider chooses subtle-to-maximum, from gentle nudges to landing
-  every song on the average.
-- **Boost (More tab):** master volume to 2000%, named presets with an explicit
-  Delete, per-output memory, and automatic Bluetooth presets: the saved boost
-  (and autoplay) comes back when a device reconnects; disconnecting falls
-  back to speaker/wired. Boost above 100% can distort or damage
-  hearing/speakers. Tapping the status strip opens the exact-boost dialog.
-- **Live sound mixer (More tab):** bass/midrange/treble/preamp with headroom,
-  live and file-safe. Attaches as soon as a song has an audio session.
+- **Library work (More tab):** four separate steps, each with its own button,
+  status line and silent progress notification with Stop. Only one runs at a
+  time; every finished file is remembered per song, so reruns only touch new
+  or changed songs.
+  - **Analyze songs:** cleans "Official Video [abc123]" style names, then
+    looks each song up on MusicBrainz and Wikipedia for title, artist, album
+    and genre. Live, best-of and remix packaging is never used as an album:
+    versioned releases resolve to the original ("Trouble (Deluxe Edition)"
+    browses as "Trouble"), the rest repair to Unknown until the original is
+    found. Confident fixes apply with one tap ("Apply confident"), the rest
+    wait in review (with Select all). Needs internet; answers are cached so
+    each song is looked up once ever.
+  - **Trim silence:** its own step, fully separate from Analyze. Checks
+    waveform edges and adds skip segments for complete or near silence.
+  - **Dupe finder:** Titles-only mode is instant; Waveforms mode listens to
+    fine energy curves across the whole recording (same song in any encode scores 95+, different songs stay under 40). Each pair has a
+    Play button so you can hear whether they match before deleting, and
+    same-name songs that sound different get Fix tags buttons.
+  - **Organize into BlissPlayer folder:** moves songs in the *enabled*
+    folders into `Music/BlissPlayer/Artist/Album` in the background.
+    Unticked folders are never moved. Android asks once to allow the batch.
+- **Sound (More tab):** boost, loudness and the live mixer in one place.
+  - **Boost:** master volume to 2000%, named presets with an explicit
+    Delete, per-output memory, and automatic Bluetooth presets: the saved
+    boost (and autoplay) comes back when a device reconnects; disconnecting
+    falls back to speaker/wired. Boost above 100% can distort or damage
+    hearing/speakers. Tapping the status strip opens the exact-boost dialog.
+  - **Loudness:** one tap samples every song and evens out volumes
+    (nothing rewritten, Undo is one tap). The **Equalize strength** slider
+    chooses subtle-to-maximum, and **Equalize accuracy** trades speed for
+    tighter matching. Done songs are skipped.
+  - **Live sound mixer:** bass/midrange/treble/preamp with headroom,
+    live and file-safe. Attaches as soon as a song has an audio session.
 - **Playback controls (More tab):** background play, audio-interruption
   behavior (duck, or pause-and-resume), playback speed (0.5x–2x), loop mode
   (Loop All by default, remembered), and the pause reason line that says why

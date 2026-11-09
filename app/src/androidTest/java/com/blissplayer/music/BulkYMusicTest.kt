@@ -84,9 +84,14 @@ class BulkYMusicTest {
         // Deterministic bulk proof on real YMusic bytes: copy ~100 files
         // through the app so they are app-owned (no system consent dialogs),
         // then analyze + write + rescan exactly like Apply does.
-        // (Source is the organized BlissPlayer tree: organize-all moved the
-        // YMusic batch there. Walk recursively.)
-        val srcDir = java.io.File("/sdcard/Music/BlissPlayer")
+        // (Source is the organized BlissPlayer tree when organize-all has
+        // run there, else the raw YMusic batch. Walk recursively.)
+        val organized = java.io.File("/sdcard/Music/BlissPlayer")
+        val organizedCount = runCatching {
+            organized.walkTopDown().filter { it.isFile }.count()
+        }.getOrDefault(0)
+        val srcDir = if (organized.isDirectory && organizedCount >= 200) organized
+        else java.io.File("/sdcard/Music/YMusic")
         val names = srcDir.walkTopDown().filter { it.isFile }.map {
             it.relativeTo(srcDir).path
         }.sorted().toList()
@@ -165,38 +170,31 @@ class BulkYMusicTest {
     }
 
     @Test fun bulkApplyUiOriginals() {
-        // New/changed-scope tap flow on shell-owned originals: verifies the
-        // 0.10 background wiring (scope menu -> service run -> proposals
-        // dialog), not the full bulk (the headless test covers the logic).
-        // Blind by design: clicks + waits, no dialog asserts (blind tree).
+        // New/changed-scope flow on shell-owned originals: verifies the
+        // background wiring (scope menu -> service run -> proposals
+        // dialog). Deterministic: the panel opens via pref and the button
+        // scrolls into view instead of blind swipes.
         scenario = ActivityScenario.launch(MainActivity::class.java)
-        device.wait(Until.hasObject(By.textContains("songs. Tap a song")), 90000)
-        device.findObject(By.text("More"))?.click()
-        android.os.SystemClock.sleep(2000)
-        repeat(6) {
-            device.swipe(540, 1600, 540, 500, 25)
-            android.os.SystemClock.sleep(800)
+        assertTrue("library never loaded", device.wait(Until.hasObject(By.textContains("songs. Tap a song")), 90000))
+        device.findObject(By.text("More")).click()
+        assertTrue("more never opened", device.wait(Until.hasObject(By.text("Control Panel")), 10000))
+        scenario!!.onActivity { a ->
+            a.getSharedPreferences("bliss", android.content.Context.MODE_PRIVATE)
+                .edit().putStringSet("more_panels", setOf("Library work")).apply()
+            val m = MainActivity::class.java.getDeclaredMethod("buildMorePane")
+            m.isAccessible = true
+            m.invoke(a)
         }
-        device.findObject(By.textContains("Song analyzer"))?.let {
-            if (it.text.contains("[+]")) it.click()
-        }
-        android.os.SystemClock.sleep(1000)
-        repeat(4) {
-            device.swipe(540, 1500, 540, 800, 25)
-            android.os.SystemClock.sleep(800)
-        }
-        repeat(6) {
-            device.findObject(By.text("Analyze songs"))?.click()
-            android.os.SystemClock.sleep(2000)
-            if (device.hasObject(By.textContains("Analyze "))) return@repeat
-        }
+        val scroll = androidx.test.uiautomator.UiScrollable(androidx.test.uiautomator.UiSelector().scrollable(true))
+        assertTrue("cannot scroll to Analyze songs",
+            scroll.scrollIntoView(androidx.test.uiautomator.UiSelector().text("Analyze songs")))
+        device.findObject(By.text("Analyze songs")).click()
         // Scope menu: prefer the quick new/changed pass, else everything.
-        repeat(6) {
-            if (!device.hasObject(By.textContains("Analyze "))) return@repeat
-            (device.findObject(By.textContains("New and changed"))
-                ?: device.findObject(By.textContains("Everything")))?.click()
-            android.os.SystemClock.sleep(2000)
-        }
+        assertTrue("scope menu never opened",
+            device.wait(Until.hasObject(By.textContains("New and changed")), 15000) ||
+                device.wait(Until.hasObject(By.textContains("Everything (")), 15000))
+        (device.findObject(By.textContains("New and changed"))
+            ?: device.findObject(By.textContains("Everything")))?.click()
         // Background run starts: a silent progress notification appears and
         // the run survives without any modal dialog.
         val nm = context.getSystemService(android.app.NotificationManager::class.java)

@@ -440,3 +440,49 @@ A quick note to stop you from wasting lots of time, when you run your tests init
 - Passing on device: BulkYMusicTest queueDotsOpenMenuInsteadOfDeleting, StabilityRegressionTest pausedNotificationPersists plus pausedTaskRemovalKeepsControlsUsable (plus earlier 5-test partial run with 0 failures on the full library: nineZeroMorePaneFixes, swipeAwayKeepsNotificationAndPositionAdvances, reviewSelectAllAppliesChecked, backgroundRestriction, backgroundScreenOffDoze).
 - New regression test kept: TrimStopTest proves fast ETA plus Stop actually stops on the real 1177 library.
 - Still open: full online analyzer 1000-song accuracy pass, physical delete Allow tap-through, real-car Bluetooth, long handset background. Interleaved library jobs are now blocked in the UI (analyze, equalize, trim, dupe refuse while anyWorkRunning) so ETAs hold.
+
+## Message v0.14.x batch (Nov 9, 2026)
+time to move on to v0.14.x, lots of changes, actually test for real in the emulator, in Wonderdesk Applications / Emulator using the files in Wonderdesk Applications/ Testing File; Part of analyze is now trimming silence, it should be completely separated
+The trimming silent function needs to keep track of which ones has been done before so it stops doing the same ones over and over and over again 
+The deduper for waveforms Is completely inaccurate and not even remotely close to being correct, claims 95% similarity on songs which share vertically no simulatority
+Allow listening to songs in the waveform deduper or title deduper so user can see if they actually are the same or different
+Organizing into BlissPlayer folder should be fully in the background and not do the same ones over and over, This same problem seems to be in every different part of the analyzer where they just analyze the same things over and over again or don't do it in the background or are completely inaccurate you need that actually spend some type testing each step individually and making sure it's actually good 
+Analyzer is still using albums and artists which are live or remix and whatnot instead of putting those songs into their original albums as I've requested several times, I have nearly 100 different songs which the analyzer grouped into either hits or best of or live performances of some kind even though they literally aren't and it's supposed to ignore all of those albums anyways and find the actual original release album and not use the live ones, not only should it never use live performances it should fix ones which are already named in those live performances and fix them
+Boost and loudness sections of more should be merged into one
+Trimmer runs on loop for some reason
+We have done a lot of work to ensure that background play is functional and that the app doesn't just close itself but we've gone a little bit too far we should treat user action as definitive what is going to happen so if the user closes the notification that means they don't want it there anymore currently after the user swipes away the notification it just pops back after a few seconds this is very bad we need to respect what the user is doing we treat closing the app as they want to play in the background we treat closing the background service by swiping away the notification as they want everything closed. On a side note of that when we reopen the notification after that it no longer has any of the functionality that it is supposed to have it no longer has the scrubbing bar and when I connect to a Bluetooth device it does not autoplay or anything until the app is reopened which means the only potential possible benefit that this system had is being completely negated by the way that we are doing it
+Boost does not seem to be applied every single time that it says it's applied sometimes it's weirdly quiet.
+All analyzer steps should be in separate buttons, running seperaotinly only one at a time, everything should be kept track of on a file by file basis, ensuring no extra work, The page should clearly show to the user what has been done what hasn't been done what the options are and everything else do not stop for any reason uintil its perfect
+
+### 0.14.x implementation (Nov 9, 2026)
+- Version bumped to 0.14.x. DB v15: song_state gains trimmed/trimmed_at and organized/organized_at, plus a dupe_fp waveform cache table.
+- Trim is fully separate from Analyze: no auto-start, no toggle, its own button with New/Redo/Everything scope, per-file tracking, redo of 1176 songs finishes in 0.009s.
+- Waveform scorer rebuilt on real audio: 48-window loudness shape plus 48-window timbre (zero-crossing) curves with Pearson correlation, both must agree. Same file scores 100, 15 diverse real pairs score 20-37 (old scorer called such pairs 95).
+- Dupe results have Play buttons on every candidate (pairs and clashes); title-mode pairs show them too.
+- Organize runs in the service with progress notification, Stop, per-file skip, permission leftovers resume, and a completion dialog with counts.
+- Album repair: version packaging resolves to the original ("Trouble (Deluxe Edition)" browses as "Trouble"), live/best-of packaging is refused and repaired to Unknown until the original is found.
+- Sound section merges Boost, Loudness and the mixer. Library work section holds Analyze, Trim, Dupe and Organize, each with its own status line; one job at a time.
+- Notification swipe is a definitive stop: no resurrection, queue and resume cleared; app swipe still keeps background play. Collapsed notification gains the scrub bar. Boost re-applies on every play start and recovers a missing enhancer.
+- Proof: LibraryWorkV14Test 4/4 green on BlissTest2 with the full 1176-song YMusic library (see TESTING.md 0.14 round).
+
+## Message search broken (Nov 9, 2026)
+quick note of something to fix, the search function was totally broken last time i tested the app, it didnt work at all, didnt search, test andf fix that too
+
+## Message search followup (Nov 9, 2026)
+Search verified working live in the emulator on 0.14.9 with the real 1195-song library: magnifier opens the row, typing "kryptonite" with real key events filters to the 1 match, tapping it plays (media session confirms title plus advancing position). SearchTest now locks open plus filter in. No app change needed: the pipeline was already correct. Most likely the 0.13.x report was an empty library (no scan yet) or a missed tap.
+
+### 0.14.x fixes after the first full-suite gate (Nov 9, 2026)
+- Waveform scorer v2: offline tuning on real files showed coarse loudness/timbre curves cannot separate same-genre songs (26-31 of 300 diverse pairs false-positive at 50+). New fingerprint is one RMS number per 50ms plus shift-tolerant Pearson (recovers 2s intro shifts exactly, 1.0; worst different 0.57; same re-encode 0.9997). Bar at 0.75 with an empty gap on both sides. Same-title different-audio pairs now surface as clashes, same-title matches join the pair list (deduped).
+- DB v16: dupe_fine table (uint8-quantized fine curves) replaces dupe_fp.
+- Swipe-stop releases the MediaSession: Media3 reposts its card asynchronously, so cancel alone popped back up. Rebuilt on next play/autoplay.
+- Tests fixed for the rework: panel names (Sound/Library work), Bulk fallback to YMusic sources, stop-test polling, SearchTest magnifier type.
+- Search verified live with real key events (kryptonite filters 1195 to 1, tap plays). SearchTest guards open plus filter.
+
+## Message battery and RAM (Nov 9, 2026)
+okay another thing to fix other than that is the perforamnce, as in background performance and battery usage. Its such a heavy app just sitting idle in the backgorund that android turned off its permissions to do background play on its own beacuse it was eating my battery, it was using like an entire gig of ram somehow and it wasnt even playing anything or analyzing anyhting
+
+### 0.14.x battery and background weight (Nov 9, 2026)
+- UI progress ticker ran twice a second forever, even paused in the background: now only reschedules while music plays, re-armed by resume, service connect and play state.
+- The service held foreground status permanently, even paused for hours: now foreground only while sound is coming out; paused keeps the same card through a plain notify. Verified live: paused shows no foreground, card persists, app swipe-away keeps the service alive with the card, resume re-elevates.
+- Route re-check every tick relaxed to every 5s while playing (device callbacks and broadcasts still fire instantly).
+- Measured on the emulator: idle 77-95MB PSS, paused card 126MB, playing 115-136MB. No 1GB anywhere here; if the phone still shows huge RAM after this build, next step is a heap dump from that device.

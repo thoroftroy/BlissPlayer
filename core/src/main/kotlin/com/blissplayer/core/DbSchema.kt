@@ -9,7 +9,7 @@ package com.blissplayer.core
  * already created, so user data (library, stats, gains, caches) survives.
  */
 object DbSchema {
-    const val VERSION = 14
+    const val VERSION = 16
 
     val statements: List<String> = listOf(
         "CREATE TABLE gains(media_id INTEGER PRIMARY KEY, gain_mult REAL NOT NULL)",
@@ -26,12 +26,13 @@ object DbSchema {
         "CREATE TABLE song_genre(media_id INTEGER PRIMARY KEY, genre TEXT NOT NULL)",
         "CREATE TABLE song_album(media_id INTEGER PRIMARY KEY, album TEXT NOT NULL)",
         "CREATE TABLE lookup_cache(key TEXT PRIMARY KEY, title TEXT NOT NULL, artist TEXT NOT NULL, genre TEXT NOT NULL DEFAULT '', album TEXT NOT NULL DEFAULT '', pageid INTEGER NOT NULL DEFAULT 0, hittitle TEXT NOT NULL DEFAULT '', high INTEGER NOT NULL DEFAULT 0, confirmed INTEGER NOT NULL DEFAULT 0, found INTEGER NOT NULL DEFAULT 0)",
-        "CREATE TABLE song_state(media_id INTEGER PRIMARY KEY, fingerprint TEXT NOT NULL DEFAULT '', analyzed INTEGER NOT NULL DEFAULT 0, analyzed_at INTEGER NOT NULL DEFAULT 0, eq INTEGER NOT NULL DEFAULT 0, eq_at INTEGER NOT NULL DEFAULT 0)",
+        "CREATE TABLE song_state(media_id INTEGER PRIMARY KEY, fingerprint TEXT NOT NULL DEFAULT '', analyzed INTEGER NOT NULL DEFAULT 0, analyzed_at INTEGER NOT NULL DEFAULT 0, eq INTEGER NOT NULL DEFAULT 0, eq_at INTEGER NOT NULL DEFAULT 0, trimmed INTEGER NOT NULL DEFAULT 0, trimmed_at INTEGER NOT NULL DEFAULT 0, organized INTEGER NOT NULL DEFAULT 0, organized_at INTEGER NOT NULL DEFAULT 0)",
         "CREATE TABLE favorites(media_id INTEGER PRIMARY KEY)",
         "CREATE TABLE song_stats(media_id INTEGER PRIMARY KEY, skips INTEGER NOT NULL DEFAULT 0, completions INTEGER NOT NULL DEFAULT 0, listen_ms INTEGER NOT NULL DEFAULT 0, last_played INTEGER NOT NULL DEFAULT 0)",
         "CREATE TABLE stat_events(media_id INTEGER NOT NULL, kind TEXT NOT NULL, at INTEGER NOT NULL, ms INTEGER NOT NULL DEFAULT 0)",
         "CREATE INDEX idx_stat_events ON stat_events(kind, at)",
-        "CREATE TABLE learned_artists(alias_key TEXT PRIMARY KEY, name TEXT NOT NULL)"
+        "CREATE TABLE learned_artists(alias_key TEXT PRIMARY KEY, name TEXT NOT NULL)",
+        "CREATE TABLE dupe_fine(media_id INTEGER PRIMARY KEY, rms REAL NOT NULL, qmin REAL NOT NULL DEFAULT 0, qmax REAL NOT NULL DEFAULT 0, qdata BLOB NOT NULL DEFAULT x'', duration INTEGER NOT NULL DEFAULT 0, modified INTEGER NOT NULL DEFAULT 0)"
     )
 
     /** Table names in creation order (for tests and debugging). */

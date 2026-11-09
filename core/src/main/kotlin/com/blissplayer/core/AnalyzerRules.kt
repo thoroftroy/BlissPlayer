@@ -290,7 +290,7 @@ object AnalyzerRules {
         return old
     }
     private val albumVersionWords = Regex(
-        "\\s*[\\(\\[][^\\(\\)\\[\\]]*\\b(live|unplugged|unpluged|remix|remixes|remixed|remaster|remastered|deluxe|expanded|anniversary|bonus|acoustic|demo|instrumental|version|edition|reissue|re-recorded|rerecorded|single|ep)\\b[^\\(\\)\\[\\]]*[\\)\\]]\\s*$",
+        "\\s*[\\(\\[][^\\(\\)\\[\\]]*\\b(live|unplugged|unpluged|remix|remixes|remixed|remaster|remastered|deluxe|expanded|anniversary|bonus|acoustic|demo|demos|instrumental|version|edition|reissue|re-recorded|rerecorded|tour|sessions?|single|ep)\\b[^\\(\\)\\[\\]]*[\\)\\]]\\s*$",
         RegexOption.IGNORE_CASE)
 
     /**
@@ -306,8 +306,8 @@ object AnalyzerRules {
         a = Regex("\\s*[\\(\\[]\\s*(?:19|20)\\d{2}\\s*[\\)\\]]").replace(a, " ").trim()
         a = Regex("\\s*-\\s*(?:19|20)\\d{2}\\s*$").replace(a, "").trim()
         a = Regex("^\\s*(?:19|20)\\d{2}\\s*-\\s*").replace(a, "").trim()
-        // Trailing bare version words: "X Remastered", "X Deluxe".
-        a = Regex("\\s+\\b(remastered|remaster|deluxe)\\s*$", RegexOption.IGNORE_CASE).replace(a, "").trim()
+        // Trailing bare version words: "X Remastered", "X Deluxe", "X Live".
+        a = Regex("\\s+\\b(remastered|remaster|deluxe|live|unplugged|tour|acoustic|remix|remixes|demo|instrumental)\\s*$", RegexOption.IGNORE_CASE).replace(a, "").trim()
         // Trailing parenthetical version words, repeatedly: "(Live) (Remaster)".
         var prev: String
         do {
@@ -911,15 +911,38 @@ object AnalyzerRules {
         )
     }
     /**
-     * Live, concert and best-of titles are never albums here: the original
-     * release (or the single itself) always wins. Singles pass through
-     * untouched; only the compilation/concert packaging is rejected.
+     * Live, concert, remix, remaster and best-of titles are never albums
+     * here: the original release (or the single itself) always wins. Singles
+     * pass through untouched; only the concert/compilation packaging and
+     * version packaging are rejected.
      */
     fun isBadAlbumTitle(title: String): Boolean {
         val t = " $title ".lowercase()
-        if (Regex("\\b(best\\s+of|greatest\\s+hits|the\\s+very\\s+best|number\\s+ones|#1'?s|anthology|collection|essentials|compilation|greatest|hits\\s+collection)\\b").containsMatchIn(t)) return true
-        if (Regex("\\b(live\\s+(at|in|from|on)|live\\s+in\\s+concert|unplugged|mtv\\s+unplugged|in\\s+concert|live\\s+album|concert)\\b").containsMatchIn(t)) return true
+        if (Regex("\\b(best\\s+of|greatest\\s+hits?|the\\s+very\\s+best|number\\s+ones|#1'?s|anthology|collection|essentials|compilation|greatest|hits(\\s+collection)?)\\b").containsMatchIn(t)) return true
+        if (Regex("\\b(live(\\s+(at|in|from|on|in\\s+concert))?|unplugged|mtv\\s+unplugged|in\\s+concert|live\\s+album|concert|on(\\s+tour|\\s+stage)|tour\\s+edition|from\\s+the\\s+tour)\\b").containsMatchIn(t)) return true
+        if (Regex("\\b(remix\\s+album|remixes|remix(ed)?|remaster(ed)?|deluxe(\\s+edition)?|expanded(\\s+edition)?|anniversary(\\s+edition)?|acoustic(\\s+sessions?)?|demo(s)?|instrumental|reissue|bonus(\\s+tracks?)?|tour|sessions?)\\b").containsMatchIn(t)) return true
         return false
+    }
+
+    /** An album tag the app refuses to use or keep: folders, blanks, or live/compilation packaging. */
+    fun isIgnoredAlbumTitle(album: String, filePath: String?): Boolean =
+        isPlaceholderAlbum(album, filePath) || isBadAlbumTitle(album)
+
+    /**
+     * The album worth keeping for a raw tag. A clean title passes through.
+     * Version packaging around a real album ("Trouble (Deluxe Edition)")
+     * resolves to the original ("Trouble"). Live, concert and compilation
+     * packaging has no original to resolve to, so it is refused (null).
+     */
+    fun resolveAlbumTitle(raw: String): String? {
+        val t = raw.trim()
+        if (t.isBlank()) return null
+        if (!isBadAlbumTitle(t)) return t
+        val c = canonicalAlbum(t).trim()
+        if (c.isBlank() || c.equals(t, ignoreCase = true) || isBadAlbumTitle(c)) return null
+        // A stripped channel or label fragment is not an album either.
+        if (c.length < 4 || labelWords.containsMatchIn(c) || c.endsWith("vevo", ignoreCase = true)) return null
+        return c
     }
 
     /** Tags that carry no performer information: anything may be adopted. */

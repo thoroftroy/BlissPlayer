@@ -78,6 +78,7 @@ class PlayerService : MediaSessionService() {
         const val ACTION_EQ_STOP = "bliss.eq_stop"
         const val ACTION_TRIM_STOP = "bliss.trim_stop"
         const val ACTION_DUPE_STOP = "bliss.dupe_stop"
+        const val ACTION_ORGANIZE_STOP = "bliss.organize_stop"
         private const val CHANNEL = "bliss_playback"
         private const val NOTIF_ID = 1001
         private const val PROGRESS_CHANNEL = "bliss_progress"
@@ -85,6 +86,7 @@ class PlayerService : MediaSessionService() {
         private const val EQ_NOTIF_ID = 1003
         private const val TRIM_NOTIF_ID = 1004
         private const val DUPE_NOTIF_ID = 1005
+        private const val ORGANIZE_NOTIF_ID = 1006
     }
 
     lateinit var player: ExoPlayer
@@ -167,10 +169,7 @@ class PlayerService : MediaSessionService() {
             persistPauseReason()
             // Keep the paused controls visible. Without an immediate repost
             // the bar can vanish until the next tick, which only runs while playing.
-            postNotif()
-            if (player.mediaItemCount > 0) {
-                runCatching { startForeground(NOTIF_ID, buildNotification()) }
-            }
+            pinForeground(false)
         }
     }
     private var noisyRegistered = false
@@ -259,12 +258,15 @@ class PlayerService : MediaSessionService() {
     }
     private val notifManager by lazy { getSystemService(NotificationManager::class.java) }
     private val notifTickHandler = Handler(Looper.getMainLooper())
+    private var notifTickCount = 0
     private val notifTick = object : Runnable {
         override fun run() {
             if (::player.isInitialized && player.isPlaying) {
                 postNotif()
-                // Also detects a selected speaker route while Bluetooth stays connected.
-                volumeManager.refreshRoute()
+                // Route checks ride along rarely: device changes also arrive
+                // through the audio callback and Bluetooth broadcasts, so a
+                // 5s poll here costs nothing visible.
+                if (notifTickCount++ % 5 == 0) volumeManager.refreshRoute()
                 watchPosition()
                 val now = android.os.SystemClock.elapsedRealtime()
                 if (now - lastResumeSave > 15000) {
@@ -320,12 +322,9 @@ class PlayerService : MediaSessionService() {
         }
 
         override fun onTimelineChanged(timeline: Timeline, reason: Int) {
-            // A queue exists: stay foreground so swiping the app away never
-            // takes the music or its notification with it. Only swiping the
-            // notification itself (ACTION_STOP) ends playback.
-            if (player.mediaItemCount > 0) {
-                runCatching { startForeground(NOTIF_ID, buildNotification()) }
-            }
+            // A queue exists: the card follows it. Foreground status is
+            // owned by play state, not by the queue.
+            if (player.mediaItemCount > 0) postNotif()
         }
 
         override fun onPlaybackStateChanged(state: Int) {
@@ -390,14 +389,13 @@ class PlayerService : MediaSessionService() {
 
         override fun onIsPlayingChanged(isPlaying: Boolean) {
             postNotif()
-            // A queue means the notification (and foreground status) stays,
-            // paused or playing, until the notification itself is swiped away.
-            if (player.mediaItemCount > 0) {
-                runCatching { startForeground(NOTIF_ID, buildNotification()) }
-            }
+            // Foreground only while sound is coming out. Paused keeps the
+            // card without the permanent foreground blame.
+            pinForeground(isPlaying)
             notifTickHandler.removeCallbacks(notifTick)
             segTickHandler.removeCallbacks(segTick)
             if (isPlaying) {
+                applyGainFor(player.currentMediaItem)
                 applyFocusActions(focusPolicy.onEvent(FocusPolicy.Event.PLAY_STARTED, respectFocus(), true))
                 persistPauseReason()
                 ensureFocusHeld()
@@ -418,7 +416,12 @@ class PlayerService : MediaSessionService() {
     }
 
     /** Every UI play path funnels here so focus is claimed before sound. */
-    fun userPlay() = ensureFocusThenPlay()
+    fun userPlay() {
+        getSharedPreferences("bliss", MODE_PRIVATE).edit()
+            .putBoolean("stopped_by_user", false).apply()
+        ensureSession()
+        ensureFocusThenPlay()
+    }
 
     /** Playing without held focus (direct player.play() paths): claim it. */
     private fun ensureFocusHeld() {
@@ -493,19 +496,30 @@ class PlayerService : MediaSessionService() {
         volumeManager = (application as com.blissplayer.music.BlissApplication).volumeManager
         volumeManager.addListener(volumeListener)
         volumeManager.onDeviceConnected = { device ->
+            // An autoplay device is itself an explicit play intent: it
+            // clears a previous user stop, so reconnection always works.
             if (volumeManager.isAutoplay(device)) {
+                getSharedPreferences("bliss", MODE_PRIVATE).edit()
+                    .putBoolean("stopped_by_user", false).apply()
                 if (player.mediaItemCount > 0) startPlayback() else restoreSavedSession(play = true)
             }
         }
         volumeManager.start()
         volumeListener()
 
+        ensureSession()
+        setMediaNotificationProvider(notifProvider)
+    }
+
+    /** A swipe-away stop releases the session so Media3 cannot repost its
+     * card; the next play rebuilds it. */
+    private fun ensureSession() {
+        if (session != null) return
         val intent = Intent(this, MainActivity::class.java)
         val pi = PendingIntent.getActivity(this, 0, intent, PendingIntent.FLAG_IMMUTABLE)
         session = MediaSession.Builder(this, player)
             .setSessionActivity(pi)
             .build()
-        setMediaNotificationProvider(notifProvider)
     }
 
     fun configureAudioFocus() {
@@ -520,6 +534,7 @@ class PlayerService : MediaSessionService() {
     /** Android 15+ requires foreground status before a background focus request. */
     private fun startPlayback() {
         if (player.mediaItemCount == 0) return
+        ensureSession()
         runCatching { startForeground(NOTIF_ID, buildNotification()) }.onFailure {
             lastPlaybackError = "Android blocked background playback: ${it.message}"
             getSharedPreferences("bliss", MODE_PRIVATE).edit()
@@ -558,6 +573,7 @@ class PlayerService : MediaSessionService() {
     }
 
     private fun restoreSavedSession(play: Boolean) {
+        ensureSession()
         scope.launch {
             val prefs = getSharedPreferences("bliss", MODE_PRIVATE)
             val ids = prefs.getString("resume_queue", "").orEmpty().split(',').mapNotNull { it.toLongOrNull() }
@@ -580,16 +596,34 @@ class PlayerService : MediaSessionService() {
                 player.prepare()
                 if (play) startPlayback() else player.pause()
                 // Killed while swiped away: the queue exists but no UI will
-                // repost the card. Pin foreground now so controls survive
-                // without reopening the app, paused or playing.
+                // repost the card, so pin it now. Foreground only if the
+                // queue was playing; paused restores as a background card.
                 if (player.mediaItemCount > 0) {
-                    runCatching { startForeground(NOTIF_ID, buildNotification()) }
-                    postNotif()
+                    pinForeground(play)
                 }
             } catch (e: Exception) {
                 if (e is kotlinx.coroutines.CancellationException) throw e
                 lastPlaybackError = "Could not restore playback: ${e.message}"
             }
+        }
+    }
+
+    /** Foreground only while sound is coming out. Paused keeps the card
+     * through a plain notify, without the permanent foreground blame that
+     * gets the app battery-restricted. Stickiness plus the saved queue
+     * bring everything back if the system reclaims the process. */
+    private fun pinForeground(playing: Boolean) {
+        if (!::player.isInitialized) return
+        if (playing && player.mediaItemCount > 0) {
+            runCatching { startForeground(NOTIF_ID, buildNotification()) }
+        } else {
+            if (android.os.Build.VERSION.SDK_INT >= 33) {
+                runCatching { stopForeground(STOP_FOREGROUND_DETACH) }
+            } else {
+                @Suppress("DEPRECATION")
+                runCatching { stopForeground(false) }
+            }
+            postNotif()
         }
     }
 
@@ -630,9 +664,8 @@ class PlayerService : MediaSessionService() {
         // the notification's own swipe (ACTION_STOP) or an empty queue
         // ends the service.
         if (::player.isInitialized && player.mediaItemCount > 0) {
-            // Re-pin foreground: the base class demotes paused sessions,
-            // and a demoted service is what the swipe would take with it.
-            runCatching { startForeground(NOTIF_ID, buildNotification()) }
+            // Card survives without the app; foreground only while playing.
+            pinForeground(player.isPlaying)
             return
         }
         super.onTaskRemoved(rootIntent)
@@ -640,9 +673,15 @@ class PlayerService : MediaSessionService() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent == null) {
+            val prefs = getSharedPreferences("bliss", MODE_PRIVATE)
+            // A user stop is definitive: a system restart must not resurrect
+            // music the user already dismissed.
+            if (prefs.getBoolean("stopped_by_user", false)) {
+                stopSelf()
+                return@onStartCommand START_STICKY
+            }
             // Killed while swiped away: bring the queue back (paused unless
             // it was playing) so controls and autoplay keep working.
-            val prefs = getSharedPreferences("bliss", MODE_PRIVATE)
             if (prefs.getString("resume_queue", "").orEmpty().isNotEmpty()) {
                 restoreSavedSession(play = prefs.getBoolean("resume_playing", false))
             }
@@ -663,13 +702,29 @@ class PlayerService : MediaSessionService() {
                 }
                 ACTION_TRIM_STOP -> cancelTrim()
                 ACTION_DUPE_STOP -> cancelDupes()
+                ACTION_ORGANIZE_STOP -> cancelOrganize()
                 // Swiping the notification away means done with music: stop it all.
+                // This is the user's definitive stop: no restart, no restore,
+                // until the user presses play again or an autoplay device connects.
+                // The session is released too: Media3 posts its card
+                // asynchronously, so a cancel alone would pop back up.
                 ACTION_STOP -> {
                     focusPolicy.onEvent(FocusPolicy.Event.STOPPED, respectFocus(), false)
                     persistPauseReason()
                     abandonFocus()
+                    getSharedPreferences("bliss", MODE_PRIVATE).edit()
+                        .putBoolean("stopped_by_user", true)
+                        .remove("resume_queue")
+                        .remove("resume_index")
+                        .remove("resume_pos")
+                        .remove("resume_playing")
+                        .apply()
                     player.pause()
                     player.clearMediaItems()
+                    runCatching { notifManager.cancel(NOTIF_ID) }
+                    runCatching { stopForeground(STOP_FOREGROUND_REMOVE) }
+                    runCatching { session?.release() }
+                    session = null
                     stopSelf()
                 }
             }
@@ -774,6 +829,8 @@ class PlayerService : MediaSessionService() {
                 setOnClickPendingIntent(R.id.n_play, actionIntent(ACTION_TOGGLE, 2))
                 setOnClickPendingIntent(R.id.n_next, actionIntent(ACTION_NEXT, 3))
                 setOnClickPendingIntent(R.id.n_fav, actionIntent(ACTION_FAV, 6))
+                if (dur > 0) setProgressBar(R.id.n_progress, 1000, ((pos * 1000) / dur).toInt().coerceIn(0, 1000), false)
+                else setProgressBar(R.id.n_progress, 1000, 0, false)
             }
             val big = RemoteViews(packageName, R.layout.xp_notif_big).apply {
                 setTextViewText(R.id.n_title, title)
@@ -893,6 +950,7 @@ class PlayerService : MediaSessionService() {
     private var eqJob: Job? = null
     private var trimJob: Job? = null
     private var dupeJob: Job? = null
+    private var organizeJob: Job? = null
 
     data class DupePair(val a: Song, val b: Song, val score: Int)
     data class NameClash(val title: String, val artist: String, val songs: List<Song>)
@@ -923,7 +981,8 @@ class PlayerService : MediaSessionService() {
     val eqRunning: Boolean get() = eqJob?.isActive == true
     val trimRunning: Boolean get() = trimJob?.isActive == true
     val dupeRunning: Boolean get() = dupeJob?.isActive == true
-    val anyWorkRunning: Boolean get() = analyzerRunning || eqRunning || trimRunning || dupeRunning
+    val organizeRunning: Boolean get() = organizeJob?.isActive == true
+    val anyWorkRunning: Boolean get() = analyzerRunning || eqRunning || trimRunning || dupeRunning || organizeRunning
 
     private fun ensureProgressChannel() {
         if (Build.VERSION.SDK_INT >= 26) {
@@ -1124,6 +1183,7 @@ class PlayerService : MediaSessionService() {
 
     /** Trim silence: waveform edges, parallel, no realtime listening. */
     fun startSilenceTrim(songs: List<Song>) {
+        if (trimJob?.isActive == true) return
         trimJob?.cancel()
         val total = songs.size
         if (total == 0) return
@@ -1137,12 +1197,19 @@ class PlayerService : MediaSessionService() {
             try {
                 val sem = kotlinx.coroutines.sync.Semaphore((Runtime.getRuntime().availableProcessors() * 2).coerceIn(8, 12))
                 val done = java.util.concurrent.atomic.AtomicInteger(0)
-                // Pre-check: songs already trimmed at both edges skip decode entirely.
+                val states = runCatching { db.stateMap(songs.map { it.mediaId }) }.getOrDefault(emptyMap())
+                // Per-file tracking: a finished file is never decoded again.
                 val todo = songs.filter { s ->
+                    val st = states[s.mediaId]
+                    if (st != null && st.trimmed && st.fingerprint == db.fingerprint(s.sizeBytes, s.modified)) {
+                        skippedDone++
+                        return@filter false
+                    }
                     val existing = runCatching { db.segmentsFor(s.mediaId) }.getOrDefault(emptyList())
                     val hasLead = existing.any { it.startMs <= 500 && it.label == "Silence" }
                     val hasTrail = existing.any { it.endMs >= s.durationMs - 1000 && it.label == "Silence" }
                     if (hasLead && hasTrail) {
+                        runCatching { db.markTrimmed(s.mediaId, db.fingerprint(s.sizeBytes, s.modified)) }
                         skippedDone++
                         false
                     } else true
@@ -1184,6 +1251,7 @@ class PlayerService : MediaSessionService() {
                                         }
                                     }
                                 }
+                                runCatching { db.markTrimmed(s.mediaId, db.fingerprint(s.sizeBytes, s.modified)) }
                                 val d = done.incrementAndGet()
                                 if (d % 10 == 0 || d == todo.size) {
                                     ensureActive()
@@ -1264,10 +1332,20 @@ class PlayerService : MediaSessionService() {
                 val byId = songs.associateBy { it.mediaId }
                 val prints = java.util.concurrent.ConcurrentHashMap<Long, com.blissplayer.core.AudioFingerprint.Print>()
                 val needIds = pairList.flatMap { listOf(it.first, it.second) }.toSet().take(600)
+                var reusedFp = 0
+                // Waveform cache: a redo never re-listens to an unchanged file.
+                for (id in needIds) {
+                    val s = byId[id] ?: continue
+                    runCatching { db.dupeFine(id, s.modified) }.getOrNull()?.let {
+                        prints[id] = it
+                        reusedFp++
+                    }
+                }
+                val toPrint = needIds.filter { !prints.containsKey(it) }
                 val doneFp = java.util.concurrent.atomic.AtomicInteger(0)
                 val sem = kotlinx.coroutines.sync.Semaphore((Runtime.getRuntime().availableProcessors() * 2).coerceIn(8, 12))
                 coroutineScope {
-                    needIds.map { id ->
+                    toPrint.map { id ->
                         async {
                             sem.withPermit {
                                 ensureActive()
@@ -1278,59 +1356,69 @@ class PlayerService : MediaSessionService() {
                                     if (e is kotlinx.coroutines.CancellationException) throw e
                                     null
                                 }
-                                if (p != null) prints[id] = p
+                                if (p != null) {
+                                    prints[id] = p
+                                    runCatching {
+                                        db.putDupeFine(id, p.rms, p.fine, p.durationMs, s.modified)
+                                    }
+                                }
                                 val d = doneFp.incrementAndGet()
-                                if (d % 10 == 0 || d == needIds.size) {
+                                if (d % 10 == 0 || d == toPrint.size) {
                                     ensureActive()
-                                    val eta = fmtEta(d, needIds.size, System.currentTimeMillis() - t0)
-                                    val text = "Waveform compare ($d of ${needIds.size}, $eta)"
+                                    val eta = fmtEta(d, toPrint.size, System.currentTimeMillis() - t0)
+                                    val text = "Waveform compare ($d of ${toPrint.size}, $eta)"
                                     progressNotif(DUPE_NOTIF_ID, "Finding duplicates in $total songs",
-                                        text, d, needIds.size, ACTION_DUPE_STOP, 14)
-                                    progressListener?.invoke("dupes", d, needIds.size, text)
+                                        text, d, toPrint.size, ACTION_DUPE_STOP, 14)
+                                    progressListener?.invoke("dupes", d, toPrint.size, text)
                                 }
                             }
                         }
                     }.forEach { it.await() }
                 }
+                val bar = com.blissplayer.core.AudioFingerprint.DUPE_THRESHOLD
                 val pairs = mutableListOf<DupePair>()
+                val seen = mutableSetOf<Pair<Long, Long>>()
+                fun note(aId: Long, bId: Long, score: Int) {
+                    if (score < bar) return
+                    val key = if (aId < bId) aId to bId else bId to aId
+                    if (!seen.add(key)) return
+                    val a = byId[aId] ?: return
+                    val b = byId[bId] ?: return
+                    pairs.add(DupePair(a, b, score))
+                }
                 for ((aId, bId) in pairList) {
                     val pa = prints[aId] ?: continue
                     val pb = prints[bId] ?: continue
-                    val score = com.blissplayer.core.AudioFingerprint.similarity(pa, pb)
-                    if (score >= 50) {
-                        val a = byId[aId] ?: continue
-                        val b = byId[bId] ?: continue
-                        pairs.add(DupePair(a, b, score))
-                    }
+                    note(aId, bId, com.blissplayer.core.AudioFingerprint.similarity(pa, pb))
                 }
-                pairs.sortByDescending { it.score }
-                // Same name and artist but different audio: possible analyzer mistake.
+                // Same title and artist: a heard match is a duplicate pair,
+                // otherwise the shared name is a tag clash worth fixing.
                 val clashes = mutableListOf<NameClash>()
                 for ((_, group) in byName) {
                     if (group.size < 2) continue
-                    var allHeard = true
-                    var anyDifferent = false
+                    var best = 0
+                    var heard = 0
                     for (i in group.indices) for (j in i + 1 until group.size) {
-                        val pa = prints[group[i].mediaId]
-                        val pb = prints[group[j].mediaId]
-                        if (pa == null || pb == null) {
-                            // If we skipped fingerprinting (too many pairs), do not
-                            // claim a clash. Only report heard differences.
-                            continue
-                        }
+                        val pa = prints[group[i].mediaId] ?: continue
+                        val pb = prints[group[j].mediaId] ?: continue
+                        heard++
                         val score = com.blissplayer.core.AudioFingerprint.similarity(pa, pb)
-                        if (score < 50) anyDifferent = true
+                        if (score > best) best = score
+                        note(group[i].mediaId, group[j].mediaId, score)
                     }
-                    if (anyDifferent) {
+                    // Unheard groups (too many pairs to fingerprint) are
+                    // never claimed as clashes: only heard differences are.
+                    if (heard > 0 && best < bar) {
                         val first = group.first()
                         clashes.add(NameClash(first.title, first.artist, group))
                     }
-                    if (!allHeard) continue
                 }
+                pairs.sortByDescending { it.score }
                 dupePairs = pairs.take(200)
                 dupeClashes = clashes.take(100)
                 runCatching { notifManager.cancel(DUPE_NOTIF_ID) }
-                val msg = "${pairs.size} similar pairs, ${clashes.size} same name different audio. Tap to open."
+                val reuse = if (reusedFp > 0) " $reusedFp waveforms reused." else ""
+                val msg = "${pairs.size} similar pairs, ${clashes.size} same name different audio.$reuse Tap to open."
                 doneNotif(DUPE_NOTIF_ID, "Dupe finder done", msg)
                 progressListener?.invoke("dupes", total, total, "Done: $msg")
             } catch (e: Exception) {
@@ -1351,6 +1439,116 @@ class PlayerService : MediaSessionService() {
         runCatching { notifManager.cancel(DUPE_NOTIF_ID) }
         runCatching { notifManager.cancel(EQ_NOTIF_ID) }
         if (!silent) progressListener?.invoke("dupes", 0, 0, "Stopped.")
+    }
+
+    /** Files the last organize run could not move without a write grant. */
+    var organizePending: List<Song>? = null
+        private set
+
+    fun takeOrganizePending(): List<Song>? {
+        val p = organizePending
+        organizePending = null
+        return p
+    }
+
+    data class OrganizeSummary(
+        val moved: Int, val alreadyDone: Int,
+        val needsPermission: Int, val failed: Int, val notes: List<String>
+    )
+
+    /** Structured result of the last organize run (cleared on take). */
+    var organizeSummary: OrganizeSummary? = null
+        private set
+
+    fun takeOrganizeSummary(): OrganizeSummary? {
+        val s = organizeSummary
+        organizeSummary = null
+        return s
+    }
+
+    /**
+     * Organize in the service: survives back/rotate/swipe-away with a silent
+     * progress notification and Stop. Finished files are tracked per file, so
+     * a rerun only touches new or changed songs. When Android demands a
+     * write grant, the leftovers wait in organizePending for the UI to ask
+     * once, then the run resumes with just those files.
+     */
+    fun startOrganize(songs: List<Song>) {
+        if (organizeJob?.isActive == true) return
+        organizeJob?.cancel()
+        organizePending = null
+        val total = songs.size
+        if (total == 0) return
+        val t0 = System.currentTimeMillis()
+        progressNotif(ORGANIZE_NOTIF_ID, "Organizing $total songs",
+            "Starting.", 0, total, ACTION_ORGANIZE_STOP, 15)
+        progressListener?.invoke("organize", 0, total, "Starting.")
+        organizeJob = scope.launch(Dispatchers.Default) {
+            try {
+                val states = runCatching { db.stateMap(songs.map { it.mediaId }) }.getOrDefault(emptyMap())
+                var skippedDone = 0
+                val todo = songs.filter { s ->
+                    val st = states[s.mediaId]
+                    if (st != null && st.organized && st.fingerprint == db.fingerprint(s.sizeBytes, s.modified)) {
+                        skippedDone++
+                        false
+                    } else true
+                }
+                if (todo.isEmpty()) {
+                    runCatching { notifManager.cancel(ORGANIZE_NOTIF_ID) }
+                    doneNotif(ORGANIZE_NOTIF_ID, "Organize done", "Already organized. Nothing to do.")
+                    progressListener?.invoke("organize", total, total, "Done: already organized.")
+                    return@launch
+                }
+                val res = SongAnalyzer.organize(this@PlayerService, todo) { done, tot, name ->
+                    val eta = fmtEta(done, tot, System.currentTimeMillis() - t0)
+                    val text = if (name.isBlank()) "Done." else "Moving ($done of $tot, $eta): $name"
+                    progressNotif(ORGANIZE_NOTIF_ID, "Organizing $total songs",
+                        text, done, tot, ACTION_ORGANIZE_STOP, 15)
+                    progressListener?.invoke("organize", done, tot, text)
+                }
+                for (id in todo.map { it.mediaId }) {
+                    if (!isActive) break
+                    val s = todo.firstOrNull { it.mediaId == id } ?: continue
+                    if (res.needsPermission.contains(s.contentUri)) continue
+                    runCatching { db.markOrganized(id, db.fingerprint(s.sizeBytes, s.modified)) }
+                }
+                runCatching { notifManager.cancel(ORGANIZE_NOTIF_ID) }
+                val reuse = if (skippedDone > 0) " $skippedDone already organized." else ""
+                val failed = (res.skipped - res.alreadyOrganized - res.needsPermission.size).coerceAtLeast(0)
+                organizeSummary = OrganizeSummary(
+                    res.moved, res.alreadyOrganized + skippedDone,
+                    res.needsPermission.size, failed, res.notes
+                )
+                if (res.needsPermission.isNotEmpty()) {
+                    organizePending = todo.filter { res.needsPermission.contains(it.contentUri) }
+                    doneNotif(ORGANIZE_NOTIF_ID, "Organize needs permission",
+                        "Moved ${res.moved}.$reuse Tap to allow the rest.")
+                    progressListener?.invoke("organize", total, total,
+                        "Done: moved ${res.moved}.$reuse Needs permission.")
+                } else {
+                    doneNotif(ORGANIZE_NOTIF_ID, "Organize done",
+                        "Moved ${res.moved} songs.$reuse Tap to open.")
+                    progressListener?.invoke("organize", total, total,
+                        "Done: moved ${res.moved}.$reuse")
+                }
+            } catch (e: Exception) {
+                if (e is kotlinx.coroutines.CancellationException) {
+                    runCatching { notifManager.cancel(ORGANIZE_NOTIF_ID) }
+                    progressListener?.invoke("organize", 0, total, "Stopped.")
+                    throw e
+                }
+                runCatching { notifManager.cancel(ORGANIZE_NOTIF_ID) }
+                doneNotif(ORGANIZE_NOTIF_ID, "Organize stopped", "What finished is kept.")
+                progressListener?.invoke("organize", 0, total, "Stopped.")
+            }
+        }
+    }
+
+    fun cancelOrganize() {
+        organizeJob?.cancel()
+        runCatching { notifManager.cancel(ORGANIZE_NOTIF_ID) }
+        progressListener?.invoke("organize", 0, 0, "Stopped.")
     }
 
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? = session
@@ -1388,7 +1586,18 @@ class PlayerService : MediaSessionService() {
         // Stage 1: ExoPlayer volume does everything up to unity.
         player.volume = total.coerceIn(0.0f, 1.0f)
         // Stage 2: enhancer adds the rest as dB above unity. The phone clamps to its own max.
-        val enh = enhancer
+        // If the session callback never fired, the enhancer may be missing:
+        // retry from the live session so boost above 100% never silently drops.
+        var enh = enhancer
+        if (enh == null && total > 1.0f && ::player.isInitialized) {
+            val sid = runCatching { player.audioSessionId }.getOrDefault(0)
+            if (sid != 0 && sid != C.AUDIO_SESSION_ID_UNSET) {
+                enh = runCatching {
+                    LoudnessEnhancer(sid).apply { enabled = true }
+                }.getOrNull()
+                enhancer = enh
+            }
+        }
         if (enh != null && total > 1.0f) {
             val mb = (20f * log10(total) * 100).toInt().coerceIn(0, 4000)
             runCatching { enh.setTargetGain(mb) }

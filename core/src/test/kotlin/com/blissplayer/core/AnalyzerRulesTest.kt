@@ -21,6 +21,21 @@ class AnalyzerRulesTest {
         assertEquals("Back In Black", AnalyzerRules.canonicalAlbum("Back In Black (Live)"))
     }
 
+    @Test fun versionPackagingResolvesToTheOriginal() {
+        assertEquals("Trouble", AnalyzerRules.resolveAlbumTitle("Trouble (Deluxe Edition)"))
+        assertEquals("Back in Black", AnalyzerRules.resolveAlbumTitle("Back in Black Remastered"))
+        assertEquals("Back In Black", AnalyzerRules.canonicalAlbum("Back In Black (Live)"))
+        assertNull(AnalyzerRules.resolveAlbumTitle("Live in Tilburg"))
+        assertNull(AnalyzerRules.resolveAlbumTitle("Greatest Hits"))
+        assertNull(AnalyzerRules.resolveAlbumTitle("Best of Queen"))
+        assertNull(AnalyzerRules.resolveAlbumTitle("MTV Unplugged"))
+        assertNull(AnalyzerRules.resolveAlbumTitle("Live"))
+        assertNull(AnalyzerRules.resolveAlbumTitle("Hits"))
+        assertNull(AnalyzerRules.resolveAlbumTitle(""))
+        assertEquals("A Night at the Opera", AnalyzerRules.resolveAlbumTitle("A Night at the Opera"))
+        assertEquals("Alive", AnalyzerRules.resolveAlbumTitle("Alive"))
+    }
+
     @Test fun cleanupStripsVideoNoiseButKeepsPerformers() {
         val c = AnalyzerRules.cleanLocal("16 Stitch - Things They Say", "TheKrow", "16-stitch-things-they-say")
         assertEquals("Things They Say", c.title)

@@ -82,6 +82,10 @@ object SongAnalyzer {
     fun isPlaceholderAlbum(album: String, filePath: String?): Boolean =
         com.blissplayer.core.AnalyzerRules.isPlaceholderAlbum(album, filePath)
 
+    /** Folders, blanks, and live/compilation/version packaging: never used or kept as an album. */
+    fun isIgnoredAlbum(album: String, filePath: String?): Boolean =
+        com.blissplayer.core.AnalyzerRules.isIgnoredAlbumTitle(album, filePath)
+
 
 
 
@@ -152,7 +156,7 @@ object SongAnalyzer {
                 .ifBlank { s.title }
             val c = cleanLocal(s.title, s.artist, base)
             val missingMetadata = isUnknownArtist(c.artist) || genreOf(s.mediaId) == "Uncategorized" ||
-                isPlaceholderAlbum(albumOf(s.mediaId), s.filePath)
+                isIgnoredAlbum(albumOf(s.mediaId), s.filePath)
             if (c.title.isNotBlank() && (c.reasons.isNotEmpty() || online && missingMetadata)) {
                 // Swapped reading for "Title - Artist" uploaders: tried online
                 // when the primary reading is not confident.
@@ -255,7 +259,7 @@ object SongAnalyzer {
             genreByArtist.getOrPut(artistMergeKey(m.artist.ifBlank { m.song.artist })) { mutableMapOf() }
                 .merge(g, 1, Int::plus)
             val alb = m.wikiAlbum ?: albumOf(m.song.mediaId)
-            if (!isPlaceholderAlbum(alb, m.song.filePath)) {
+            if (!isIgnoredAlbum(alb, m.song.filePath)) {
                 genreByAlbum.getOrPut(albumKey(canonicalAlbum(alb))) { mutableMapOf() }
                     .merge(g, 1, Int::plus)
             }
@@ -271,7 +275,7 @@ object SongAnalyzer {
                 continue
             }
             val alb = m.wikiAlbum ?: albumOf(m.song.mediaId)
-            if (!isPlaceholderAlbum(alb, m.song.filePath)) {
+            if (!isIgnoredAlbum(alb, m.song.filePath)) {
                 genreByAlbum[albumKey(canonicalAlbum(alb))]?.maxByOrNull { it.value }?.let {
                     m.wikiGenre = it.key
                     m.reasons.add("Same album")
@@ -284,11 +288,24 @@ object SongAnalyzer {
             // Genre and album come only from the online index (or existing
             // tags): never guessed offline.
             val genre = m.wikiGenre ?: g0
-            // Never manufacture an album when the online lookup has no evidence.
+            // A refused album tag (folder, live, best-of) is repaired to the
+            // found original, or to Unknown when the index has no evidence.
+            // A refused tag always differs, so it always proposes.
             val effAlbum0 = albumOf(m.song.mediaId)
             var album = m.wikiAlbum
-            if (album == null && isPlaceholderAlbum(effAlbum0, m.song.filePath)) {
-                album = "Unknown album"
+            if (album == null && isIgnoredAlbum(effAlbum0, m.song.filePath)) {
+                val fixed = com.blissplayer.core.AnalyzerRules.resolveAlbumTitle(effAlbum0)
+                if (fixed != null && !fixed.equals(effAlbum0, ignoreCase = true)) {
+                    album = fixed
+                    if (m.reasons.none { it.startsWith("version packaging") }) {
+                        m.reasons.add("version packaging grouped to the original release")
+                    }
+                } else {
+                    album = "Unknown album"
+                    if (isBadAlbumTitle(effAlbum0) && m.reasons.none { it.startsWith("live or compilation") }) {
+                        m.reasons.add("live or compilation packaging ignored, original unknown")
+                    }
+                }
             }
             if (m.title.isBlank()) return@mapNotNull null
             if (m.title == m.song.title && m.artist.ifBlank { m.song.artist } == m.song.artist &&
@@ -407,8 +424,8 @@ object SongAnalyzer {
         if (want.isBlank()) return null
         val matching = hits.filter {
             WikiLookup.norm(MusicBrainzLookup.baseTitle(it.track)) == want
-        }.mapNotNull { it.album?.takeIf { a -> a.isNotBlank() } }
-        return matching.firstOrNull { !isBadAlbumTitle(it) }
+        }.mapNotNull { it.album?.let { a -> com.blissplayer.core.AnalyzerRules.resolveAlbumTitle(a) } }
+        return matching.firstOrNull()
     }
 
     fun isBadAlbumTitle(title: String): Boolean =
@@ -613,9 +630,11 @@ object SongAnalyzer {
             m.wikiGenre = f.genre
             if ("Online genre" !in m.reasons) m.reasons.add("Online genre")
         }
-        // Live and best-of packaging is rejected everywhere: originals only.
-        if (f.album != null && !isBadAlbumTitle(f.album)) {
-            m.wikiAlbum = f.album
+        // Live and best-of packaging is rejected everywhere: the resolved
+        // original wins ("Trouble (Deluxe Edition)" becomes "Trouble").
+        val fixed = f.album?.let { com.blissplayer.core.AnalyzerRules.resolveAlbumTitle(it) }
+        if (fixed != null) {
+            m.wikiAlbum = fixed
             if ("Online album" !in m.reasons) m.reasons.add("Online album")
         }
     }

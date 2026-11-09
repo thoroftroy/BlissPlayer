@@ -289,13 +289,13 @@ object MusicBrainzLookup {
         val eligible = groups.filter { g ->
             val s = secondary(g)
             val title = field(g, "\"title\"")
-            !title.isNullOrBlank() && !AnalyzerRules.isBadAlbumTitle(title) &&
+            !title.isNullOrBlank() && AnalyzerRules.resolveAlbumTitle(title) != null &&
                 listOf("Live", "Compilation", "Soundtrack", "Remix").none { "\"$it\"" in s }
         }
         for (kind in listOf("Album", "Single")) {
             eligible.filter { field(it, "\"primary-type\"") == kind }
                 .minByOrNull { field(it, "\"first-release-date\"")?.takeIf(String::isNotBlank) ?: "9999" }
-                ?.let { return field(it, "\"title\"") }
+                ?.let { return AnalyzerRules.resolveAlbumTitle(field(it, "\"title\"")!!) }
         }
         return null
     }
@@ -375,9 +375,9 @@ object MusicBrainzLookup {
         var fallback: String? = null
         for (o in objs) {
             val t = field(o, "\"title\"") ?: continue
-            if (AnalyzerRules.isBadAlbumTitle(t)) continue
-            if (fallback == null) fallback = t
-            if (field(o, "\"status\"") == "Official") return t
+            val fixed = AnalyzerRules.resolveAlbumTitle(t) ?: continue
+            if (fallback == null) fallback = fixed
+            if (field(o, "\"status\"") == "Official") return fixed
         }
         return fallback
     }

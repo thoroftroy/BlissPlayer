@@ -463,6 +463,9 @@ class MainActivity : AppCompatActivity() {
 
     private var svc: PlayerService? = null
     private var analyzerStatus: TextView? = null
+    private var trimStatus: TextView? = null
+    private var dupeStatus: TextView? = null
+    private var organizeStatus: TextView? = null
     private var eqStatusView: TextView? = null
     private lateinit var vol: VolumeManager
     private var lastUiDevice: String? = null
@@ -798,6 +801,7 @@ class MainActivity : AppCompatActivity() {
             } else pendingQueueSync = true
             applySavedRepeat()
             refreshMini()
+            armProgressTick()
             attachProgressListener()
         }
 
@@ -832,6 +836,7 @@ class MainActivity : AppCompatActivity() {
             miniPlayPause.setImageResource(if (isPlaying) R.drawable.ic_pause else R.drawable.ic_play)
             npPlay?.setImageResource(if (isPlaying) R.drawable.ic_pause else R.drawable.ic_play)
             setPlayBtnIcon(isPlaying)
+            if (isPlaying) armProgressTick()
             refreshMini()
         }
 
@@ -1209,6 +1214,9 @@ class MainActivity : AppCompatActivity() {
         super.onPause()
         saveResume()
         persistListenTime()
+        // No motion on screen, nothing to track: let the ticker sleep.
+        // Playing in the background is tracked by the service instead.
+        if (svc?.player?.isPlaying != true) ticker.removeCallbacks(progressTick)
     }
 
     override fun onDestroy() {
@@ -1350,6 +1358,7 @@ class MainActivity : AppCompatActivity() {
         // Rotation/recreate can leave the mini player showing a stale
         // "Nothing playing" while the service kept going. Re-resolve it.
         if (svc != null) refreshMini()
+        armProgressTick()
         attachProgressListener()
         // A background run may have finished while the UI was gone.
         svc?.takeProposals()?.let { pending ->
@@ -1369,20 +1378,32 @@ class MainActivity : AppCompatActivity() {
         val s = svc ?: return
         s.progressListener = { kind, done, total, text ->
             runOnUiThread {
-                if (kind == "analyzer") analyzerStatus?.text = text
-                else eqStatusView?.text = text
+                when (kind) {
+                    "analyzer" -> analyzerStatus?.text = text
+                    "trim" -> trimStatus?.text = text
+                    "dupes" -> dupeStatus?.text = text
+                    "organize" -> organizeStatus?.text = text
+                    else -> eqStatusView?.text = text
+                }
                 if ((done >= total && total > 0)) {
                     if (kind == "analyzer") {
                         s.takeProposals()?.let { pending ->
                             if (pending.isNotEmpty()) showProposals(pending)
                         }
-                        if (prefs.getBoolean("trim_silence", true)) {
-                            s.startSilenceTrim(songs)
-                        }
                     } else if (kind == "dupes") {
                         s.takeDupes()?.let { (pairs, clashes) ->
                             showDupeResults(pairs, clashes)
                         }
+                    } else if (kind == "organize") {
+                        refreshCountCache()
+                        val pending = s.takeOrganizePending()
+                        if (pending != null) {
+                            organizePermissionResume(pending)
+                        } else {
+                            s.takeOrganizeSummary()?.let { showOrganizeDone(it) }
+                        }
+                        if (tab == 5) buildMorePane()
+                        scan()
                     } else {
                         refreshCountCache()
                         if (tab == 5) buildMorePane()
@@ -1402,7 +1423,16 @@ class MainActivity : AppCompatActivity() {
         if (!s.analyzerRunning && s.pendingProposals == null) {
             analyzerStatus?.text = idleAnalyzerText()
         }
-        if (!s.eqRunning && !s.trimRunning && !s.dupeRunning) {
+        if (!s.trimRunning) {
+            trimStatus?.text = idleTrimText()
+        }
+        if (!s.dupeRunning && s.dupePairs == null) {
+            dupeStatus?.text = idleDupeText()
+        }
+        if (!s.organizeRunning && s.organizePending == null) {
+            organizeStatus?.text = idleOrganizeText()
+        }
+        if (!s.eqRunning) {
             eqStatusView?.text = eqStatusIdleText()
         }
     }
@@ -1414,6 +1444,31 @@ class MainActivity : AppCompatActivity() {
             st != null && st.analyzed && st.fingerprint == db.fingerprint(s.sizeBytes, s.modified)
         }
         return if (songs.isEmpty()) "" else "Done before: $done of ${songs.size}."
+    }
+
+    private fun idleTrimText(): String {
+        val states = runCatching { db.stateMap(songs.map { it.mediaId }) }.getOrDefault(emptyMap())
+        val done = songs.count { s ->
+            val st = states[s.mediaId]
+            st != null && st.trimmed && st.fingerprint == db.fingerprint(s.sizeBytes, s.modified)
+        }
+        return if (songs.isEmpty()) "" else "Done before: $done of ${songs.size}."
+    }
+
+    private fun idleOrganizeText(): String {
+        val states = runCatching { db.stateMap(songs.map { it.mediaId }) }.getOrDefault(emptyMap())
+        val done = songs.count { s ->
+            val st = states[s.mediaId]
+            st != null && st.organized && st.fingerprint == db.fingerprint(s.sizeBytes, s.modified)
+        }
+        return if (songs.isEmpty()) "" else "Done before: $done of ${songs.size}."
+    }
+
+    private fun idleDupeText(): String {
+        if (songs.isEmpty()) return ""
+        val cached = runCatching { db.dupeFpCount() }.getOrDefault(0)
+        return if (cached == 0) "No waveforms cached yet. Run a waveform pass to fill the cache."
+        else "Waveforms cached for $cached songs. Redos reuse them instead of re-listening."
     }
 
     private fun scan(fromTap: Boolean = false) {
@@ -1441,15 +1496,26 @@ class MainActivity : AppCompatActivity() {
                 }
                 val genres = db.allGenres()
                 var albums = db.allAlbums()
-                // Folder names are not albums: seed an honest override once
-                // so "Music" never poses as a record.
+                // Folder names are not albums, and live or best-of packaging
+                // is never an album either: seed an honest override once so
+                // "Music" or "Live at Wembley" never poses as a record. A
+                // version of a real album resolves to the original:
+                // "Trouble (Deluxe Edition)" browses as "Trouble".
                 var seeded = false
                 for (s in filtered) {
-                    if (!albums.containsKey(s.mediaId) &&
-                        com.blissplayer.music.data.SongAnalyzer.isPlaceholderAlbum(s.album, s.filePath)
-                    ) {
-                        db.setAlbum(s.mediaId, "Unknown album")
-                        seeded = true
+                    if (!albums.containsKey(s.mediaId)) {
+                        val fixed = com.blissplayer.core.AnalyzerRules.resolveAlbumTitle(s.album)
+                        when {
+                            com.blissplayer.music.data.SongAnalyzer.isPlaceholderAlbum(s.album, s.filePath) ||
+                                fixed == null -> {
+                                db.setAlbum(s.mediaId, "Unknown album")
+                                seeded = true
+                            }
+                            !fixed.equals(s.album, ignoreCase = true) -> {
+                                db.setAlbum(s.mediaId, fixed)
+                                seeded = true
+                            }
+                        }
                     }
                 }
                 if (seeded) albums = db.allAlbums()
@@ -2556,6 +2622,7 @@ class MainActivity : AppCompatActivity() {
 
     private val progressTick = object : Runnable {
         override fun run() {
+            ticker.removeCallbacks(this)
             val playing = svc?.player?.isPlaying == true
             if (playing) {
                 listenAccumMs += 500
@@ -2569,8 +2636,16 @@ class MainActivity : AppCompatActivity() {
             }
             ensureQueueSync()
             updateProgressViews()
-            ticker.postDelayed(this, 500)
+            // The screen is static while paused, so only tick while music
+            // moves. Re-armed by onResume, service connect, and play state.
+            if (playing) ticker.postDelayed(this, 500)
         }
+    }
+
+    /** Keep the progress ticker exactly while it has work to do. */
+    private fun armProgressTick() {
+        ticker.removeCallbacks(progressTick)
+        ticker.post(progressTick)
     }
 
     private fun persistListenTime() {
@@ -4296,7 +4371,7 @@ class MainActivity : AppCompatActivity() {
             }
         })
 
-        moreBox.addView(section("Boost"))
+        moreBox.addView(section("Sound"))
         deviceLabel = TextView(this).apply { textSize = 13f }
         moreBox.addView(deviceLabel)
         boostLabel = TextView(this).apply {
@@ -4358,14 +4433,24 @@ class MainActivity : AppCompatActivity() {
             textSize = 12f
         })
 
-        moreBox.addView(section("Live sound mixer"))
+        moreBox.addView(TextView(this).apply {
+            text = "Live sound mixer"
+            textSize = 14f
+            xpBold()
+            setTextColor(iconColor())
+        })
         moreBox.addView(TextView(this).apply {
             text = "Bass, midrange, treble and preamp for every song. Flat and bypassed by default; changes are live and never rewrite files."
             textSize = 12f
         })
         moreBox.addView(xpBtn("Open frequency mixer").apply { setOnClickListener { mixerDialog() } })
 
-        moreBox.addView(section("Loudness"))
+        moreBox.addView(TextView(this).apply {
+            text = "Loudness"
+            textSize = 14f
+            xpBold()
+            setTextColor(iconColor())
+        })
         moreBox.addView(TextView(this).apply {
             text = "One tap evens out volumes across songs. Nothing is rewritten, Undo is one tap, done songs are skipped."
             textSize = 12f
@@ -4559,15 +4644,19 @@ class MainActivity : AppCompatActivity() {
         })
         updateShuffleViews()
 
-        moreBox.addView(section("Song analyzer"))
+        moreBox.addView(section("Library work"))
+        moreBox.addView(TextView(this).apply {
+            text = "Each step runs alone in the background with a silent progress notification and Stop. Finished songs are remembered per song, so reruns only touch new or changed ones."
+            textSize = 12f
+        })
+        moreBox.addView(xpBtn("Analyze songs").apply {
+            setOnClickListener { analyzeDialog() }
+        })
         moreBox.addView(TextView(this).apply {
             text = "Cleans junk from names, then looks up title, artist and genre online. Review, then Apply. Only enabled folders are touched. " +
                 if (prefs.getBoolean("analyzer_online", true)) "Online lookup is on."
                 else "Online lookup is off, names only."
             textSize = 12f
-        })
-        moreBox.addView(xpBtn("Analyze songs").apply {
-            setOnClickListener { analyzeDialog() }
         })
         moreBox.addView(TextView(this).apply {
             textSize = 12f
@@ -4583,48 +4672,44 @@ class MainActivity : AppCompatActivity() {
                 toast(if (now) "Online lookup on. Slower, but smarter." else "Online lookup off. Names only.")
             }
         })
-        val trimOn = prefs.getBoolean("trim_silence", true)
-        moreBox.addView(xpBtn("Trim silence: ${if (trimOn) "On" else "Off"}").apply {
-            setOnClickListener {
-                val now = !prefs.getBoolean("trim_silence", true)
-                prefs.edit().putBoolean("trim_silence", now).apply()
-                buildMorePane()
-                toast(if (now) "Silence trim on. New silence at song edges will be skipped."
-                    else "Silence trim off.")
-            }
+        moreBox.addView(xpBtn("Trim silence").apply {
+            setOnClickListener { trimDialog() }
         })
         moreBox.addView(TextView(this).apply {
-            text = "When on, the analyzer checks waveform edges and adds skip segments for complete silence or near silence. Nothing is rewritten, no realtime playback."
+            text = "Its own step, separate from Analyze. Checks waveform edges and adds skip segments for complete or near silence. Nothing is rewritten, no realtime playback."
             textSize = 12f
         })
-        moreBox.addView(xpBtn("Trim silence now").apply {
-            setOnClickListener {
-                val s = svc
-                if (s == null) {
-                    toast("Playback is still starting. Try again in a moment.")
-                    return@setOnClickListener
-                }
-                if (s.anyWorkRunning) {
-                    toast("Another library job is still running. Stop it first, then trim.")
-                    return@setOnClickListener
-                }
-                s.startSilenceTrim(songs)
-                toast("Trimming silence in the background.")
-            }
+        moreBox.addView(TextView(this).apply {
+            textSize = 12f
+            xpBold()
+            trimStatus = this
+            text = idleTrimText()
         })
         moreBox.addView(xpBtn("Dupe finder").apply {
             setOnClickListener { dupeFinderDialog() }
         })
         moreBox.addView(TextView(this).apply {
-            text = "Compares waveforms to find matching recordings for deletion, plus same-name songs that sound different so you can fix tags. Titles-only mode is instant, waveform mode compares RMS fingerprints."
+            text = "Compares waveforms to find matching recordings for deletion, plus same-name songs that sound different so you can fix tags. Titles-only mode is instant, waveform mode matches the energy curve of the whole recording (same song, any encode)."
             textSize = 12f
+        })
+        moreBox.addView(TextView(this).apply {
+            textSize = 12f
+            xpBold()
+            dupeStatus = this
+            text = idleDupeText()
         })
         moreBox.addView(xpBtn("Organize into BlissPlayer folder").apply {
             setOnClickListener { organizeConfirm() }
         })
         moreBox.addView(TextView(this).apply {
-            text = "Organize files into Music, BlissPlayer, Artist, Album. Only enabled folders are touched; unticked folders are never moved."
+            text = "Moves songs into Music, BlissPlayer, Artist, Album in the background. Only enabled folders are touched; unticked folders are never moved."
             textSize = 12f
+        })
+        moreBox.addView(TextView(this).apply {
+            textSize = 12f
+            xpBold()
+            organizeStatus = this
+            text = idleOrganizeText()
         })
 
         moreBox.addView(section("Playlists"))
@@ -5053,7 +5138,7 @@ class MainActivity : AppCompatActivity() {
             setPadding(dp(8), 0, dp(8), dp(8))
         })
         var body: LinearLayout? = null
-        val expanded = prefs.getStringSet("more_panels", setOf("Playback controls", "Boost"))!!.toMutableSet()
+        val expanded = prefs.getStringSet("more_panels", setOf("Playback controls", "Sound"))!!.toMutableSet()
         children.forEach { child ->
             val heading = child.getTag(R.id.tabMore) as? String
             if (heading?.startsWith("section:") == true && child is TextView) {
@@ -5390,6 +5475,53 @@ class MainActivity : AppCompatActivity() {
 
     private var analyzerJob: Job? = null
 
+    private fun trimDialog() {
+        if (songs.isEmpty()) {
+            toast("Scan your music first.")
+            return
+        }
+        val states = db.stateMap(songs.map { it.mediaId })
+        val fresh = songs.filter { s ->
+            val st = states[s.mediaId]
+            st == null || !st.trimmed || st.fingerprint != db.fingerprint(s.sizeBytes, s.modified)
+        }
+        val doneCount = songs.size - fresh.size
+        xpMenuDialog("Trim silence in ${songs.size} songs?",
+            (if (fresh.isNotEmpty()) listOf("New and changed only (${fresh.size})") else emptyList()) +
+                (if (doneCount > 0) listOf("Redo the done ones ($doneCount)") else emptyList()) +
+                listOf("Everything (${songs.size})")
+        ) { which ->
+            val items = (if (fresh.isNotEmpty()) listOf("new") else emptyList()) +
+                (if (doneCount > 0) listOf("redo") else emptyList()) + listOf("all")
+            val pick = items[which]
+            val list = when (pick) {
+                "new" -> fresh
+                "redo" -> songs.filter { s -> s !in fresh.toSet() }
+                else -> songs
+            }
+            runTrim(list)
+        }
+    }
+
+    private fun runTrim(inScope: List<Song>) {
+        if (inScope.isEmpty()) {
+            toast("Nothing to trim.")
+            return
+        }
+        val s = svc
+        if (s == null) {
+            toast("Playback is still starting. Try again in a moment.")
+            return
+        }
+        if (s.anyWorkRunning) {
+            toast("Another library job is still running. Stop it first, then trim.")
+            return
+        }
+        s.startSilenceTrim(inScope)
+        trimStatus?.text = "Working in the background."
+        toast("Trimming silence in ${inScope.size} songs in the background.")
+    }
+
     /**
      * Show a dialog only while this screen is alive. Analyzer/organizer jobs
      * outlive rotations and back-presses, so an unguarded show() leaks a
@@ -5672,7 +5804,7 @@ class MainActivity : AppCompatActivity() {
             setTextColor(iconColor())
         })
         box.addView(TextView(this).apply {
-            text = "These sound 50 to 100 percent identical. Tick one in each pair to delete it."
+            text = "These sound 75 to 100 percent identical. Play each to hear it, then tick one in each pair to delete it."
             textSize = 12f
         })
         // Visual gap between the two lists so pairs and clashes read as separate groups.
@@ -5692,13 +5824,24 @@ class MainActivity : AppCompatActivity() {
                     setPadding(0, dp(8), 0, dp(2))
                 })
                 listOf(p.a, p.b).forEach { song ->
-                    box.addView(android.widget.CheckBox(this).apply {
-                        text = "Delete: ${song.title} (${song.artist})"
-                        textSize = 12f
-                        setTextColor(iconColor())
-                        setOnCheckedChangeListener { _, checked ->
-                            if (checked) toDelete.add(song.mediaId) else toDelete.remove(song.mediaId)
-                        }
+                    box.addView(LinearLayout(this@MainActivity).apply {
+                        orientation = LinearLayout.HORIZONTAL
+                        addView(xpBtn("Play").apply {
+                            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 0.35f)
+                            setOnClickListener {
+                                playSearchedSong(song)
+                                toast("Playing ${song.title}. Hear if it matches, then delete.")
+                            }
+                        })
+                        addView(android.widget.CheckBox(this@MainActivity).apply {
+                            text = "Delete: ${song.title} (${song.artist})"
+                            textSize = 12f
+                            setTextColor(iconColor())
+                            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 0.65f)
+                            setOnCheckedChangeListener { _, checked ->
+                                if (checked) toDelete.add(song.mediaId) else toDelete.remove(song.mediaId)
+                            }
+                        })
                     })
                 }
                 box.addView(View(this).apply {
@@ -5735,13 +5878,24 @@ class MainActivity : AppCompatActivity() {
                     setPadding(0, dp(8), 0, dp(2))
                 })
                 c.songs.forEach { song ->
-                    box.addView(xpBtn("Fix tags: ${song.title.take(28)}").apply {
-                        setOnClickListener {
-                            lifecycleScope.launch {
-                                val tags = com.blissplayer.music.data.TagTools.readTags(this@MainActivity, song)
-                                tagEditorDialog(song, tags)
+                    box.addView(LinearLayout(this@MainActivity).apply {
+                        orientation = LinearLayout.HORIZONTAL
+                        addView(xpBtn("Play").apply {
+                            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 0.3f)
+                            setOnClickListener {
+                                playSearchedSong(song)
+                                toast("Playing ${song.title}. Hear which version it is.")
                             }
-                        }
+                        })
+                        addView(xpBtn("Fix tags: ${song.title.take(20)}").apply {
+                            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 0.7f)
+                            setOnClickListener {
+                                lifecycleScope.launch {
+                                    val tags = com.blissplayer.music.data.TagTools.readTags(this@MainActivity, song)
+                                    tagEditorDialog(song, tags)
+                                }
+                            }
+                        })
                     })
                 }
                 box.addView(View(this).apply {
@@ -5824,110 +5978,107 @@ class MainActivity : AppCompatActivity() {
             toast("Scan your music first.")
             return
         }
-        ThemeDialogBuilder(this)
-            .setCustomTitle(xpTitle("Organize into BlissPlayer folder?"))
-            .setMessage("Moves songs in the enabled folders into Music, BlissPlayer, Artist, Album. Unticked folders are never touched. Playlists keep working. System folders are never touched.")
-            .setPositiveButton("Organize") { _, _ -> runOrganize() }
-            .setNegativeButton("Cancel", null)
-            .show()
-    }
-
-    private fun runOrganize(retrySongs: List<Song>? = null, permissionAttempts: Set<String> = emptySet()) {
-        if (analyzerJob?.isActive == true) { toast("Another library operation is still running."); return }
         // Organizing covers the enabled folders only: unticked folders are
-        // never touched by anything. (Explicit retry lists bypass the filter.)
+        // never touched by anything.
         val folders = prefs.getStringSet("folders", emptySet())!!
-        val base = retrySongs ?: if (folders.isEmpty()) songs
+        val base = if (folders.isEmpty()) songs
         else songs.filter { s -> s.isInFolders(folders) }
-        val inScope = base.map { it.copy(album = displayAlbum(it)) }
-        if (inScope.isEmpty()) {
+        if (base.isEmpty()) {
             toast("No songs in the enabled folders.")
             return
         }
+        val states = db.stateMap(base.map { it.mediaId })
+        val fresh = base.filter { s ->
+            val st = states[s.mediaId]
+            st == null || !st.organized || st.fingerprint != db.fingerprint(s.sizeBytes, s.modified)
+        }
+        val doneCount = base.size - fresh.size
+        xpMenuDialog("Organize ${base.size} songs into the BlissPlayer folder?",
+            (if (fresh.isNotEmpty()) listOf("New and changed only (${fresh.size})") else emptyList()) +
+                (if (doneCount > 0) listOf("Redo the done ones ($doneCount)") else emptyList()) +
+                listOf("Everything (${base.size})")
+        ) { which ->
+            val items = (if (fresh.isNotEmpty()) listOf("new") else emptyList()) +
+                (if (doneCount > 0) listOf("redo") else emptyList()) + listOf("all")
+            val pick = items[which]
+            val list = when (pick) {
+                "new" -> fresh
+                "redo" -> base.filter { s -> s !in fresh.toSet() }
+                else -> base
+            }
+            runOrganize(list)
+        }
+    }
+
+    private fun runOrganize(inScope: List<Song>, permissionAttempts: Set<String> = emptySet()) {
+        if (inScope.isEmpty()) {
+            toast("Nothing to organize.")
+            return
+        }
+        val s = svc
+        if (s == null) {
+            toast("Playback is still starting. Try again in a moment.")
+            return
+        }
+        if (s.anyWorkRunning) {
+            toast("Another library job is still running. Stop it first, then organize.")
+            return
+        }
         // Keep moved files in the enabled library, including after a partial/cancelled run.
+        val folders = prefs.getStringSet("folders", emptySet())!!
+        val scoped = inScope.map { it.copy(album = displayAlbum(it)) }
         if (folders.isNotEmpty()) {
-            val destinations = inScope.mapNotNull { s ->
-                val path = s.filePath ?: return@mapNotNull null
+            val destinations = scoped.mapNotNull { song ->
+                val path = song.filePath ?: return@mapNotNull null
                 val root = if (path.startsWith("/storage/emulated/0/")) "/storage/emulated/0" else
                     Regex("^/storage/[^/]+").find(path)?.value
                 root?.let { "$it/Music/BlissPlayer" }
             }
             prefs.edit().putStringSet("folders", folders + destinations).apply()
         }
-        val bar = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
-            max = inScope.size.coerceAtLeast(1)
-            progressDrawable = xpProgress()
-        }
-        val label = TextView(this).apply { text = "Starting." }
-        val box = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(16), dp(16), dp(16), dp(16))
-            addView(label)
-            addView(bar)
-        }
-        var dlg: AlertDialog? = null
-        dlg = safeShow(ThemeDialogBuilder(this)
-            .setCustomTitle(xpTitle("Organizing"))
-            .setView(box)
-            .setNegativeButton("Stop") { _, _ ->
-                analyzerJob?.cancel()
-                toast("Organizer stopped. Moves so far are kept.")
+        // Runs in the service: no pop-up, survives back/rotate/swipe-away.
+        // Progress lands in the status line below and a silent notification.
+        pendingOrganizeAttempts = permissionAttempts
+        s.startOrganize(scoped)
+        organizeStatus?.text = "Working in the background."
+        toast("Organizing ${scoped.size} songs in the background.")
+    }
+
+    /** One system tap covers the write-grant batch, then the leftovers resume alone. */
+    private var pendingOrganizeAttempts: Set<String> = emptySet()
+
+    private fun showOrganizeDone(sum: com.blissplayer.music.playback.PlayerService.OrganizeSummary) {
+        val notes = if (sum.notes.isNotEmpty()) "\n\n" + sum.notes.take(20).joinToString("\n") else ""
+        safeShow(ThemeDialogBuilder(this@MainActivity)
+            .setCustomTitle(xpTitle("Organize done"))
+            .setMessage(
+                "Moved ${sum.moved} songs into the BlissPlayer folder. " +
+                    "${sum.alreadyDone} already in the right folder. " +
+                    "${sum.needsPermission} need Android write permission. " +
+                    "${sum.failed} failed.$notes"
+            )
+            .setPositiveButton("OK", null))
+    }
+
+    private fun organizePermissionResume(pending: List<Song>) {
+        val requestable = pending.map { it.contentUri }.filter { it !in pendingOrganizeAttempts }.distinct().take(500)
+        if (requestable.isNotEmpty() && Build.VERSION.SDK_INT >= 30) {
+            pendingRetries.addLast {
+                runOrganize(pending, pendingOrganizeAttempts + requestable)
             }
-            .setCancelable(false))
-        analyzerJob?.cancel()
-        analyzerJob = lifecycleScope.launch {
             try {
-                val res = com.blissplayer.music.data.SongAnalyzer.organize(
-                    this@MainActivity, inScope
-                ) { done, total, name ->
-                    bar.max = total.coerceAtLeast(1)
-                    bar.progress = done
-                    label.text = if (name.isBlank()) "Done." else "Moving ($done of $total): $name"
-                }
-                runCatching { dlg?.dismiss() }
-                var permissionError = ""
-                val requestable = res.needsPermission.filter { it !in permissionAttempts }.take(500)
-                if (requestable.isNotEmpty() && Build.VERSION.SDK_INT >= 30) {
-                    // One system tap covers the whole batch; then run again
-                    // for the files it just unlocked.
-                    pendingRetries.addLast { runOrganize(inScope.filter { it.contentUri in res.needsPermission }, permissionAttempts + requestable) }
-                    val uris = requestable.map { Uri.parse(it) }.distinct()
-                    if (uris.isNotEmpty()) {
-                        try {
-                            val sender = MediaStore.createWriteRequest(contentResolver, uris).intentSender
-                            senderLauncher.launch(IntentSenderRequest.Builder(sender).build())
-                            toast("Allow once, then organizing finishes the rest.")
-                            return@launch
-                        } catch (e: Exception) {
-                            pendingRetries.clear()
-                            permissionError = "\nAndroid could not request write permission: ${e.message}"
-                        }
-                    }
-                }
-                if (res.needsPermission.any { it in permissionAttempts }) {
-                    permissionError += "\nAndroid still denied some files after permission was granted. They were left unchanged. Check file access or whether another app has moved/deleted them."
-                }
-                scan()
-                val notes = (if (res.notes.isNotEmpty()) "\n\n" + res.notes.joinToString("\n") else "") + permissionError
-                safeShow(ThemeDialogBuilder(this@MainActivity)
-                    .setCustomTitle(xpTitle("Done"))
-                    .setMessage(
-                        "Moved ${res.moved} songs into the BlissPlayer folder. " +
-                            "${res.alreadyOrganized} already in the right folder. " +
-                            "${res.needsPermission.size} need Android write permission. " +
-                            "${res.skipped - res.alreadyOrganized - res.needsPermission.size} failed.$notes"
-                    )
-                    .setPositiveButton("OK", null))
+                val sender = MediaStore.createWriteRequest(
+                    contentResolver, requestable.map { Uri.parse(it) }).intentSender
+                senderLauncher.launch(IntentSenderRequest.Builder(sender).build())
+                toast("Allow once, then organizing finishes the rest.")
+                return
             } catch (e: Exception) {
-                if (e is kotlinx.coroutines.CancellationException) throw e
-                runCatching { dlg?.dismiss() }
-                safeShow(ThemeDialogBuilder(this@MainActivity).setCustomTitle(xpTitle("Organizer stopped"))
-                    .setMessage("Moves already completed are kept. ${e.javaClass.simpleName}: ${e.message ?: "Unknown error"}")
-                    .setPositiveButton("OK", null))
-            } finally {
-                runCatching { dlg?.dismiss() }
-                if (!isDestroyed && !isFinishing) scan()
+                pendingRetries.clear()
+                toast("Android could not request write permission: ${e.message}")
             }
+        }
+        if (pending.any { it.contentUri in pendingOrganizeAttempts }) {
+            toast("Android still denied some files after permission was granted. They were left unchanged.")
         }
     }
 

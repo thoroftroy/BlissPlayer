@@ -56,6 +56,19 @@ class BlissDb(context: Context) : SQLiteOpenHelper(context, "bliss.db", null, co
         if (old < 14) {
             db.execSQL("CREATE TABLE IF NOT EXISTS learned_artists(alias_key TEXT PRIMARY KEY, name TEXT NOT NULL)")
         }
+        if (old < 15) {
+            db.execSQL("ALTER TABLE song_state ADD COLUMN trimmed INTEGER NOT NULL DEFAULT 0")
+            db.execSQL("ALTER TABLE song_state ADD COLUMN trimmed_at INTEGER NOT NULL DEFAULT 0")
+            db.execSQL("ALTER TABLE song_state ADD COLUMN organized INTEGER NOT NULL DEFAULT 0")
+            db.execSQL("ALTER TABLE song_state ADD COLUMN organized_at INTEGER NOT NULL DEFAULT 0")
+            db.execSQL("CREATE TABLE IF NOT EXISTS dupe_fp(media_id INTEGER PRIMARY KEY, rms REAL NOT NULL, shape TEXT NOT NULL DEFAULT '', timbre TEXT NOT NULL DEFAULT '', duration INTEGER NOT NULL DEFAULT 0, modified INTEGER NOT NULL DEFAULT 0)")
+        }
+        if (old < 16) {
+            // v15 scorer replaced: coarse curves are gone, fine 50ms
+            // energy curves (uint8 quantized) take their place.
+            db.execSQL("DROP TABLE IF EXISTS dupe_fp")
+            db.execSQL("CREATE TABLE IF NOT EXISTS dupe_fine(media_id INTEGER PRIMARY KEY, rms REAL NOT NULL, qmin REAL NOT NULL DEFAULT 0, qmax REAL NOT NULL DEFAULT 0, qdata BLOB NOT NULL DEFAULT x'', duration INTEGER NOT NULL DEFAULT 0, modified INTEGER NOT NULL DEFAULT 0)")
+        }
     }
 
     // ---- gains ----
@@ -80,19 +93,27 @@ class BlissDb(context: Context) : SQLiteOpenHelper(context, "bliss.db", null, co
 
     fun clearGains() = writableDatabase.delete("gains", null, null)
 
-    // ---- song_state (incremental analyze/equalize) ----
+    // ---- song_state (incremental analyze/equalize/trim/organize) ----
     data class SongState(
-        val fingerprint: String, val analyzed: Boolean, val eq: Boolean
+        val fingerprint: String, val analyzed: Boolean, val eq: Boolean,
+        val trimmed: Boolean, val organized: Boolean
     )
 
     /** Fingerprint that changes when the file changes: size + MediaStore mtime. */
     fun fingerprint(sizeBytes: Long, modified: Long) = "$sizeBytes:$modified"
 
+    fun dupeFpCount(): Int {
+        readableDatabase.rawQuery("SELECT COUNT(*) FROM dupe_fine", null)?.use { c ->
+            if (c.moveToFirst()) return c.getInt(0)
+        }
+        return 0
+    }
+
     fun songState(mediaId: Long): SongState? {
         return readableDatabase.rawQuery(
-            "SELECT fingerprint, analyzed, eq FROM song_state WHERE media_id = $mediaId", null
+            "SELECT fingerprint, analyzed, eq, trimmed, organized FROM song_state WHERE media_id = $mediaId", null
         )?.use { c ->
-            if (c.moveToNext()) SongState(c.getString(0), c.getInt(1) != 0, c.getInt(2) != 0)
+            if (c.moveToNext()) SongState(c.getString(0), c.getInt(1) != 0, c.getInt(2) != 0, c.getInt(3) != 0, c.getInt(4) != 0)
             else null
         }
     }
@@ -123,6 +144,32 @@ class BlissDb(context: Context) : SQLiteOpenHelper(context, "bliss.db", null, co
             arrayOf(fingerprint, System.currentTimeMillis(), mediaId))
     }
 
+    fun markTrimmed(mediaId: Long, fingerprint: String) {
+        val v = ContentValues().apply {
+            put("media_id", mediaId)
+            put("fingerprint", fingerprint)
+            put("trimmed", 1)
+            put("trimmed_at", System.currentTimeMillis())
+        }
+        writableDatabase.insertWithOnConflict("song_state", null, v, SQLiteDatabase.CONFLICT_IGNORE)
+        writableDatabase.execSQL(
+            "UPDATE song_state SET fingerprint = ?, trimmed = 1, trimmed_at = ? WHERE media_id = ?",
+            arrayOf(fingerprint, System.currentTimeMillis(), mediaId))
+    }
+
+    fun markOrganized(mediaId: Long, fingerprint: String) {
+        val v = ContentValues().apply {
+            put("media_id", mediaId)
+            put("fingerprint", fingerprint)
+            put("organized", 1)
+            put("organized_at", System.currentTimeMillis())
+        }
+        writableDatabase.insertWithOnConflict("song_state", null, v, SQLiteDatabase.CONFLICT_IGNORE)
+        writableDatabase.execSQL(
+            "UPDATE song_state SET fingerprint = ?, organized = 1, organized_at = ? WHERE media_id = ?",
+            arrayOf(fingerprint, System.currentTimeMillis(), mediaId))
+    }
+
     /** States for ids (missing = never touched). Callers compare fingerprints. */
     fun stateMap(mediaIds: List<Long>): Map<Long, SongState> {
         val out = mutableMapOf<Long, SongState>()
@@ -130,14 +177,64 @@ class BlissDb(context: Context) : SQLiteOpenHelper(context, "bliss.db", null, co
             if (chunk.isEmpty()) continue
             val ids = chunk.joinToString(",")
             readableDatabase.rawQuery(
-                "SELECT media_id, fingerprint, analyzed, eq FROM song_state WHERE media_id IN ($ids)", null
+                "SELECT media_id, fingerprint, analyzed, eq, trimmed, organized FROM song_state WHERE media_id IN ($ids)", null
             )?.use { c ->
                 while (c.moveToNext()) {
-                    out[c.getLong(0)] = SongState(c.getString(1), c.getInt(2) != 0, c.getInt(3) != 0)
+                    out[c.getLong(0)] = SongState(c.getString(1), c.getInt(2) != 0, c.getInt(3) != 0, c.getInt(4) != 0, c.getInt(5) != 0)
                 }
             }
         }
         return out
+    }
+
+    // ---- dupe fingerprints (fine 50ms energy curves, uint8 quantized:
+    // a redo never re-listens to an unchanged file) ----
+    fun putDupeFine(mediaId: Long, rms: Double, fine: FloatArray, durationMs: Long, modified: Long) {
+        var lo = Float.MAX_VALUE
+        var hi = -Float.MAX_VALUE
+        for (v in fine) {
+            if (v < lo) lo = v
+            if (v > hi) hi = v
+        }
+        if (hi <= lo) {
+            lo = 0f
+            hi = 1f
+        }
+        val q = ByteArray(fine.size) { i ->
+            (((fine[i] - lo) / (hi - lo)) * 255f).toInt().coerceIn(0, 255).toByte()
+        }
+        writableDatabase.insertWithOnConflict(
+            "dupe_fine", null,
+            ContentValues().apply {
+                put("media_id", mediaId)
+                put("rms", rms)
+                put("qmin", lo.toDouble())
+                put("qmax", hi.toDouble())
+                put("qdata", q)
+                put("duration", durationMs)
+                put("modified", modified)
+            },
+            SQLiteDatabase.CONFLICT_REPLACE
+        )
+    }
+
+    fun dupeFine(mediaId: Long, modified: Long): com.blissplayer.core.AudioFingerprint.Print? {
+        readableDatabase.rawQuery(
+            "SELECT rms, qmin, qmax, qdata, duration FROM dupe_fine WHERE media_id=? AND modified=?",
+            arrayOf(mediaId.toString(), modified.toString())
+        )?.use { c ->
+            if (c.moveToFirst()) {
+                val lo = c.getDouble(1).toFloat()
+                val hi = c.getDouble(2).toFloat()
+                val q = c.getBlob(3) ?: return null
+                if (q.isEmpty() || hi <= lo) return null
+                val fine = FloatArray(q.size) { i ->
+                    lo + ((q[i].toInt() and 0xFF) / 255f) * (hi - lo)
+                }
+                return com.blissplayer.core.AudioFingerprint.Print(c.getDouble(0), fine, c.getLong(4))
+            }
+        }
+        return null
     }
 
     // ---- playlists ----

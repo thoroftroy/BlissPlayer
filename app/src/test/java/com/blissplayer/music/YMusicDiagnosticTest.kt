@@ -8,8 +8,16 @@ import java.io.File
 class YMusicDiagnosticTest {
     @Test
     fun diagnoseYMusic() {
-        val dir = File(System.getProperty("user.home"), "Applications/Wonderdesk Applications/YMusic")
-            .takeIf { it.isDirectory } ?: File("/home/microwavedthebaby/Downloads/YMusic")
+        val home = System.getProperty("user.home")
+        val dir = listOf(
+            File(home, "Applications/Wonderdesk Applications/YMusic"),
+            File(home, "Applications/Wonderdesk Applications/Testing Files/YMusic"),
+            File("/home/microwavedthebaby/Downloads/YMusic")
+        ).firstOrNull { it.isDirectory }
+        if (dir == null) {
+            println("YMUSIC_DIAG no YMusic folder on this box, skipping")
+            return
+        }
         val files = dir.listFiles { f -> f.isFile }!!.sortedBy { it.name }
         var total = 0
         var withArtist = 0
