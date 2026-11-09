@@ -11,6 +11,12 @@ into a tidy `Music/BlissPlayer/Artist/Album` tree, keeps every song at the
 same volume, and can push quiet outputs much louder when the phone alone is
 not enough.
 
+## Easiest install and updates
+
+Get App Hub once from https://github.com/thoroftroy/App-Hub/releases,
+then use it to install and update BlissPlayer and the rest of the suite.
+You will not need to download APKs by hand.
+
 ## Install
 
 1. Copy the newest `BlissPlayer-v*-debug.apk` to the phone (USB, Bluetooth,
