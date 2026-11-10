@@ -257,6 +257,7 @@ class PlayerService : MediaSessionService() {
             .putString("last_pause_reason", focusPolicy.pauseReason).apply()
     }
     private val notifManager by lazy { getSystemService(NotificationManager::class.java) }
+    private var userDismissedNotif = false
     private val notifTickHandler = Handler(Looper.getMainLooper())
     private var notifTickCount = 0
     private val notifTick = object : Runnable {
@@ -534,6 +535,7 @@ class PlayerService : MediaSessionService() {
     /** Android 15+ requires foreground status before a background focus request. */
     private fun startPlayback() {
         if (player.mediaItemCount == 0) return
+        userDismissedNotif = false
         ensureSession()
         runCatching { startForeground(NOTIF_ID, buildNotification()) }.onFailure {
             lastPlaybackError = "Android blocked background playback: ${it.message}"
@@ -710,6 +712,7 @@ class PlayerService : MediaSessionService() {
                 // asynchronously, so a cancel alone would pop back up.
                 ACTION_STOP -> {
                     focusPolicy.onEvent(FocusPolicy.Event.STOPPED, respectFocus(), false)
+                    userDismissedNotif = true
                     persistPauseReason()
                     abandonFocus()
                     getSharedPreferences("bliss", MODE_PRIVATE).edit()
@@ -930,6 +933,9 @@ class PlayerService : MediaSessionService() {
 
     private fun postNotif() {
         if (!::player.isInitialized) return
+        // Respect the user swiping the card away: never resurrect it while
+        // nothing is playing. Pressing play (or a device autoplay) re-enables it.
+        if (userDismissedNotif && !player.isPlaying) return
         runCatching { notifManager.notify(NOTIF_ID, buildNotification()) }
     }
 
