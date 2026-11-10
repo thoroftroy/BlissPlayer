@@ -73,6 +73,8 @@ class PlayerService : MediaSessionService() {
         const val ACTION_NEXT = "bliss.next"
         const val ACTION_PREV = "bliss.prev"
         const val ACTION_STOP = "bliss.stop"
+        /** The running service, if any, so a notification swipe can reach it without starting it. */
+        @Volatile var instance: java.lang.ref.WeakReference<PlayerService>? = null
         const val ACTION_FAV = "bliss.fav"
         const val ACTION_ANALYZER_STOP = "bliss.analyzer_stop"
         const val ACTION_EQ_STOP = "bliss.eq_stop"
@@ -462,6 +464,7 @@ class PlayerService : MediaSessionService() {
     }
 
     override fun onCreate() {
+        instance = java.lang.ref.WeakReference(this)
         super.onCreate()
         db = BlissDb(this)
         tone = ToneControl(getSharedPreferences("bliss", MODE_PRIVATE))
@@ -710,31 +713,44 @@ class PlayerService : MediaSessionService() {
                 // until the user presses play again or an autoplay device connects.
                 // The session is released too: Media3 posts its card
                 // asynchronously, so a cancel alone would pop back up.
-                ACTION_STOP -> {
-                    focusPolicy.onEvent(FocusPolicy.Event.STOPPED, respectFocus(), false)
-                    userDismissedNotif = true
-                    persistPauseReason()
-                    abandonFocus()
-                    getSharedPreferences("bliss", MODE_PRIVATE).edit()
-                        .putBoolean("stopped_by_user", true)
-                        .remove("resume_queue")
-                        .remove("resume_index")
-                        .remove("resume_pos")
-                        .remove("resume_playing")
-                        .apply()
-                    player.pause()
-                    player.clearMediaItems()
-                    runCatching { notifManager.cancel(NOTIF_ID) }
-                    runCatching { stopForeground(STOP_FOREGROUND_REMOVE) }
-                    runCatching { session?.release() }
-                    session = null
-                    stopSelf()
-                }
+                ACTION_STOP -> stopByUser()
             }
         }
         super.onStartCommand(intent, flags, startId)
         // Never stop on its own: keep playing in other apps, screen off, swiped away.
         return START_STICKY
+    }
+
+    /** The user swiped the card away: a definitive stop. No restart, no restore, no repost
+     * until the user presses play again or an autoplay device connects. The session is
+     * released too: Media3 posts its card asynchronously, so a cancel alone would pop back up. */
+    fun stopByUser() {
+        if (!::player.isInitialized) { stopSelf(); return }
+        focusPolicy.onEvent(FocusPolicy.Event.STOPPED, respectFocus(), false)
+        userDismissedNotif = true
+        persistPauseReason()
+        abandonFocus()
+        getSharedPreferences("bliss", MODE_PRIVATE).edit()
+            .putBoolean("stopped_by_user", true)
+            .remove("resume_queue")
+            .remove("resume_index")
+            .remove("resume_pos")
+            .remove("resume_playing")
+            .apply()
+        player.pause()
+        player.clearMediaItems()
+        runCatching { notifManager.cancel(NOTIF_ID) }
+        runCatching { stopForeground(STOP_FOREGROUND_REMOVE) }
+        runCatching { session?.release() }
+        session = null
+        stopSelf()
+    }
+
+    /** Media3 re-posts the card on every player event; never do that after a dismissal. */
+    override fun onUpdateNotification(session: MediaSession, startInForegroundRequired: Boolean) {
+        if (userDismissedNotif && !(::player.isInitialized && player.isPlaying)) return
+        if (::player.isInitialized && unchangedPausedCard()) return
+        super.onUpdateNotification(session, startInForegroundRequired)
     }
 
     private val notifProvider = object : MediaNotification.Provider {
@@ -796,9 +812,13 @@ class PlayerService : MediaSessionService() {
                     PendingIntent.FLAG_IMMUTABLE
                 )
             )
-            .setDeleteIntent(actionIntent(ACTION_STOP, 5))
+            .setDeleteIntent(PendingIntent.getBroadcast(this, 5,
+                Intent(this, NotifDismissReceiver::class.java).setAction(NotifDismissReceiver.ACTION),
+                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT))
             .setOnlyAlertOnce(true)
-            .setOngoing(true)
+            // Ongoing only while sound plays: a paused card must be truly dismissible, or
+            // Android hides it on swipe but keeps the record and shows it again on the next update.
+            .setOngoing(playing)
             .setShowWhen(false)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .addAction(android.R.drawable.ic_media_previous, "Previous", actionIntent(ACTION_PREV, 1))
@@ -936,7 +956,22 @@ class PlayerService : MediaSessionService() {
         // Respect the user swiping the card away: never resurrect it while
         // nothing is playing. Pressing play (or a device autoplay) re-enables it.
         if (userDismissedNotif && !player.isPlaying) return
+        if (unchangedPausedCard()) return
         runCatching { notifManager.notify(NOTIF_ID, buildNotification()) }
+    }
+
+    /** What the paused card last showed. Android hides a swiped media card without telling the
+     * app, and any later post of it shows it again, so an unchanged paused card is never re-posted. */
+    private var lastPausedCard: String? = null
+
+    private fun unchangedPausedCard(): Boolean {
+        if (player.isPlaying) { lastPausedCard = null; return false }
+        val id = player.currentMediaItem?.mediaId
+        val loved = id?.toLongOrNull()?.let { runCatching { db.isFavorite(it) }.getOrDefault(false) } ?: false
+        val sig = "$id|$loved|${player.mediaItemCount}"
+        if (sig == lastPausedCard) return true
+        lastPausedCard = sig
+        return false
     }
 
     fun repostNotif() {
@@ -1560,6 +1595,7 @@ class PlayerService : MediaSessionService() {
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? = session
 
     override fun onDestroy() {
+        if (instance?.get() === this) instance = null
         savePlaybackState()
         scope.cancel()
         abandonFocus()

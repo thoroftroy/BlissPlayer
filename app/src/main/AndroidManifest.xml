@@ -89,6 +89,7 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity-alias>
+        <receiver android:name=".playback.NotifDismissReceiver" android:exported="false" />
         <service
             android:name=".playback.PlayerService"
             android:foregroundServiceType="mediaPlayback"
