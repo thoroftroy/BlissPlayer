@@ -18,6 +18,7 @@
     <!-- Background-play exemption request -->
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
 
+    <queries><package android:name="dev.wonderdesk.controlroom" /></queries>
     <application
         android:name=".BlissApplication"
         android:label="BlissPlayer"
@@ -99,5 +100,6 @@
                 <action android:name="android.media.browse.MediaBrowserService" />
             </intent-filter>
         </service>
+        <receiver android:name="com.blissplayer.music.ui.theme.SuiteLookReceiver" android:exported="true"><intent-filter><action android:name="dev.wonderdesk.APPEARANCE_CHANGED" /></intent-filter></receiver>
     </application>
 </manifest>

@@ -26,7 +26,25 @@ enum class MobileTheme(val key: String) {
 
     companion object {
         fun from(key: String?): MobileTheme = entries.firstOrNull { it.key == key } ?: BLISS
+        /**
+         * The Wonderdesk suite look from Control Room ("aqua", "bliss", "dark", "super"), or null without Control Room.
+         * When it has changed since Bliss last saw it, Bliss switches to it, so the player always matches the rest of
+         * the suite; a theme picked in Bliss itself stays until the suite look changes again.
+         */
+        fun syncWithSuite(context: Context): Boolean = runCatching {
+            val look = context.contentResolver.query(android.net.Uri.parse("content://dev.wonderdesk.controlroom.appearance/current"), null, null, null, null)?.use { c ->
+                if (c.moveToFirst()) c.getString(c.getColumnIndexOrThrow("look"))?.lowercase() else null
+            } ?: return@runCatching false
+            val prefs = context.getSharedPreferences("bliss", Context.MODE_PRIVATE)
+            if (prefs.getString("suite_seen", null) == look) return@runCatching false
+            val key = from(look).key
+            val changed = prefs.getString("theme", null) != key
+            prefs.edit().putString("suite_seen", look).putString("theme", key).apply()
+            changed
+        }.getOrDefault(false)
+
         fun read(context: Context): MobileTheme {
+            syncWithSuite(context)
             val prefs = context.getSharedPreferences("bliss", Context.MODE_PRIVATE)
             return from(prefs.getString("theme", if (prefs.getBoolean("dark", false)) "dark" else "bliss"))
         }
@@ -98,3 +116,8 @@ object ThemeRenderers {
 }
 
 fun View.themeRole(role: MaterialRole) { setTag(R.id.theme_role, role) }
+
+/** Control Room tells Bliss when the suite look changes; the player restyles the next time it's on screen. */
+class SuiteLookReceiver : android.content.BroadcastReceiver() {
+    override fun onReceive(c: Context, i: android.content.Intent) { MobileTheme.syncWithSuite(c) }
+}

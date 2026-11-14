@@ -99,6 +99,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun readTheme(): String {
+        com.blissplayer.music.ui.theme.MobileTheme.syncWithSuite(this)
         val saved = prefs.getString("theme", null)
         if (saved != null) return saved
         // Migrate the old light/dark switch once.
@@ -1351,6 +1352,9 @@ class MainActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         mobileThemeUi?.resume()
+        // The Wonderdesk look changed in Control Room while Bliss was away: switch to it.
+        val suite = readTheme()
+        if (suite != theme) { restartForTheme(suite); return }
         // Coming back from system settings: refresh states like the
         // background-play button so they show the truth.
         if (tab == 5 && ::moreBox.isInitialized) buildMorePane()
