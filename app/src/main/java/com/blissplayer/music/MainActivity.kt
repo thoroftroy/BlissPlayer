@@ -82,6 +82,16 @@ import kotlin.math.roundToInt
 import kotlin.random.Random
 
 class MainActivity : AppCompatActivity() {
+    /** Text size set in Control Room applies to the player too. */
+    override fun attachBaseContext(base: Context) {
+        com.blissplayer.music.ui.theme.SuiteExtras.load(base)
+        val pct = com.blissplayer.music.ui.theme.SuiteExtras.fontPct
+        if (pct == 100) { super.attachBaseContext(base); return }
+        val cfg = android.content.res.Configuration(base.resources.configuration)
+        cfg.fontScale = cfg.fontScale * pct / 100f
+        super.attachBaseContext(base.createConfigurationContext(cfg))
+    }
+
 
     private lateinit var prefs: SharedPreferences
     private lateinit var db: BlissDb

@@ -22,7 +22,7 @@ enum class MobileTheme(val key: String) {
     val modern: Boolean get() = bliss.modern
     val ink: Int get() = bliss.ink
     val secondary: Int get() = bliss.secondary
-    val accent: Int get() = bliss.accent
+    val accent: Int get() = SuiteExtras.accent.takeIf { it != 0 } ?: bliss.accent
 
     companion object {
         fun from(key: String?): MobileTheme = entries.firstOrNull { it.key == key } ?: BLISS
@@ -32,6 +32,7 @@ enum class MobileTheme(val key: String) {
          * the suite; a theme picked in Bliss itself stays until the suite look changes again.
          */
         fun syncWithSuite(context: Context): Boolean = runCatching {
+            SuiteExtras.load(context)
             val look = context.contentResolver.query(android.net.Uri.parse("content://dev.wonderdesk.controlroom.appearance/current"), null, null, null, null)?.use { c ->
                 if (c.moveToFirst()) c.getString(c.getColumnIndexOrThrow("look"))?.lowercase() else null
             } ?: return@runCatching false
@@ -47,6 +48,24 @@ enum class MobileTheme(val key: String) {
             syncWithSuite(context)
             val prefs = context.getSharedPreferences("bliss", Context.MODE_PRIVATE)
             return from(prefs.getString("theme", if (prefs.getBoolean("dark", false)) "dark" else "bliss"))
+        }
+    }
+}
+
+/**
+ * Suite-wide choices from Control Room beyond the look: text size in percent and an accent colour (0 means the theme's own).
+ * Without Control Room, or with an older one, both stay at their defaults and nothing changes.
+ */
+object SuiteExtras {
+    @Volatile var fontPct = 100
+    @Volatile var accent = 0
+    fun load(context: Context) {
+        runCatching {
+            context.contentResolver.query(android.net.Uri.parse("content://dev.wonderdesk.controlroom.appearance/current"), null, null, null, null)?.use { c ->
+                if (!c.moveToFirst()) return@use
+                c.getColumnIndex("fontPct").takeIf { it >= 0 }?.let { fontPct = c.getInt(it).coerceIn(70, 160) }
+                c.getColumnIndex("accent").takeIf { it >= 0 }?.let { accent = c.getInt(it) }
+            }
         }
     }
 }
