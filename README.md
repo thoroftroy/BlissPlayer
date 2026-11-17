@@ -105,7 +105,7 @@ ambient motion settles to a heartbeat when idle.
   - **Live sound mixer:** bass/midrange/treble/preamp with headroom,
     live and file-safe. Attaches as soon as a song has an audio session.
 - **Playback controls (More tab):** background play, audio-interruption
-  behavior (duck, or pause-and-resume), playback speed (0.5x–2x), loop mode
+  behavior (duck, or pause-and-resume), playback speed (0.5x to 2x), loop mode
   (Loop All by default, remembered), and the pause reason line that says why
   music last paused.
 - **Stats (More tab):** totals, full listens, skips, listening time, top

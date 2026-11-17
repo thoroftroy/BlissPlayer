@@ -263,7 +263,7 @@ FFmpeg/AAC, not a user music file. Test reports are in `app/build/reports/`.
   Aqua fixed from washed-out to dark-on-silver gel.
 - AppImage rebuilt from the final binary and dump-verified.
 
-## 0.10 favorites / icons / tabs round (Nov 5, 2026, v0.10.25–v0.10.51)
+## 0.10 favorites / icons / tabs round (Nov 5, 2026, v0.10.25 to v0.10.51)
 - Fixed blank AutoBoost/buttons-on-first-open: More-pane sync setters ran
   mid-build and no-op'd on null views; all update* calls now run after every
   section exists (verified: Boost/Auto-device text populated on first open).
@@ -300,7 +300,7 @@ FFmpeg/AAC, not a user music file. Test reports are in `app/build/reports/`.
 - NOT verified: real-car Bluetooth, physical aux, long handset sessions,
   acoustic safety (standing gaps, unchanged).
 
-## 0.10 stats/readability round (Nov 5, 2026, v0.10.53–v0.10.57)
+## 0.10 stats/readability round (Nov 5, 2026, v0.10.53 to v0.10.57)
 - Removed the theme subtitle lines everywhere (Aqua "MUSIC LIBRARY" and
   Super "LIGHT ENGINE" identity rows are gone; toolbar shows the name only).
 - Fun stats: song_stats table (skips, completions, listen_ms, last_played)
@@ -332,7 +332,7 @@ FFmpeg/AAC, not a user music file. Test reports are in `app/build/reports/`.
   contracts (PlayerEngine/LibraryAccess/TagGateway/AudioFx/NotificationGateway/
   SettingsStore/AppPaths/PlaybackSession/PlaybackRules).
 - `:core:test` 22/22 green; `:app:testDebugUnitTest` 99 pass (6 network-gated
-  skipped) against the delegates — extraction is behavior-preserving.
+  skipped) against the delegates, extraction is behavior-preserving.
 - `:desktopApp` (Swing, JVM 17): filesystem scan (same exts/sys-dirs rules),
   sqlite-jdbc DB on the identical schema, jaudiotagger tags, VLC `cvlc --intf rc`
   engine (queue/play/pause/seek/next/prev/speed/loop/volume/segments/resume),

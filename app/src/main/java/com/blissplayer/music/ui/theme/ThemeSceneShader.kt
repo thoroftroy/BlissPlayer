@@ -4,7 +4,7 @@ import android.graphics.RuntimeShader
 import android.os.Build
 import androidx.annotation.RequiresApi
 
-/** Optional AGSL plasma; all materials have a Canvas-shader fallback on Android 10–12. */
+/** Optional AGSL plasma; all materials have a Canvas-shader fallback on Android 10 to 12. */
 @RequiresApi(Build.VERSION_CODES.TIRAMISU)
 internal object ThemeSceneShader {
     fun create(): RuntimeShader = RuntimeShader("""

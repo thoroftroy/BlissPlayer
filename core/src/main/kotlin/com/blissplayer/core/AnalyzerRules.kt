@@ -373,7 +373,7 @@ object AnalyzerRules {
         var title = rawTitle.trim()
             .replace("＂", "\"").replace("＂", "\"")
             .replace("｜", " - ").replace("│", " - ")
-            .replace(Regex("[–—―‐‑‒]"), " - ")
+            .replace(Regex("[\u2013\u2014\u2015‐‑‒]"), " - ")
         var artist = rawArtist.trim()
         // "A | B" is "A - B", but AC/DC keeps its slash.
         title = title.replace(Regex("\\s*\\|\\s*"), " - ")
@@ -412,7 +412,7 @@ object AnalyzerRules {
                 artist = tail.removeSuffix(" - Topic").trim()
             }
         }
-        // Collapse doubled dashes from "_4K UPGRADE_ –" style mashups.
+        // Collapse doubled dashes from "_4K UPGRADE_  to " style mashups.
         title = title.replace(Regex("(\\s*-\\s*){2,}"), " - ").trim()
         val reasons = mutableListOf<String>()
         var safe = true
@@ -458,7 +458,7 @@ object AnalyzerRules {
             if ("dropped track number" !in reasons) reasons.add("dropped track number")
         }
         title = Regex("^(?:…+|(?:\\.\\s*){2,})").replace(title, "").trim()
-        val base = fileBase.trim().replace(Regex("[–—―‐‑‒]"), " - ")
+        val base = fileBase.trim().replace(Regex("[\u2013\u2014\u2015‐‑‒]"), " - ")
             .replace(Regex("\\s*\\|\\s*"), " - ")
         val artistUnknown = artist.isBlank() || artist.equals("Unknown artist", true) ||
             artist.equals("<unknown>", true)
