@@ -6,7 +6,7 @@ import java.io.PrintWriter
 import java.io.StringWriter
 
 /**
- * Last resort crash log. Writes the stack trace to internal storage and
+ * Last resort crash log, also handed to Control Room like every other Wonderdesk app. Writes the stack trace to internal storage and
  * lets the default handler kill the process. On the next launch the app
  * offers the log once. Nothing is written to shared storage without the
  * user choosing an export destination.
@@ -36,6 +36,11 @@ object CrashReporter {
                     .append("\n").append(sw.toString())
                     .toString()
                 CrashLogStore(app.filesDir).record(info)
+                // Same path as every other Wonderdesk app: hand it to Control Room, which keeps the list and does the sending.
+                val json = org.json.JSONObject().put("pkg", app.packageName).put("kind", "crash").put("time", System.currentTimeMillis())
+                    .put("summary", (e.javaClass.name + ": " + (e.message ?: "")).take(400)).put("detail", ("Thread: ${t.name}\n" + sw.toString()).take(60_000))
+                    .put("version", v).put("device", "${Build.MANUFACTURER} ${Build.MODEL}, Android ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})")
+                app.contentResolver.insert(android.net.Uri.parse("content://dev.wonderdesk.controlroom.crashes/report"), android.content.ContentValues().apply { put("json", json.toString()) })
             }
             prev?.uncaughtException(t, e)
             if (prev == null) android.os.Process.killProcess(android.os.Process.myPid())
