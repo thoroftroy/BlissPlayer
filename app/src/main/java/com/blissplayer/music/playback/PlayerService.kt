@@ -150,17 +150,55 @@ class PlayerService : MediaSessionService() {
                 // Delayed grant from an earlier start: take it unless paused meanwhile.
                 if (waitingForFocus && !focusPolicy.userPaused) ensureFocusThenPlay()
             }
-            android.media.AudioManager.AUDIOFOCUS_LOSS_TRANSIENT ->
+            android.media.AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> {
                 applyFocusActions(focusPolicy.onEvent(FocusPolicy.Event.FOCUS_TRANSIENT, respect, player.isPlaying))
+                watchForDictationEnd()
+            }
             android.media.AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK ->
                 applyFocusActions(focusPolicy.onEvent(FocusPolicy.Event.FOCUS_DUCK, respect, player.isPlaying))
             android.media.AudioManager.AUDIOFOCUS_LOSS -> {
                 applyFocusActions(focusPolicy.onEvent(FocusPolicy.Event.FOCUS_LOSS, respect, player.isPlaying))
                 if (respect) abandonFocus()
+                watchForDictationEnd()
             }
         }
         persistPauseReason()
     }
+    // Voice typing takes audio focus and, when it runs longer than a few seconds, many keyboards make the
+    // system report a permanent loss, after which no "focus is back" call ever comes. While we are the one
+    // that paused and the microphone is in use, watch for the dictation ending and carry on.
+    private val regainHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    private var regainStart = 0L
+    private var micSeen = false
+    private val regainTick = object : Runnable {
+        override fun run() {
+            if (!::player.isInitialized || player.isPlaying) return
+            if (!focusPolicy.autoPaused || focusPolicy.userPaused || focusPolicy.noisyHeld) return
+            val am = audioManager ?: return
+            val mic = runCatching { am.activeRecordingConfigurations.isNotEmpty() }.getOrDefault(false)
+            val now = System.currentTimeMillis()
+            if (mic) micSeen = true
+            // Dictation opens the microphone at once; if it never did, this was not dictation.
+            if (!micSeen && now - regainStart > 8_000) return
+            if (now - regainStart > 20 * 60_000) return
+            if (micSeen && !mic && !am.isMusicActive) {
+                micSeen = false
+                applyFocusActions(focusPolicy.onEvent(FocusPolicy.Event.FOCUS_GAIN, respectFocus(), false))
+                persistPauseReason()
+                return
+            }
+            regainHandler.postDelayed(this, 700)
+        }
+    }
+
+    private fun watchForDictationEnd() {
+        if (!respectFocus() || !focusPolicy.autoPaused) return
+        regainHandler.removeCallbacks(regainTick)
+        regainStart = System.currentTimeMillis()
+        micSeen = false
+        regainHandler.postDelayed(regainTick, 400)
+    }
+
     private val noisyReceiver = object : android.content.BroadcastReceiver() {
         override fun onReceive(c: android.content.Context?, intent: android.content.Intent?) {
             if (intent?.action != android.media.AudioManager.ACTION_AUDIO_BECOMING_NOISY) return
@@ -1596,6 +1634,7 @@ class PlayerService : MediaSessionService() {
 
     override fun onDestroy() {
         if (instance?.get() === this) instance = null
+        regainHandler.removeCallbacks(regainTick)
         savePlaybackState()
         scope.cancel()
         abandonFocus()

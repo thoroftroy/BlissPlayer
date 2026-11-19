@@ -1,5 +1,9 @@
 # Bliss Player changelog
 
+## v0.14.60
+
+- Music now carries on by itself after voice typing, however long you dictate. Before, a long dictation left it paused until you reopened the app
+
 ## v0.14.59
 
 - Text size chosen in Control Room now applies here too, so the player matches the rest of the Wonderdesk suite
