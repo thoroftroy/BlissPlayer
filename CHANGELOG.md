@@ -1,6 +1,6 @@
 # Bliss Player changelog
 
-## v0.14.65
+## v0.14.66
 
 - The playback controls (previous, play or pause, next, favourite) also appear on the Wonderdesk Launcher's floating button, when it is in use. The notification is unchanged. Turn it off in Control Room
 
