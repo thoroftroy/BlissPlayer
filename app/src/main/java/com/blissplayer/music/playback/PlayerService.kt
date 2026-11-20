@@ -778,6 +778,7 @@ class PlayerService : MediaSessionService() {
         player.pause()
         player.clearMediaItems()
         runCatching { notifManager.cancel(NOTIF_ID) }
+        runCatching { WonderAssist.clear(this, "blissplayer", "play") }
         runCatching { stopForeground(STOP_FOREGROUND_REMOVE) }
         runCatching { session?.release() }
         session = null
@@ -876,6 +877,12 @@ class PlayerService : MediaSessionService() {
                     .setShowActionsInCompactView(0, 1, 2)
             )
             .setColor(0xFF0058E6.toInt())
+        // The same controls on the Wonderdesk Launcher's floating button, when it is in use.
+        runCatching {
+            WonderAssist.post(this, "blissplayer", "play", title.toString(), artist.toString(),
+                listOf("Previous" to actionIntent(ACTION_PREV, 1), (if (playing) "Pause" else "Play") to actionIntent(ACTION_TOGGLE, 2), "Next" to actionIntent(ACTION_NEXT, 3), favLabel to actionIntent(ACTION_FAV, 6)),
+                open = PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE), ongoing = true)
+        }
         // Default art in both styles: the full Bliss hill, full-bleed.
         b.setLargeIcon(notifArt())
         if (!simple) {
