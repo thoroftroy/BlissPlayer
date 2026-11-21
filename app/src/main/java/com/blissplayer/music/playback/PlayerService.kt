@@ -170,6 +170,8 @@ class PlayerService : MediaSessionService() {
     private val regainHandler = android.os.Handler(android.os.Looper.getMainLooper())
     private var regainStart = 0L
     private var micSeen = false
+    private var otherPlayed = false
+    private var quietSince = 0L
     private val regainTick = object : Runnable {
         override fun run() {
             if (!::player.isInitialized || player.isPlaying) return
@@ -178,16 +180,23 @@ class PlayerService : MediaSessionService() {
             val mic = runCatching { am.activeRecordingConfigurations.isNotEmpty() }.getOrDefault(false)
             val now = System.currentTimeMillis()
             if (mic) micSeen = true
-            // Dictation opens the microphone at once; if it never did, this was not dictation.
-            if (!micSeen && now - regainStart > 8_000) return
-            if (now - regainStart > 20 * 60_000) return
-            if (micSeen && !mic && !am.isMusicActive) {
-                micSeen = false
-                applyFocusActions(focusPolicy.onEvent(FocusPolicy.Event.FOCUS_GAIN, respectFocus(), false))
-                persistPauseReason()
-                return
+            // Another app is playing audio: it took focus for real, so leave it alone.
+            if (am.isMusicActive) otherPlayed = true
+            if (otherPlayed || now - regainStart > 20 * 60_000) return
+            val quiet = !mic && !am.isMusicActive && am.mode == android.media.AudioManager.MODE_NORMAL
+            if (!quiet) quietSince = 0L
+            else {
+                if (quietSince == 0L) quietSince = now
+                // Saw the microphone (dictation) and it stopped: carry on at once. Never saw it (some voice typing hides it): carry on after six quiet seconds.
+                val needed = if (micSeen) 0L else 6_000L
+                if (now - quietSince >= needed && now - regainStart > 2_500) {
+                    micSeen = false; quietSince = 0L
+                    applyFocusActions(focusPolicy.onEvent(FocusPolicy.Event.FOCUS_GAIN, respectFocus(), false))
+                    persistPauseReason()
+                    return
+                }
             }
-            regainHandler.postDelayed(this, 700)
+            regainHandler.postDelayed(this, 1000)
         }
     }
 
@@ -195,7 +204,7 @@ class PlayerService : MediaSessionService() {
         if (!respectFocus() || !focusPolicy.autoPaused) return
         regainHandler.removeCallbacks(regainTick)
         regainStart = System.currentTimeMillis()
-        micSeen = false
+        micSeen = false; otherPlayed = false; quietSince = 0L
         regainHandler.postDelayed(regainTick, 400)
     }
 
