@@ -1,5 +1,9 @@
 # Bliss Player changelog
 
+## v0.14.85
+
+- The list of other Wonderdesk apps no longer shows Cinema: it is part of Memories now
+
 ## v0.14.84
 
 - New Settings and about screen in the style of the other Wonderdesk apps, with help buttons: version and what's new, check for updates, send feedback, appearance, background playback and battery, last problems, and the other Wonderdesk apps. Every existing Bliss Player setting is untouched
