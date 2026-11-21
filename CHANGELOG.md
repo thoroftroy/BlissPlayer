@@ -1,5 +1,9 @@
 # Bliss Player changelog
 
+## v0.14.73
+
+- The About section now links to the rest of the Wonderdesk suite: check for updates in App Hub, send feedback with Pulse, and set the look in Control Room
+
 ## v0.14.70
 
 - Music now carries on after you use voice typing: Bliss keeps watching after a pause caused by dictation and resumes once the microphone is free (or after a few quiet seconds if your keyboard hides the microphone), and leaves it alone if another app is really playing audio
