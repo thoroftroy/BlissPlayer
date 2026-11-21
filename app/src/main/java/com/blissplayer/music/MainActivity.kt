@@ -5102,6 +5102,23 @@ class MainActivity : AppCompatActivity() {
             text = "BlissPlayer $v"
             textSize = 13f
         })
+        moreBox.addView(TextView(this).apply {
+            text = "Bliss Player is part of the Wonderdesk suite. These shortcuts open the other Wonderdesk apps, if they are installed."
+            textSize = 12f
+        })
+        fun suiteApp(label: String, pkg: String, action: () -> Unit = {}) = xpBtn(label).apply {
+            setOnClickListener {
+                val i = packageManager.getLaunchIntentForPackage(pkg)
+                if (i == null) toast("$label needs the Wonderdesk app installed. Get it from Wonderdesk App Hub.")
+                else { action(); startActivity(i.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)) }
+            }
+        }
+        moreBox.addView(suiteApp("Check for updates (App Hub)", "dev.wonderdesk.apphub"))
+        moreBox.addView(suiteApp("Send feedback or report a problem (Pulse)", "dev.wonderdesk.pulse"))
+        moreBox.addView(suiteApp("Look and feel for all Wonderdesk apps (Control Room)", "dev.wonderdesk.controlroom"))
+        moreBox.addView(xpBtn("What's new in this version").apply {
+            setOnClickListener { runCatching { startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse("https://github.com/thoroftroy/BlissPlayer/releases")).addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)) }.onFailure { toast("No browser found") } }
+        })
         moreBox.addView(xpBtn("Copy last crash log").apply {
             setOnClickListener {
                 val log = CrashReporter.read(this@MainActivity)
