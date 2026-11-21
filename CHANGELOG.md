@@ -1,5 +1,9 @@
 # Bliss Player changelog
 
+## v0.14.84
+
+- New Settings and about screen in the style of the other Wonderdesk apps, with help buttons: version and what's new, check for updates, send feedback, appearance, background playback and battery, last problems, and the other Wonderdesk apps. Every existing Bliss Player setting is untouched
+
 ## v0.14.73
 
 - The About section now links to the rest of the Wonderdesk suite: check for updates in App Hub, send feedback with Pulse, and set the look in Control Room
