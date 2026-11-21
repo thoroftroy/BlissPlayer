@@ -24,7 +24,7 @@ class SuiteActivity : WonderActivity() {
 
 private val SUITE = listOf(
     Triple("Launcher", "dev.wonderdesk.launcher", "The Aqua home screen"), Triple("Beacon", "dev.wonderdesk.beacon", "Search and all your apps"),
-    Triple("Cinema", "dev.wonderdesk.cinema", "Video player and screen recorder"), Triple("Memories", "dev.wonderdesk.memories", "Photos and videos"),
+    Triple("Memories", "dev.wonderdesk.memories", "Photos, videos and screen recorder"),
     Triple("Scribble", "dev.wonderdesk.scribble", "Notes and sketches"), Triple("Ripple", "dev.wonderdesk.ripple", "Your computer's terminal and power"),
     Triple("Wayfinder", "dev.wonderdesk.wayfinder", "Files and network folders"), Triple("Vault", "dev.wonderdesk.vault", "Passwords and 2FA"),
     Triple("Polaris", "dev.wonderdesk.polaris", "The web browser"), Triple("Control Room", "dev.wonderdesk.controlroom", "Look and feel for every app"),
