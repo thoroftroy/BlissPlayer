@@ -73,7 +73,9 @@ android {
     }
     buildFeatures {
         viewBinding = false
+        compose = true
     }
+    composeOptions { kotlinCompilerExtensionVersion = "1.5.14" }
 }
 
 dependencies {
@@ -85,7 +87,7 @@ dependencies {
 
     implementation("androidx.appcompat:appcompat:1.7.0")
     implementation("androidx.recyclerview:recyclerview:1.3.2")
-    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")
+    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.6.1")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
     implementation("androidx.media:media:1.7.0")
 
@@ -94,6 +96,8 @@ dependencies {
 
     // Shared domain/rules/backend contracts (pure JVM, no Android APIs).
     implementation(project(":core"))
+    // The Wonderdesk kit: used for the suite-style Settings and About screens.
+    implementation(project(":shared"))
 
     // JVM unit tests for analyzer + shuffle math (run with testDebugUnitTest).
     testImplementation("junit:junit:4.13.2")

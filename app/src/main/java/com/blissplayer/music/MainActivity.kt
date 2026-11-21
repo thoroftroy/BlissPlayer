@@ -5097,6 +5097,9 @@ class MainActivity : AppCompatActivity() {
         })
 
         moreBox.addView(section("About"))
+        moreBox.addView(xpBtn("Settings and about (suite style)").apply {
+            setOnClickListener { startActivity(android.content.Intent(this@MainActivity, SuiteActivity::class.java)) }
+        })
         moreBox.addView(TextView(this).apply {
             val v = runCatching { packageManager.getPackageInfo(packageName, 0).versionName }.getOrNull() ?: ""
             text = "BlissPlayer $v"
