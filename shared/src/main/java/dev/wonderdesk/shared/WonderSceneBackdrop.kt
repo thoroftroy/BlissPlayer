@@ -16,6 +16,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
+import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.IntSize
 import androidx.lifecycle.Lifecycle
@@ -47,10 +49,10 @@ private fun sceneLuma(b: android.graphics.Bitmap): Float {
 private class AppMotif(private val w: Int, private val h: Int, private val glyphs: List<String>) {
     private class G(var x: Float, var y: Float, val s: String, val size: Float, val speed: Float, val sway: Float, val phase: Float, val alpha: Int)
     private val rnd = java.util.Random(5)
-    private val items = List(if (glyphs.isEmpty()) 0 else 16) { make(true) }
+    private val items = List(if (glyphs.isEmpty()) 0 else 14) { make(true) }
     private val paint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply { typeface = android.graphics.Typeface.create(android.graphics.Typeface.SANS_SERIF, android.graphics.Typeface.BOLD); textAlign = android.graphics.Paint.Align.CENTER }
     private var t = 0f
-    private fun make(anywhere: Boolean) = G(rnd.nextFloat() * w, if (anywhere) rnd.nextFloat() * h else h + 30f, glyphs[rnd.nextInt(glyphs.size)], h * (.05f + rnd.nextFloat() * .06f), h * (.02f + rnd.nextFloat() * .035f), w * (.01f + rnd.nextFloat() * .02f), rnd.nextFloat() * 6.28f, 90 + rnd.nextInt(90))
+    private fun make(anywhere: Boolean) = G(rnd.nextFloat() * w, if (anywhere) rnd.nextFloat() * h else h + 30f, glyphs[rnd.nextInt(glyphs.size)], h * (.022f + rnd.nextFloat() * .026f), h * (.02f + rnd.nextFloat() * .035f), w * (.01f + rnd.nextFloat() * .02f), rnd.nextFloat() * 6.28f, 38 + rnd.nextInt(50))
     fun step(dt: Float) { t += dt; for (g in items) { g.y -= g.speed * dt; if (g.y < -g.size) { val n = make(false); g.x = n.x; g.y = n.y } } }
     fun draw(c: android.graphics.Canvas, color: Int) {
         for (g in items) { paint.color = color; paint.alpha = g.alpha; paint.textSize = g.size; c.drawText(g.s, g.x + kotlin.math.sin(t * .5f + g.phase) * g.sway, g.y, paint) }
@@ -78,10 +80,17 @@ private fun motifFor(appName: String): List<String> = when {
     else -> emptyList()
 }
 
+/** 0 (night) to 1 (full day), from the scene's hour, so the wash over the scene can be lighter by day and stronger at night. */
+private fun daylight(hour: Float): Float {
+    fun ramp(x: Float, a: Float, b: Float) = ((x - a) / (b - a)).coerceIn(0f, 1f)
+    return ramp(hour, 5.5f, 8f) * (1f - ramp(hour, 18f, 20.5f))
+}
+
 /**
- * The live scene behind an app's window. Drawn off the main thread (so scrolling and taps never wait for it) into two bitmaps that swap,
- * at 24 frames a second and a good resolution, only while the app is on screen. A fine noise is laid over it so large soft gradients
- * don't show as lines. The wash on top keeps text and panels easy to read.
+ * The live scene behind an app's window. It is drawn straight onto the screen by the graphics chip at the screen's own sharpness (no small
+ * picture stretched up, which is what made it look pixelated), about 30 times a second and only while the app is in front. Scene art that is
+ * pre-drawn is built at half the screen's size and scaled up smoothly. A fine noise is laid over it so big soft gradients don't show as lines.
+ * The wash on top keeps text and panels easy to read.
  */
 @Composable
 fun WonderSceneBackdrop(look: WonderLook, motion: WonderMotion, appName: String) {
@@ -97,41 +106,45 @@ fun WonderSceneBackdrop(look: WonderLook, motion: WonderMotion, appName: String)
     val noise = remember {
         // A small tile of random light and dark specks, repeated over the scene.
         val n = 96; val b = android.graphics.Bitmap.createBitmap(n, n, android.graphics.Bitmap.Config.ARGB_8888); val r = java.util.Random(9)
-        for (y in 0 until n) for (x in 0 until n) { val v = r.nextInt(256); b.setPixel(x, y, android.graphics.Color.argb(26, v, v, v)) }
+        for (y in 0 until n) for (x in 0 until n) { val v = r.nextInt(256); b.setPixel(x, y, android.graphics.Color.argb(9, v, v, v)) }
         b.asImageBitmap()
     }
     BoxWithConstraints(Modifier.fillMaxSize()) {
-        val ratio = (constraints.maxWidth.toFloat() / constraints.maxHeight.coerceAtLeast(1)).coerceIn(.3f, 3f)
-        val h = 520; val w = (h * ratio).toInt().coerceAtLeast(120)
-        val bufs = remember(w) { arrayOf(android.graphics.Bitmap.createBitmap(w, h, android.graphics.Bitmap.Config.ARGB_8888), android.graphics.Bitmap.createBitmap(w, h, android.graphics.Bitmap.Config.ARGB_8888)) }
-        val canvases = remember(bufs) { arrayOf(android.graphics.Canvas(bufs[0]), android.graphics.Canvas(bufs[1])) }
-        val runner = remember(bufs, cfg) { KitSceneRunner(w, h) }
-        val motif = remember(bufs, appName) { AppMotif(w, h, motifFor(appName)) }
+        val pw = constraints.maxWidth.coerceAtLeast(2); val ph = constraints.maxHeight.coerceAtLeast(2)
+        // The scene's own coordinate space: half the screen, never more than 1280 tall, so its pre-drawn art stays light on memory.
+        val k = (minOf(1f, 1280f / ph) * .5f).coerceAtLeast(.2f)
+        val w = (pw * k).toInt().coerceAtLeast(120); val h = (ph * k).toInt().coerceAtLeast(120)
+        val runner = remember(w, h, cfg) { KitSceneRunner(w, h) }
+        val motif = remember(w, h, appName) { AppMotif(w, h, motifFor(appName)) }
         val motifColor = when (look) { WonderLook.SUPER -> android.graphics.Color.rgb(255, 225, 255); WonderLook.BLISS -> android.graphics.Color.rgb(70, 78, 45); else -> android.graphics.Color.rgb(25, 80, 125) }
-        val lock = remember(runner) { Any() }
-        var luma by remember(bufs) { mutableFloatStateOf(.6f) }
-        var front by remember(bufs) { mutableStateOf<ImageBitmap?>(null) }
+        var tick by remember(runner) { mutableLongStateOf(0L) }
+        var luma by remember(runner) { mutableFloatStateOf(.6f) }
         // One still frame always; moving only when motion is full and the app is in front.
-        LaunchedEffect(runner) {
-            withContext(Dispatchers.Default) { synchronized(lock) { runner.update(.2f, cfg, 100, false); runner.draw(canvases[0], cfg); motif.step(.1f); motif.draw(canvases[0], motifColor) } }
-            front = bufs[0].asImageBitmap(); luma = sceneLuma(bufs[0])
-        }
+        LaunchedEffect(runner) { runner.update(.2f, cfg, 100, false); motif.step(.1f); luma = daylight(runner.hour()); tick++ }
         LaunchedEffect(runner, resumed, motion) {
             if (!resumed || motion != WonderMotion.FULL) return@LaunchedEffect
-            var back = 1; var last = System.nanoTime(); var n = 0
+            var last = 0L; var n = 0
             while (true) {
-                val t0 = System.nanoTime(); val dt = ((t0 - last) / 1e9f).coerceIn(.01f, .2f); last = t0
-                withContext(Dispatchers.Default) { synchronized(lock) { bufs[back].eraseColor(0); runner.update(dt, cfg, 100, false); runner.draw(canvases[back], cfg); motif.step(dt); motif.draw(canvases[back], motifColor) } }
-                if (n++ % 24 == 0) luma = sceneLuma(bufs[back])
-                front = bufs[back].asImageBitmap(); back = 1 - back
-                val spent = (System.nanoTime() - t0) / 1_000_000
-                delay((42 - spent).coerceAtLeast(4))
+                withFrameNanos { now ->
+                    if (last == 0L) last = now
+                    if (now - last >= 33_000_000L) {
+                        val dt = ((now - last) / 1e9f).coerceIn(.01f, .2f); last = now
+                        runner.update(dt, cfg, 100, false); motif.step(dt)
+                        if (n++ % 60 == 0) luma = daylight(runner.hour())
+                        tick = now
+                    }
+                }
             }
         }
         Canvas(Modifier.fillMaxSize()) {
-            front?.let { drawImage(it, dstSize = IntSize(size.width.toInt(), size.height.toInt()), filterQuality = FilterQuality.High) }
-            // A soft wash over the scene so text and panels stay easy to read.
-            // Brighter scenes need less wash; at night the wash gets stronger so text stays readable.
+            val frame = tick   // reading it here makes the scene redraw each time it changes
+            drawIntoCanvas { c ->
+                val nc = c.nativeCanvas
+                nc.save(); nc.scale(size.width / w, size.height / h)
+                runner.draw(nc, cfg); motif.draw(nc, motifColor)
+                nc.restore()
+            }
+            // A soft wash over the scene so text and panels stay easy to read; stronger at night.
             val a = (.46f + .38f * (1f - luma)).coerceIn(.46f, .86f)
             drawRect(when (look) { WonderLook.SUPER -> Color(0x4D000000); WonderLook.BLISS -> Color(.957f, .945f, .894f, a); else -> Color(1f, 1f, 1f, a) })
             // Fine noise (dithering): breaks up the banding that shows as lines in big smooth gradients.

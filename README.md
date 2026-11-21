@@ -129,9 +129,8 @@ ambient motion settles to a heartbeat when idle.
 
 ## For developers
 
-- `./build-apk.sh` builds the debug APK; the version patch and versionCode in
-  `app/version.properties` increment on every APK/build invocation, and older
-  versioned APKs in the repo root are pruned so only the newest remains.
+- `./gradlew :app:assembleDebug` builds the debug APK and copies it to the repo root (older versioned APKs there are pruned).
+  The version comes from `versions.json` ("bliss-player") like every other Wonderdesk app and only changes when you change it there.
 - `./gradlew :app:testDebugUnitTest` runs the JVM suite (analyzer, parser,
   focus-policy and motion-model tests).
 - `./gradlew :app:connectedDebugAndroidTest` runs the on-device suite on the

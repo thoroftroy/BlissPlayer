@@ -1,37 +1,31 @@
-import java.util.Properties
-import java.nio.file.Files
-import java.nio.file.StandardCopyOption
-
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
 }
 
-// One patch increment per APK/build invocation, including connected-device tests.
-// Plain compilation, JVM tests, lint, IDE sync and --dry-run do not consume versions.
-val versionFile = layout.projectDirectory.file("version.properties").asFile
-val versionValues = Properties().apply {
-    providers.fileContents(layout.projectDirectory.file("version.properties")).asText.get()
-        .reader().use { load(it) }
-}
-var appVersionName = versionValues.getProperty("versionName")
-var appVersionCode = versionValues.getProperty("versionCode").toInt()
-val buildsApk = gradle.startParameter.taskNames.any { path ->
-    val task = path.substringAfterLast(':').lowercase()
-    task == "build" || listOf("assemble", "bundle", "package", "install", "connected").any { task.startsWith(it) }
-}
-if (buildsApk && !gradle.startParameter.isDryRun) {
-    val parts = appVersionName.split('.').map(String::toInt)
-    appVersionName = "${parts[0]}.${parts[1]}.${parts[2] + 1}"
-    appVersionCode++
-    val temporary = Files.createTempFile(versionFile.parentFile.toPath(), "bliss-version-", ".tmp")
-    Files.writeString(temporary, "versionCode=$appVersionCode\nversionName=$appVersionName\n")
-    try {
-        Files.move(temporary, versionFile.toPath(), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
-    } catch (_: java.nio.file.AtomicMoveNotSupportedException) {
-        Files.move(temporary, versionFile.toPath(), StandardCopyOption.REPLACE_EXISTING)
+// Versioned like every other Wonderdesk app: the number comes from versions.json (key "bliss-player") and only changes when someone changes it there.
+val registry = rootDir.resolve("versions.json")
+check(registry.isFile) { "Missing central versions.json; do not guess release versions" }
+val appVersionName: String = ((groovy.json.JsonSlurper().parse(registry) as Map<*, *>)["apps"] as Map<*, *>)["bliss-player"] as? String ?: error("Missing independent app version: bliss-player")
+require(appVersionName.matches(Regex("0\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)"))) { "App versions must be numeric 0.x.x" }
+val versionParts = appVersionName.split('.').map { it.toInt() }
+require(versionParts[2] < 1000) { "Android versionCode limit; bump the minor version before patch 1000" }
+val appVersionCode = versionParts[0] * 1_000_000 + versionParts[1] * 1000 + versionParts[2]
+
+// Keep the newest installable APK in the repo root so it can be attached to a release; older versioned APKs in the root are pruned.
+tasks.register("collectRootApk") {
+    dependsOn("assembleDebug")
+    doLast {
+        val outDir = layout.buildDirectory.dir("outputs/apk/debug").get().asFile
+        val built = outDir.resolve("app-debug.apk")
+        val name = "BlissPlayer-v$appVersionName-debug.apk"
+        val keep = rootDir.resolve(name)
+        built.copyTo(keep, overwrite = true)
+        rootDir.listFiles { file: java.io.File -> file.isFile && file.name.startsWith("BlissPlayer-v") && file.name.endsWith("-debug.apk") && file.name != name }?.forEach { it.delete() }
     }
-    logger.lifecycle("Building BlissPlayer $appVersionName (code $appVersionCode)")
+}
+afterEvaluate {
+    tasks.named("assembleDebug") { finalizedBy("collectRootApk") }
 }
 
 android {

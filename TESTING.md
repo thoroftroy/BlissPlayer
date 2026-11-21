@@ -101,9 +101,7 @@
 # 0.8.5 regression checks
 
 Run JVM checks with `./gradlew :app:testDebugUnitTest`.
-APK builds automatically increment the patch and version code in
-`app/version.properties`. `./build-apk.sh` also copies the versioned APK to the
-repository root. Compilation, JVM tests, lint and dry runs do not increment it.
+The version comes from `versions.json` ("bliss-player") like every other Wonderdesk app; `./gradlew :app:assembleDebug` also copies the versioned APK to the repository root.
 Run Android checks on a **disposable emulator**, not a personal phone:
 
 ```sh
