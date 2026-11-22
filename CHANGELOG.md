@@ -1,5 +1,9 @@
 # Bliss Player changelog
 
+## v0.14.88
+
+- Internal update to the shared animated background used by the other Wonderdesk apps; nothing changes in Bliss Player itself
+
 ## v0.14.87
 
 - The animated background is drawn directly on the screen at full sharpness (smooth, not pixelated), with smaller, fainter symbols and a subtler grain; long tab names shrink to fit instead of being cut off; selected segments and chips are readable in every look; the warning banner has a solid backing
