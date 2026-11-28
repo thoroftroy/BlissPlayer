@@ -1,5 +1,11 @@
 # Bliss Player changelog
 
+## v0.15.0
+
+- Bliss Player now has the same living background as the rest of Wonderdesk: water and bubbles in Aqua, rolling hills in Bliss and space in Super, following the time of day, answering your taps and holding still in Battery Saver. The Dark look keeps its plain background
+- Called "Bliss Player" everywhere, like in the rest of the suite (home screen, notification, title bar). The title bar shows the app's name on the songs list and the section's name elsewhere, instead of "BlissPlayer: Songs"
+- "1 song", "1 artist" and so on instead of "1 songs"
+
 ## v0.14.91
 
 - Music comes back after voice typing again: the short beep voice typing plays when it starts or stops was taken for another app playing, and then the music never resumed. Only another app playing for more than a few seconds keeps it paused now

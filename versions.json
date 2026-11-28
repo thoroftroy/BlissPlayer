@@ -30,7 +30,7 @@
     "checkup": "0.2.0",
     "fetch": "0.2.0",
     "launcher": "0.11.1",
-    "bliss-player": "0.14.91"
+    "bliss-player": "0.15.0"
   },
   "tools": {
     "installer": "0.2.2",

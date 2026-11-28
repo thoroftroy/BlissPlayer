@@ -839,7 +839,7 @@ class PlayerService : MediaSessionService() {
         val playing = player.isPlaying
         val dur = player.duration.coerceAtLeast(0)
         val pos = player.currentPosition.coerceIn(0, dur)
-        val title = md?.title?.toString() ?: "BlissPlayer"
+        val title = md?.title?.toString() ?: "Bliss Player"
         val artist = listOfNotNull(
             md?.artist?.toString(),
             md?.albumTitle?.toString()
@@ -896,7 +896,7 @@ class PlayerService : MediaSessionService() {
         // Default art in both styles: the full Bliss hill, full-bleed.
         b.setLargeIcon(notifArt())
         if (!simple) {
-            b.setSubText("BlissPlayer")
+            b.setSubText("Bliss Player")
             val small = RemoteViews(packageName, R.layout.xp_notif_small).apply {
                 setTextViewText(R.id.n_title, title)
                 setTextViewText(R.id.n_artist, artist)
@@ -971,7 +971,7 @@ class PlayerService : MediaSessionService() {
         paint.textSize = 52f
         paint.textAlign = android.graphics.Paint.Align.CENTER
         paint.typeface = android.graphics.Typeface.DEFAULT_BOLD
-        c.drawText("BlissPlayer", (size / 2).toFloat(), (size - 52).toFloat(), paint)
+        c.drawText("Bliss Player", (size / 2).toFloat(), (size - 52).toFloat(), paint)
         val frame = android.graphics.Paint().apply {
             style = android.graphics.Paint.Style.STROKE
             strokeWidth = 10f

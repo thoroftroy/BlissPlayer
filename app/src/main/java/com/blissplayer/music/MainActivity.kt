@@ -1570,7 +1570,7 @@ class MainActivity : AppCompatActivity() {
                     if (fromTap) {
                         toast(
                             if (filtered.isEmpty()) "Scan done. No songs found."
-                            else "Scan done. ${filtered.size} songs."
+                            else "Scan done. ${songCount(filtered.size)}."
                         )
                     }
                     if (filtered.isEmpty()) {
@@ -1687,7 +1687,7 @@ class MainActivity : AppCompatActivity() {
         saveListPos()
         tab = t
         clearDrill(silent = true)
-        titleBar.text = "BlissPlayer: ${listOf("Songs", "Artists", "Albums", "Genres", "Playlists", "More")[t]}"
+        titleBar.text = listOf("Bliss Player", "Artists", "Albums", "Genres", "Playlists", "More")[t]
         morePane.visibility = if (t == 5) View.VISIBLE else View.GONE
         list.visibility = if (t == 5) View.GONE else View.VISIBLE
         // The action row belongs to the song library, not to playlists or settings.
@@ -2000,10 +2000,10 @@ class MainActivity : AppCompatActivity() {
         adapter.numbered = false
         adapter.favoriteIds = favoriteIds
         stampFav(adapter)
-        titleBar.text = "BlissPlayer: ${listOf("Songs", "Artists", "Albums", "Genres", "Playlists", "More")[tab]}"
+        titleBar.text = listOf("Bliss Player", "Artists", "Albums", "Genres", "Playlists", "More")[tab]
         headerBar.visibility = if (showingSongs()) View.VISIBLE else View.GONE
         if (isSearchActive()) {
-            titleBar.text = "BlissPlayer: Search"
+            titleBar.text = "Search"
             searchClear.visibility = View.VISIBLE
             refreshResults()
             return
@@ -2058,7 +2058,7 @@ class MainActivity : AppCompatActivity() {
                 adapter.submit(inG.map { Row.SongRow(it) })
             }
             tab == 0 -> {
-                crumb.text = if (songs.isEmpty()) "" else "${songs.size} songs. Tap a song to play."
+                crumb.text = if (songs.isEmpty()) "" else "${songCount(songs.size)}. Tap a song to play."
                 adapter.submit(applySort(songs, sortKey).map { Row.SongRow(it) })
             }
             tab == 1 -> {
@@ -2088,8 +2088,8 @@ class MainActivity : AppCompatActivity() {
                     "Shortest" -> groups.keys.sortedBy { k -> groups[k]?.sumOf { it.durationMs } ?: 0 }
                     else -> groups.keys.sortedBy { show(it).lowercase() }
                 }
-                crumb.text = "${groups.size} artists"
-                adapter.submit(sortedKeys.map { k -> Row.Group("ar:$k", show(k), "${groups[k]?.size ?: 0} songs") })
+                crumb.text = "${groups.size} artist${if (groups.size == 1) "" else "s"}"
+                adapter.submit(sortedKeys.map { k -> Row.Group("ar:$k", show(k), songCount(groups[k]?.size ?: 0)) })
             }
             tab == 2 -> {
                 // Years, casing and version words ("(Live)", "Remastered")
@@ -2119,17 +2119,17 @@ class MainActivity : AppCompatActivity() {
                     }
                     else -> groups.keys.sortedBy { show(it).lowercase() }
                 }
-                crumb.text = "${groups.size} albums"
+                crumb.text = "${groups.size} album${if (groups.size == 1) "" else "s"}"
                 adapter.submit(sortedKeys.map { k ->
                     val v = groups[k] ?: emptyList()
-                    Row.Group("al:$k", show(k), "${v.firstOrNull()?.artist ?: ""} | ${v.size} songs")
+                    Row.Group("al:$k", show(k), "${v.firstOrNull()?.artist ?: ""} | ${songCount(v.size)}")
                 })
             }
             tab == 3 -> {
                 val groups = songs.groupBy { genreMap[it.mediaId] ?: "Uncategorized" }
                     .toSortedMap(String.CASE_INSENSITIVE_ORDER)
-                crumb.text = "${groups.size} genres"
-                adapter.submit(groups.map { (k, v) -> Row.Group("ge:$k", k, "${v.size} songs") })
+                crumb.text = "${groups.size} genre${if (groups.size == 1) "" else "s"}"
+                adapter.submit(groups.map { (k, v) -> Row.Group("ge:$k", k, songCount(v.size)) })
             }
             else -> {
                 crumb.text = ""
@@ -2143,7 +2143,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun updateStatus() {
         val pct = (vol.boost * 100).roundToInt()
-        statusStrip.text = "${songs.size} songs | Boost $pct percent | ${vol.currentDevice}"
+        statusStrip.text = "${songCount(songs.size)} | Boost $pct percent | ${vol.currentDevice}"
     }
 
     /**
@@ -2217,7 +2217,7 @@ class MainActivity : AppCompatActivity() {
         adapter.statLines = emptyMap()
         adapter.albumLines = emptyMap()
         adapter.favoriteIds = favoriteIds
-        titleBar.text = "BlissPlayer: Playlists"
+        titleBar.text = "Playlists"
         headerBar.visibility = View.GONE
         searchClear.visibility = View.GONE
         playlistAdd.visibility = View.GONE
@@ -6460,6 +6460,36 @@ class MainActivity : AppCompatActivity() {
     private fun toast(m: String) = Toast.makeText(this, m, Toast.LENGTH_SHORT).show()
 
     /** Scrolling lists always render underneath chrome, never over it. */
+    /**
+     * The same living scene as every other Wonderdesk app (water and bubbles in Aqua, hills in Bliss, space in Super,
+     * following the time of day and holding still in Battery Saver) behind Bliss Player's panels, instead of its own
+     * still backdrop. The Dark look keeps its plain background.
+     */
+    private fun attachSuiteScene(root: LinearLayout) {
+        val host = root.parent as? android.view.ViewGroup ?: return
+        val look = when (MobileTheme.from(theme)) {
+            MobileTheme.AQUA -> dev.wonderdesk.shared.WonderLook.AQUA
+            MobileTheme.BLISS -> dev.wonderdesk.shared.WonderLook.BLISS
+            MobileTheme.SUPER -> dev.wonderdesk.shared.WonderLook.SUPER
+            else -> null
+        }
+        val old = host.findViewWithTag<android.view.View>("suiteScene")
+        if (look == null) { old?.let { host.removeView(it) }; return }
+        root.background = null
+        if (old != null) { (old.getTag(R.id.theme_material) as? androidx.compose.runtime.MutableState<dev.wonderdesk.shared.WonderLook>)?.value = look; return }
+        val lookState = androidx.compose.runtime.mutableStateOf(look)
+        val scene = androidx.compose.ui.platform.ComposeView(this).apply {
+            tag = "suiteScene"
+            setTag(R.id.theme_material, lookState)
+            setContent {
+                dev.wonderdesk.shared.WonderTheme {
+                    dev.wonderdesk.shared.WonderSceneBackdrop(lookState.value, dev.wonderdesk.shared.LocalMotion.current, "Bliss Player")
+                }
+            }
+        }
+        host.addView(scene, 0, android.view.ViewGroup.LayoutParams(android.view.ViewGroup.LayoutParams.MATCH_PARENT, android.view.ViewGroup.LayoutParams.MATCH_PARENT))
+    }
+
     private fun hardenScrolling(root: android.view.View?) {
         if (root !is android.view.ViewGroup) return
         root.setClipChildren(true)
@@ -6493,6 +6523,7 @@ class MainActivity : AppCompatActivity() {
     private fun skinStatic() {
         modernUi()?.let {
             it.styleMain(findViewById(R.id.root))
+            attachSuiteScene(findViewById(R.id.root))
             return
         }
         mobileThemeUi?.styleTree(findViewById(R.id.root))
@@ -6643,3 +6674,6 @@ class MainActivity : AppCompatActivity() {
         }
     }
 }
+
+/** "1 song", "5 songs". */
+fun songCount(n: Int) = "$n song${if (n == 1) "" else "s"}"

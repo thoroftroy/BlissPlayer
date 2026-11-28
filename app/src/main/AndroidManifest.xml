@@ -21,7 +21,7 @@
     <queries><package android:name="dev.wonderdesk.controlroom" /></queries>
     <application
         android:name=".BlissApplication"
-        android:label="BlissPlayer"
+        android:label="Bliss Player"
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher"
         android:theme="@style/Theme.BlissPlayer.Day"
@@ -49,7 +49,7 @@
             android:enabled="true"
             android:icon="@drawable/ic_launch_bliss"
             android:roundIcon="@drawable/ic_launch_bliss"
-            android:label="BlissPlayer">
+            android:label="Bliss Player">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
@@ -62,7 +62,7 @@
             android:enabled="false"
             android:icon="@drawable/ic_launch_dark"
             android:roundIcon="@drawable/ic_launch_dark"
-            android:label="BlissPlayer">
+            android:label="Bliss Player">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
@@ -75,7 +75,7 @@
             android:enabled="false"
             android:icon="@drawable/ic_launch_aqua"
             android:roundIcon="@drawable/ic_launch_aqua"
-            android:label="BlissPlayer">
+            android:label="Bliss Player">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
@@ -88,7 +88,7 @@
             android:enabled="false"
             android:icon="@drawable/ic_launch_super"
             android:roundIcon="@drawable/ic_launch_super"
-            android:label="BlissPlayer">
+            android:label="Bliss Player">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
