@@ -844,6 +844,8 @@ class MainActivity : AppCompatActivity() {
         }
 
         override fun onIsPlayingChanged(isPlaying: Boolean) {
+            // The record in the background spins up while music plays and lowers its tone arm.
+            dev.wonderdesk.shared.SceneFeed.active = isPlaying; dev.wonderdesk.shared.SceneFeed.state = if (isPlaying) "playing" else ""
             miniPlayPause.setImageResource(if (isPlaying) R.drawable.ic_pause else R.drawable.ic_play)
             npPlay?.setImageResource(if (isPlaying) R.drawable.ic_pause else R.drawable.ic_play)
             setPlayBtnIcon(isPlaying)
@@ -2601,6 +2603,7 @@ class MainActivity : AppCompatActivity() {
         miniTitle.text = song?.title ?: "Nothing playing"
         // Just the song here. Boost already shows right above in the status strip.
         miniSub.text = song?.artist ?: "Tap Play to start"
+        dev.wonderdesk.shared.SceneFeed.active = p?.isPlaying == true
         miniPlayPause.setImageResource(if (p?.isPlaying == true) R.drawable.ic_pause else R.drawable.ic_play)
         npTitle?.text = song?.title ?: "Nothing playing"
         npArtist?.text = song?.let { "${it.artist} | ${effAlbum(it)}" } ?: ""
