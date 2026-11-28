@@ -172,6 +172,7 @@ class PlayerService : MediaSessionService() {
     private var micSeen = false
     private var otherPlayed = false
     private var quietSince = 0L
+    private var otherSince = 0L
     private val regainTick = object : Runnable {
         override fun run() {
             if (!::player.isInitialized || player.isPlaying) return
@@ -180,8 +181,8 @@ class PlayerService : MediaSessionService() {
             val mic = runCatching { am.activeRecordingConfigurations.isNotEmpty() }.getOrDefault(false)
             val now = System.currentTimeMillis()
             if (mic) micSeen = true
-            // Another app is playing audio: it took focus for real, so leave it alone.
-            if (am.isMusicActive) otherPlayed = true
+            // Another app playing audio for a while (not a voice typing beep, which is short) took focus for real: leave it alone.
+            if (am.isMusicActive && !mic) { if (otherSince == 0L) otherSince = now; if (now - otherSince > 4_000) otherPlayed = true } else otherSince = 0L
             if (otherPlayed || now - regainStart > 20 * 60_000) return
             val quiet = !mic && !am.isMusicActive && am.mode == android.media.AudioManager.MODE_NORMAL
             if (!quiet) quietSince = 0L
@@ -204,7 +205,7 @@ class PlayerService : MediaSessionService() {
         if (!respectFocus() || !focusPolicy.autoPaused) return
         regainHandler.removeCallbacks(regainTick)
         regainStart = System.currentTimeMillis()
-        micSeen = false; otherPlayed = false; quietSince = 0L
+        micSeen = false; otherPlayed = false; quietSince = 0L; otherSince = 0L
         regainHandler.postDelayed(regainTick, 400)
     }
 

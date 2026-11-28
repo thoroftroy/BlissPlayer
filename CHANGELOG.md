@@ -1,5 +1,9 @@
 # Bliss Player changelog
 
+## v0.14.91
+
+- Music comes back after voice typing again: the short beep voice typing plays when it starts or stops was taken for another app playing, and then the music never resumed. Only another app playing for more than a few seconds keeps it paused now
+
 ## v0.14.90
 
 - Internal update to the shared animated background used by the other Wonderdesk apps (it holds still in Battery Saver); nothing changes in Bliss Player itself
