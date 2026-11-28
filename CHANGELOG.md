@@ -1,5 +1,9 @@
 # Bliss Player changelog
 
+## v0.14.90
+
+- Internal update to the shared animated background used by the other Wonderdesk apps (it holds still in Battery Saver); nothing changes in Bliss Player itself
+
 ## v0.14.89
 
 - Internal update to the shared animated background used by the other Wonderdesk apps; nothing changes in Bliss Player itself
