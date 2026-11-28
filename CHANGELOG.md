@@ -1,5 +1,9 @@
 # Bliss Player changelog
 
+## v0.15.1
+
+- Rows that scroll sideways (chips, filters, tabs) now fade at the edge where there is more, show a small arrow you can tap, and nudge once when first shown, so it is clear there is more to scroll to
+
 ## v0.15.0
 
 - Bliss Player now has the same living background as the rest of Wonderdesk: water and bubbles in Aqua, rolling hills in Bliss and space in Super, following the time of day, answering your taps and holding still in Battery Saver. The Dark look keeps its plain background
